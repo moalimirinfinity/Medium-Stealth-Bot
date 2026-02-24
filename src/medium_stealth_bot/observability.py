@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from medium_stealth_bot.redaction import redact_payload
+
 
 def new_run_id(prefix: str) -> str:
     token = uuid4().hex[:8]
@@ -15,9 +17,10 @@ def write_run_artifact(*, artifacts_dir: Path, run_id: str, payload: dict[str, A
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = artifacts_dir / f"{timestamp}_{run_id}.json"
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    sanitized = redact_payload(payload)
+    path.write_text(json.dumps(sanitized, indent=2, sort_keys=True), encoding="utf-8")
     latest_path = artifacts_dir / "latest.json"
-    latest_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    latest_path.write_text(json.dumps(sanitized, indent=2, sort_keys=True), encoding="utf-8")
     return path
 
 

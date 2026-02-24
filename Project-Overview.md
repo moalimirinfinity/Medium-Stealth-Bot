@@ -121,6 +121,10 @@ Migration policy:
 - `uv run bot run --tag programming`
   - full daily cycle (discovery, scoring, follow pipeline, cleanup)
   - supports `--dry-run/--live` and repeated `--seed-user` inputs
+- `uv run bot reconcile --dry-run|--live`
+  - follow-state reconciliation loop over persisted candidate/follow-cycle state
+- `uv run bot artifacts validate`
+  - validates latest (or provided) run artifact schema compatibility
 - `uv run bot status`
   - last-run diagnostics from `.data/runs/latest.json`
 
@@ -142,13 +146,19 @@ Implemented and validated:
 - structured observability events (`run_id`, `operation`, `target_id`, `decision`, `result`)
 - run artifacts under `.data/runs/` plus `bot status` diagnostics command
 - expanded local persistence and migration bootstrap (`relationship_state`, `follow_cycle`, `blacklist`)
+- file-based SQL migrations + `schema_migrations` tracking
+- candidate reconciliation persistence + `bot reconcile` command
+- artifact schema validation command (`bot artifacts validate`)
+- structured redaction for logs/artifacts
+- baseline test suite + CI quality gates (contracts, capture integrity, response-path checks, pytest)
 - capture corpus and implementation notes
+- explicit de-scope of threaded-response mutation from default daily execution path
 
 Not yet implemented:
 
 - adaptive weight tuning and source performance optimization
-- full reconciliation loops against actual follow state across larger paging windows
-- robust test suite and CI gates
+- multi-window deep reconciliation heuristics and campaign-level scheduling
+- expanded integration/e2e coverage with richer fixtures
 - production runbook and failure recovery automation
 
 ## 9. Next Steps

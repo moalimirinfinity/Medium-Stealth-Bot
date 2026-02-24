@@ -1,5 +1,6 @@
 import inspect
 import json
+import time
 from typing import Any, Sequence
 
 import structlog
@@ -35,6 +36,10 @@ class MediumAsyncClient:
         self._playwright: Playwright | None = None
         self._browser_context: BrowserContext | None = None
         self._api_request: APIRequestContext | None = None
+        self._request_count = 0
+        self._request_latency_total_ms = 0.0
+        self._result_failures = 0
+        self._status_counts: dict[int, int] = {}
 
     async def __aenter__(self) -> "MediumAsyncClient":
         await self.open()
@@ -48,6 +53,11 @@ class MediumAsyncClient:
             return
 
         cookie_map = parse_cookie_header(self.settings.medium_session or "")
+        if self.settings.medium_session and "sid" not in cookie_map:
+            raise RuntimeError(
+                "MEDIUM_SESSION is set but missing `sid` cookie. "
+                "Refresh auth with `uv run bot auth`."
+            )
         headers = {
             "Origin": self.settings.graphql_origin,
             "Referer": self.settings.graphql_referer,
@@ -62,6 +72,11 @@ class MediumAsyncClient:
         self._headers = headers
 
         if self.settings.client_mode == "fast":
+            if "sid" not in cookie_map:
+                raise RuntimeError(
+                    "CLIENT_MODE=fast requires MEDIUM_SESSION with a valid `sid` cookie. "
+                    "Run `uv run bot auth` to refresh session cookies."
+                )
             self._session = curl_requests.AsyncSession(
                 impersonate="chrome142",
                 headers=headers,
@@ -74,13 +89,20 @@ class MediumAsyncClient:
             )
             return
 
-        self._playwright = await async_playwright().start()
-        self._browser_context = await self._playwright.chromium.launch_persistent_context(
-            user_data_dir=str(self.settings.playwright_profile_dir),
-            headless=self.settings.playwright_headless,
-            viewport={"width": 1280, "height": 800},
-            user_agent=self.settings.user_agent,
-        )
+        try:
+            self._playwright = await async_playwright().start()
+            self._browser_context = await self._playwright.chromium.launch_persistent_context(
+                user_data_dir=str(self.settings.playwright_profile_dir),
+                headless=self.settings.playwright_headless,
+                viewport={"width": 1280, "height": 800},
+                user_agent=self.settings.user_agent,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                "Failed to launch Playwright persistent profile. "
+                f"Profile path: {self.settings.playwright_profile_dir}. "
+                "If the profile is stale/corrupt, close running browsers and refresh via `uv run bot auth`."
+            ) from exc
         if cookie_map:
             cookies = [
                 {
@@ -93,6 +115,14 @@ class MediumAsyncClient:
                 for name, value in cookie_map.items()
             ]
             await self._browser_context.add_cookies(cookies)
+        stored_cookies = await self._browser_context.cookies("https://medium.com")
+        has_sid = any(cookie.get("name") == "sid" for cookie in stored_cookies)
+        if not has_sid:
+            await self.close()
+            raise RuntimeError(
+                "No Medium `sid` cookie found in Playwright profile/session context. "
+                "Run `uv run bot auth` to refresh login state."
+            )
         self._api_request = self._browser_context.request
         self.log.info(
             "client_opened",
@@ -128,7 +158,9 @@ class MediumAsyncClient:
 
         self._validate_outgoing_operations(operations)
         payload = [op.model_dump(by_alias=True) for op in operations]
+        started = time.perf_counter()
         status, headers, raw_json = await self._post_graphql(payload)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
         stubbed = headers.get("x-codex-stubbed") == "1"
 
         if isinstance(raw_json, list):
@@ -154,14 +186,20 @@ class MediumAsyncClient:
             )
             if self.settings.contract_registry_validate_response_fields:
                 self._log_response_contract_mismatch(operation.operation_name, result)
+            if result.status_code != 200 or result.has_errors:
+                self._result_failures += 1
             results.append(result)
 
+        self._request_count += 1
+        self._request_latency_total_ms += elapsed_ms
+        self._status_counts[status] = self._status_counts.get(status, 0) + 1
         self.log.info(
             "graphql_batch_executed",
             operation_count=len(operations),
             status_code=status,
             stubbed=stubbed,
             mode=self.settings.client_mode,
+            latency_ms=round(elapsed_ms, 3),
         )
         return results
 
@@ -270,3 +308,15 @@ class MediumAsyncClient:
             has_errors=result.has_errors,
             stubbed=result.stubbed,
         )
+
+    def metrics_snapshot(self) -> dict[str, float | int | str]:
+        average_latency_ms = (
+            self._request_latency_total_ms / self._request_count if self._request_count > 0 else 0.0
+        )
+        return {
+            "mode": self.settings.client_mode,
+            "request_count": self._request_count,
+            "avg_latency_ms": round(average_latency_ms, 3),
+            "status_counts": {str(code): count for code, count in sorted(self._status_counts.items())},
+            "result_failures": self._result_failures,
+        }

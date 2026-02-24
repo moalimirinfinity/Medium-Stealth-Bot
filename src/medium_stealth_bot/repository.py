@@ -55,14 +55,22 @@ class ActionRepository:
                 counts[str(row["action_type"])] = int(row["count"])
         return counts
 
-    def record_action(self, action_type: str, target_id: str | None, status: str) -> None:
+    def record_action(
+        self,
+        action_type: str,
+        target_id: str | None,
+        status: str,
+        *,
+        action_key: str | None = None,
+    ) -> bool:
         query = """
-        INSERT INTO action_log (action_type, target_id, status)
-        VALUES (?, ?, ?)
+        INSERT OR IGNORE INTO action_log (action_type, target_id, status, action_key, occurred_day_utc)
+        VALUES (?, ?, ?, ?, date('now', 'utc'))
         """
         with self.database.connect() as connection:
-            connection.execute(query, (action_type, target_id, status))
+            cursor = connection.execute(query, (action_type, target_id, status, action_key))
             connection.commit()
+            return cursor.rowcount > 0
 
     def has_recent_action(
         self,
@@ -133,6 +141,129 @@ class ActionRepository:
         with self.database.connect() as connection:
             connection.execute(query, (user_id, username, newsletter_id, bio))
             connection.commit()
+
+    def upsert_candidate_reconciliation(
+        self,
+        *,
+        user_id: str,
+        username: str | None,
+        newsletter_v3_id: str | None,
+        source_labels: list[str],
+        score: float,
+        decision_reason: str,
+        eligible: bool,
+        needs_reconcile: bool = True,
+    ) -> None:
+        normalized_sources = sorted({label.strip() for label in source_labels if label.strip()})
+        query = """
+        INSERT INTO candidate_reconciliation (
+            user_id,
+            username,
+            newsletter_v3_id,
+            source_labels,
+            last_score,
+            last_decision_reason,
+            eligible,
+            needs_reconcile,
+            seen_count,
+            first_seen_at,
+            last_seen_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id) DO UPDATE SET
+            username = COALESCE(excluded.username, candidate_reconciliation.username),
+            newsletter_v3_id = COALESCE(excluded.newsletter_v3_id, candidate_reconciliation.newsletter_v3_id),
+            source_labels = CASE
+                WHEN candidate_reconciliation.source_labels IS NULL OR candidate_reconciliation.source_labels = ''
+                    THEN excluded.source_labels
+                WHEN excluded.source_labels IS NULL OR excluded.source_labels = ''
+                    THEN candidate_reconciliation.source_labels
+                ELSE candidate_reconciliation.source_labels || ',' || excluded.source_labels
+            END,
+            last_score = excluded.last_score,
+            last_decision_reason = excluded.last_decision_reason,
+            eligible = excluded.eligible,
+            needs_reconcile = CASE
+                WHEN excluded.needs_reconcile = 1 THEN 1
+                ELSE candidate_reconciliation.needs_reconcile
+            END,
+            seen_count = candidate_reconciliation.seen_count + 1,
+            last_seen_at = CURRENT_TIMESTAMP
+        """
+        with self.database.connect() as connection:
+            connection.execute(
+                query,
+                (
+                    user_id,
+                    username,
+                    newsletter_v3_id,
+                    ",".join(normalized_sources),
+                    score,
+                    decision_reason,
+                    1 if eligible else 0,
+                    1 if needs_reconcile else 0,
+                ),
+            )
+            connection.commit()
+
+    def mark_candidate_reconciled(self, user_id: str, follow_state: UserFollowState) -> None:
+        query = """
+        UPDATE candidate_reconciliation
+        SET needs_reconcile = 0,
+            last_observed_follow_state = ?,
+            last_reconciled_at = CURRENT_TIMESTAMP
+        WHERE user_id = ?
+        """
+        with self.database.connect() as connection:
+            connection.execute(query, (follow_state.value, user_id))
+            connection.commit()
+
+    def reconciliation_candidates_page(self, *, limit: int, offset: int = 0) -> list[dict[str, str | None]]:
+        query = """
+        SELECT user_id, MAX(username) AS username, MAX(rank_ts) AS rank_ts
+        FROM (
+            SELECT user_id, username, last_seen_at AS rank_ts
+            FROM candidate_reconciliation
+            WHERE needs_reconcile = 1
+
+            UNION
+
+            SELECT user_id, username, updated_at AS rank_ts
+            FROM follow_cycle
+            WHERE cleanup_status = 'pending'
+        )
+        GROUP BY user_id
+        ORDER BY rank_ts DESC
+        LIMIT ? OFFSET ?
+        """
+        with self.database.connect() as connection:
+            rows = connection.execute(query, (limit, offset)).fetchall()
+            return [{"user_id": row["user_id"], "username": row["username"]} for row in rows]
+
+    def follow_cycle_kpis(self) -> dict[str, float | int]:
+        query = """
+        SELECT cleanup_status, COUNT(*) AS count
+        FROM follow_cycle
+        GROUP BY cleanup_status
+        """
+        counts: dict[str, int] = {}
+        with self.database.connect() as connection:
+            rows = connection.execute(query).fetchall()
+            for row in rows:
+                counts[str(row["cleanup_status"])] = int(row["count"])
+
+        followed_back = counts.get("followed_back", 0)
+        nonreciprocal = counts.get("unfollowed_nonreciprocal", 0)
+        completed = followed_back + nonreciprocal
+        follow_back_rate = (followed_back / completed) if completed > 0 else 0.0
+
+        return {
+            "follow_cycle_total": sum(counts.values()),
+            "follow_cycle_pending": counts.get("pending", 0),
+            "follow_cycle_followed_back": followed_back,
+            "follow_cycle_unfollowed_nonreciprocal": nonreciprocal,
+            "follow_back_rate": round(follow_back_rate, 4),
+        }
 
     def mark_follow_cycle_started(
         self,

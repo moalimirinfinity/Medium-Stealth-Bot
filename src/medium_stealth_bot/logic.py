@@ -17,18 +17,29 @@ from medium_stealth_bot.models import (
     GraphQLResult,
     NewsletterState,
     ProbeSnapshot,
+    ReconcileOutcome,
     RelationshipConfidence,
     UserFollowState,
 )
 from medium_stealth_bot.repository import ActionRepository
-from medium_stealth_bot.safety import RiskGuard
+from medium_stealth_bot.safety import RiskGuard, RiskHaltError
 from medium_stealth_bot.settings import AppSettings
 from medium_stealth_bot.timing import HumanTimingController
+from medium_stealth_bot.typed_payloads import (
+    UserNode,
+    parse_clap_count,
+    parse_latest_post_id,
+    parse_recommended_publishers_users,
+    parse_topic_latest_story_creators,
+    parse_user_followers_users,
+    parse_user_viewer_is_following,
+)
 
 ACTION_SUBSCRIBE = "follow_subscribe_attempt"
 ACTION_UNFOLLOW = "cleanup_unfollow"
 ACTION_CLAP = "clap_pre_follow"
 ACTION_CLAP_SKIPPED = "clap_pre_follow_skipped"
+ACTION_FOLLOW_VERIFIED = "follow_verified"
 TRACKED_DAILY_ACTION_TYPES: tuple[str, ...] = (
     ACTION_SUBSCRIBE,
     ACTION_UNFOLLOW,
@@ -46,6 +57,7 @@ class DailyRunner:
         self.timing = HumanTimingController(settings=settings)
 
     async def probe(self, tag_slug: str = "programming") -> ProbeSnapshot:
+        self._assert_operator_not_stopped(task_name="probe")
         await self._maybe_sleep_session_warmup()
         started = datetime.now(timezone.utc)
         start_time = time.perf_counter()
@@ -98,6 +110,7 @@ class DailyRunner:
         dry_run: bool = True,
         seed_user_refs: list[str] | None = None,
     ) -> DailyRunOutcome:
+        self._assert_operator_not_stopped(task_name="run_daily_cycle")
         actions_today_start = self.repository.actions_today_utc(TRACKED_DAILY_ACTION_TYPES)
         max_actions = self.settings.max_actions_per_day
         action_counts = self.repository.action_counts_today_utc(TRACKED_DAILY_ACTION_TYPES)
@@ -126,6 +139,7 @@ class DailyRunner:
                 action_remaining_per_day=action_remaining,
                 dry_run=dry_run,
                 probe=None,
+                client_metrics=self.client.metrics_snapshot(),
             )
 
         probe = await self.probe(tag_slug=tag_slug)
@@ -141,6 +155,8 @@ class DailyRunner:
             persist_observations=not dry_run,
         )
 
+        source_candidate_counts = self._source_counts(candidates)
+
         remaining_budget = max(0, max_actions - actions_today_start)
         follow_slots = min(
             self.settings.max_follow_actions_per_run,
@@ -148,12 +164,14 @@ class DailyRunner:
             len(eligible),
             action_remaining[ACTION_SUBSCRIBE],
         )
-        follow_attempted, follow_verified, clap_attempted = await self._execute_follow_pipeline(
-            eligible_candidates=eligible,
-            max_to_run=follow_slots,
-            clap_budget_remaining=action_remaining[ACTION_CLAP],
-            dry_run=dry_run,
-            decisions=decisions,
+        follow_attempted, follow_verified, clap_attempted, clap_verified, source_follow_verified_counts = (
+            await self._execute_follow_pipeline(
+                eligible_candidates=eligible,
+                max_to_run=follow_slots,
+                clap_budget_remaining=action_remaining[ACTION_CLAP],
+                dry_run=dry_run,
+                decisions=decisions,
+            )
         )
         action_counts[ACTION_SUBSCRIBE] += follow_attempted
         action_counts[ACTION_CLAP] += clap_attempted
@@ -177,6 +195,19 @@ class DailyRunner:
             if not dry_run
             else actions_today_start
         )
+
+        kpis = self._build_kpis(
+            follow_attempted=follow_attempted,
+            follow_verified=follow_verified,
+            cleanup_attempted=cleanup_attempted,
+            cleanup_verified=cleanup_verified,
+            eligible_candidates=len(eligible),
+            clap_attempted=clap_attempted,
+            clap_verified=clap_verified,
+        )
+        kpis.update(self.repository.follow_cycle_kpis())
+        client_metrics = self.client.metrics_snapshot()
+
         self.log.info(
             "daily_cycle_complete",
             dry_run=dry_run,
@@ -185,6 +216,7 @@ class DailyRunner:
             follow_attempted=follow_attempted,
             follow_verified=follow_verified,
             clap_attempted=clap_attempted,
+            clap_verified=clap_verified,
             cleanup_attempted=cleanup_attempted,
             cleanup_verified=cleanup_verified,
             actions_today=actions_today_end,
@@ -192,8 +224,12 @@ class DailyRunner:
             action_counts=action_counts,
             action_limits=action_limits,
             action_remaining=action_remaining,
+            source_candidate_counts=source_candidate_counts,
+            source_follow_verified_counts=source_follow_verified_counts,
             decision_reason_counts=decision_reason_counts,
             decision_result_counts=decision_result_counts,
+            kpis=kpis,
+            client_metrics=client_metrics,
             day_boundary_policy=self.settings.day_boundary_policy,
         )
         return DailyRunOutcome(
@@ -208,8 +244,14 @@ class DailyRunner:
             eligible_candidates=len(eligible),
             follow_actions_attempted=follow_attempted,
             follow_actions_verified=follow_verified,
+            clap_actions_attempted=clap_attempted,
+            clap_actions_verified=clap_verified,
             cleanup_actions_attempted=cleanup_attempted,
             cleanup_actions_verified=cleanup_verified,
+            source_candidate_counts=source_candidate_counts,
+            source_follow_verified_counts=source_follow_verified_counts,
+            kpis=kpis,
+            client_metrics=client_metrics,
             decision_log=[
                 f"{item.reason} (id={item.user_id})"
                 for item in decisions[:80]
@@ -217,6 +259,101 @@ class DailyRunner:
             decision_reason_counts=decision_reason_counts,
             decision_result_counts=decision_result_counts,
             probe=probe,
+        )
+
+    async def reconcile_follow_states(
+        self,
+        *,
+        dry_run: bool,
+        max_users: int,
+        page_size: int,
+    ) -> ReconcileOutcome:
+        self._assert_operator_not_stopped(task_name="reconcile_follow_states")
+        scanned = 0
+        updated = 0
+        following_count = 0
+        not_following_count = 0
+        unknown_count = 0
+        decision_log: list[str] = []
+        seen_ids: set[str] = set()
+
+        while scanned < max_users:
+            remaining = max_users - scanned
+            page_limit = min(page_size, remaining)
+            rows = self.repository.reconciliation_candidates_page(limit=page_limit, offset=0)
+            if not rows:
+                break
+
+            progress = False
+            for row in rows:
+                user_id = row.get("user_id")
+                if not isinstance(user_id, str) or not user_id or user_id in seen_ids:
+                    continue
+                seen_ids.add(user_id)
+                progress = True
+                scanned += 1
+                username = row.get("username")
+
+                result = await self._execute_with_retry(
+                    "reconcile_user_viewer_edge",
+                    operations.user_viewer_edge(user_id),
+                )
+                is_following = parse_user_viewer_is_following(result)
+                if is_following is True:
+                    following_count += 1
+                    decision_log.append(f"reconcile:following id={user_id}")
+                    if not dry_run:
+                        self.repository.upsert_relationship_state(
+                            user_id,
+                            newsletter_state=NewsletterState.UNKNOWN,
+                            user_follow_state=UserFollowState.FOLLOWING,
+                            confidence=RelationshipConfidence.OBSERVED,
+                            source_operation="UserViewerEdge",
+                            verified_now=True,
+                        )
+                        self.repository.mark_candidate_reconciled(user_id, UserFollowState.FOLLOWING)
+                        updated += 1
+                    continue
+
+                if is_following is False:
+                    not_following_count += 1
+                    decision_log.append(f"reconcile:not_following id={user_id}")
+                    if not dry_run:
+                        self.repository.upsert_relationship_state(
+                            user_id,
+                            newsletter_state=NewsletterState.UNKNOWN,
+                            user_follow_state=UserFollowState.NOT_FOLLOWING,
+                            confidence=RelationshipConfidence.OBSERVED,
+                            source_operation="UserViewerEdge",
+                            verified_now=True,
+                        )
+                        self.repository.mark_candidate_reconciled(user_id, UserFollowState.NOT_FOLLOWING)
+                        updated += 1
+                    continue
+
+                unknown_count += 1
+                decision_log.append(f"reconcile:unknown id={user_id}")
+
+            if not progress:
+                break
+
+        self.log.info(
+            "reconcile_complete",
+            dry_run=dry_run,
+            scanned_users=scanned,
+            updated_users=updated,
+            following_count=following_count,
+            not_following_count=not_following_count,
+            unknown_count=unknown_count,
+        )
+        return ReconcileOutcome(
+            dry_run=dry_run,
+            scanned_users=scanned,
+            updated_users=updated,
+            following_count=following_count,
+            not_following_count=not_following_count,
+            unknown_count=unknown_count,
+            decision_log=decision_log,
         )
 
     async def _execute_safe(self, task_name: str, operation) -> GraphQLResult:
@@ -279,7 +416,7 @@ class DailyRunner:
         lowered = task_name.lower()
         if any(token in lowered for token in ("mutation", "subscribe", "unfollow", "clap")):
             return self.settings.mutation_max_retries
-        if any(token in lowered for token in ("verify", "viewer_edge")):
+        if any(token in lowered for token in ("verify", "viewer_edge", "reconcile")):
             return self.settings.verify_max_retries
         return self.settings.query_max_retries
 
@@ -289,7 +426,11 @@ class DailyRunner:
             return 0.0
         raw = min(self.settings.retry_max_delay_seconds, base * (2**attempt))
         jitter = random.uniform(0.0, base)
-        return min(self.settings.retry_max_delay_seconds, raw + jitter)
+        adaptive_multiplier = 1.0 + (
+            self.settings.adaptive_retry_failure_multiplier * self.risk_guard.consecutive_failures
+        )
+        adjusted = (raw + jitter) * adaptive_multiplier
+        return min(self.settings.retry_max_delay_seconds, adjusted)
 
     @staticmethod
     def _is_retryable_result(result: GraphQLResult) -> bool:
@@ -327,6 +468,7 @@ class DailyRunner:
             "targetUserId",
             "newsletterV3Id",
             "newsletterId",
+            "targetPostId",
             "postId",
             "id",
             "username",
@@ -354,10 +496,15 @@ class DailyRunner:
         for candidate in pool.values():
             candidate.matched_keywords = self._match_keywords(candidate.bio)
             ratio = self._following_follower_ratio(candidate)
-            keyword_bonus = 0.35 * len(candidate.matched_keywords)
-            source_bonus = 0.2 * len(candidate.sources)
-            newsletter_bonus = 0.2 if candidate.newsletter_v3_id else 0.0
-            candidate.score = ratio + keyword_bonus + source_bonus + newsletter_bonus
+            keyword_bonus = self.settings.score_weight_keyword * len(candidate.matched_keywords)
+            source_bonus = self.settings.score_weight_source * len(candidate.sources)
+            newsletter_bonus = self.settings.score_weight_newsletter if candidate.newsletter_v3_id else 0.0
+            candidate.score = (
+                (self.settings.score_weight_ratio * ratio)
+                + keyword_bonus
+                + source_bonus
+                + newsletter_bonus
+            )
 
         ordered = sorted(pool.values(), key=lambda item: item.score, reverse=True)
         self.log.info("candidates_built", count=len(ordered), seed_sources=len(seed_user_refs))
@@ -365,57 +512,32 @@ class DailyRunner:
 
     def _extract_topic_latest_candidates(self, probe: ProbeSnapshot, pool: dict[str, CandidateUser]) -> None:
         result = probe.results.get("topic_latest_stories")
-        if not result or not result.data:
+        if not result:
             return
-        edges = (
-            result.data.get("tagFromSlug", {})
-            .get("posts", {})
-            .get("edges", [])
-        )
-        for edge in edges:
-            if not isinstance(edge, dict):
-                continue
-            node = edge.get("node", {})
-            if not isinstance(node, dict):
-                continue
-            creator = node.get("creator")
-            if not isinstance(creator, dict):
-                continue
+        for creator, latest_post_id in parse_topic_latest_story_creators(result):
             candidate = self._candidate_from_user_node(
                 creator,
                 source=CandidateSource.TOPIC_LATEST_STORIES,
-                latest_post_id=node.get("id") if isinstance(node.get("id"), str) else None,
+                latest_post_id=latest_post_id,
             )
             if candidate:
                 self._merge_candidate(pool, candidate)
 
     def _extract_topic_who_to_follow_candidates(self, probe: ProbeSnapshot, pool: dict[str, CandidateUser]) -> None:
         result = probe.results.get("topic_who_to_follow")
-        if not result or not result.data:
+        if not result:
             return
-        edges = result.data.get("recommendedPublishers", {}).get("edges", [])
-        for edge in edges:
-            if not isinstance(edge, dict):
-                continue
-            node = edge.get("node")
-            if not isinstance(node, dict) or node.get("__typename") != "User":
-                continue
-            candidate = self._candidate_from_user_node(node, source=CandidateSource.TOPIC_WHO_TO_FOLLOW)
+        for user_node in parse_recommended_publishers_users(result):
+            candidate = self._candidate_from_user_node(user_node, source=CandidateSource.TOPIC_WHO_TO_FOLLOW)
             if candidate:
                 self._merge_candidate(pool, candidate)
 
     def _extract_who_to_follow_module_candidates(self, probe: ProbeSnapshot, pool: dict[str, CandidateUser]) -> None:
         result = probe.results.get("who_to_follow_module")
-        if not result or not result.data:
+        if not result:
             return
-        edges = result.data.get("recommendedPublishers", {}).get("edges", [])
-        for edge in edges:
-            if not isinstance(edge, dict):
-                continue
-            node = edge.get("node")
-            if not isinstance(node, dict) or node.get("__typename") != "User":
-                continue
-            candidate = self._candidate_from_user_node(node, source=CandidateSource.WHO_TO_FOLLOW_MODULE)
+        for user_node in parse_recommended_publishers_users(result):
+            candidate = self._candidate_from_user_node(user_node, source=CandidateSource.WHO_TO_FOLLOW_MODULE)
             if candidate:
                 self._merge_candidate(pool, candidate)
 
@@ -436,7 +558,7 @@ class DailyRunner:
                     limit=self.settings.discovery_seed_followers_limit,
                 ),
             )
-            first_hop_users = self._extract_users_from_followers_result(result)
+            first_hop_users = parse_user_followers_users(result)
             for node in first_hop_users:
                 candidate = self._candidate_from_user_node(node, source=CandidateSource.SEED_FOLLOWERS)
                 if candidate:
@@ -445,11 +567,7 @@ class DailyRunner:
             if self.settings.discovery_followers_depth < 2:
                 continue
 
-            second_hop_roots = [
-                item.get("id")
-                for item in first_hop_users
-                if isinstance(item, dict) and isinstance(item.get("id"), str)
-            ][: self.settings.discovery_second_hop_seed_limit]
+            second_hop_roots = [item.id for item in first_hop_users if isinstance(item.id, str)][: self.settings.discovery_second_hop_seed_limit]
             for root_id in second_hop_roots:
                 hop_result = await self._execute_with_retry(
                     "seed_user_followers_second_hop",
@@ -458,7 +576,7 @@ class DailyRunner:
                         limit=self.settings.discovery_seed_followers_limit,
                     ),
                 )
-                for node in self._extract_users_from_followers_result(hop_result):
+                for node in parse_user_followers_users(hop_result):
                     candidate = self._candidate_from_user_node(node, source=CandidateSource.SEED_FOLLOWERS)
                     if candidate:
                         self._merge_candidate(pool, candidate)
@@ -482,42 +600,28 @@ class DailyRunner:
 
     def _candidate_from_user_node(
         self,
-        node: dict,
+        node: UserNode,
         *,
         source: CandidateSource,
         latest_post_id: str | None = None,
     ) -> CandidateUser | None:
-        user_id = node.get("id")
-        if not isinstance(user_id, str) or not user_id:
+        user_id = node.id
+        if not user_id:
             return None
-        newsletter_v3 = node.get("newsletterV3")
-        social_stats = node.get("socialStats")
-        follower_count = None
-        following_count = None
-        if isinstance(social_stats, dict):
-            follower_count = self._to_int(social_stats.get("followerCount"))
-            following_count = self._to_int(social_stats.get("followingCount"))
+        follower_count = node.social_stats.follower_count if node.social_stats else None
+        following_count = node.social_stats.following_count if node.social_stats else None
+        newsletter_v3_id = node.newsletter_v3.id if node.newsletter_v3 else None
         return CandidateUser(
             user_id=user_id,
-            username=node.get("username") if isinstance(node.get("username"), str) else None,
-            name=node.get("name") if isinstance(node.get("name"), str) else None,
-            bio=node.get("bio") if isinstance(node.get("bio"), str) else None,
-            newsletter_v3_id=newsletter_v3.get("id") if isinstance(newsletter_v3, dict) else None,
+            username=node.username,
+            name=node.name,
+            bio=node.bio,
+            newsletter_v3_id=newsletter_v3_id,
             follower_count=follower_count,
             following_count=following_count,
             latest_post_id=latest_post_id,
             sources=[source],
         )
-
-    @staticmethod
-    def _to_int(value) -> int | None:
-        if isinstance(value, bool):
-            return None
-        if isinstance(value, int):
-            return value
-        if isinstance(value, str) and value.isdigit():
-            return int(value)
-        return None
 
     @staticmethod
     def _merge_candidate(pool: dict[str, CandidateUser], candidate: CandidateUser) -> None:
@@ -555,79 +659,62 @@ class DailyRunner:
         for candidate in candidates:
             ratio = self._following_follower_ratio(candidate)
             if ratio < self.settings.min_following_follower_ratio:
-                decisions.append(
-                    CandidateDecision(
-                        user_id=candidate.user_id,
-                        username=candidate.username,
-                        eligible=False,
-                        reason=f"skip:ratio_below_threshold ratio={ratio:.2f}",
-                        score=candidate.score,
-                    )
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason=f"skip:ratio_below_threshold ratio={ratio:.2f}",
                 )
                 continue
 
             if self.settings.require_bio_keyword_match and not candidate.matched_keywords:
-                decisions.append(
-                    CandidateDecision(
-                        user_id=candidate.user_id,
-                        username=candidate.username,
-                        eligible=False,
-                        reason="skip:no_keyword_match",
-                        score=candidate.score,
-                    )
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason="skip:no_keyword_match",
                 )
                 continue
 
             if not candidate.newsletter_v3_id:
-                decisions.append(
-                    CandidateDecision(
-                        user_id=candidate.user_id,
-                        username=candidate.username,
-                        eligible=False,
-                        reason="skip:no_newsletter_v3_id",
-                        score=candidate.score,
-                    )
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason="skip:no_newsletter_v3_id",
                 )
                 continue
 
             if self.repository.is_blacklisted(candidate.user_id):
-                decisions.append(
-                    CandidateDecision(
-                        user_id=candidate.user_id,
-                        username=candidate.username,
-                        eligible=False,
-                        reason="skip:blacklisted",
-                        score=candidate.score,
-                    )
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason="skip:blacklisted",
                 )
                 continue
 
             if self.repository.has_recent_action(
                 candidate.user_id,
                 within_hours=self.settings.follow_cooldown_hours,
-                action_types=(ACTION_SUBSCRIBE, "follow_verified", ACTION_UNFOLLOW),
+                action_types=(ACTION_SUBSCRIBE, ACTION_FOLLOW_VERIFIED, ACTION_UNFOLLOW),
             ):
-                decisions.append(
-                    CandidateDecision(
-                        user_id=candidate.user_id,
-                        username=candidate.username,
-                        eligible=False,
-                        reason="skip:cooldown_active",
-                        score=candidate.score,
-                    )
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason="skip:cooldown_active",
                 )
                 continue
 
             local_state = self.repository.get_relationship_state(candidate.user_id)
             if local_state and local_state.user_follow_state == UserFollowState.FOLLOWING:
-                decisions.append(
-                    CandidateDecision(
-                        user_id=candidate.user_id,
-                        username=candidate.username,
-                        eligible=False,
-                        reason="skip:already_following_local_state",
-                        score=candidate.score,
-                    )
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason="skip:already_following_local_state",
+                    needs_reconcile=False,
                 )
                 continue
 
@@ -635,7 +722,7 @@ class DailyRunner:
                 "candidate_user_viewer_edge",
                 operations.user_viewer_edge(candidate.user_id),
             )
-            is_following = self._extract_is_following(edge_result)
+            is_following = parse_user_viewer_is_following(edge_result)
             if is_following is True:
                 if persist_observations:
                     self.repository.upsert_relationship_state(
@@ -646,37 +733,30 @@ class DailyRunner:
                         source_operation="UserViewerEdge",
                         verified_now=True,
                     )
-                decisions.append(
-                    CandidateDecision(
-                        user_id=candidate.user_id,
-                        username=candidate.username,
-                        eligible=False,
-                        reason="skip:already_following_live_check",
-                        score=candidate.score,
-                    )
+                    self.repository.mark_candidate_reconciled(candidate.user_id, UserFollowState.FOLLOWING)
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason="skip:already_following_live_check",
+                    needs_reconcile=False,
                 )
                 continue
             if is_following is None:
-                decisions.append(
-                    CandidateDecision(
-                        user_id=candidate.user_id,
-                        username=candidate.username,
-                        eligible=False,
-                        reason="skip:live_check_unavailable",
-                        score=candidate.score,
-                    )
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason="skip:live_check_unavailable",
                 )
                 continue
 
             eligible.append(candidate)
-            decisions.append(
-                CandidateDecision(
-                    user_id=candidate.user_id,
-                    username=candidate.username,
-                    eligible=True,
-                    reason="eligible",
-                    score=candidate.score,
-                )
+            self._append_decision(
+                decisions,
+                candidate,
+                eligible=True,
+                reason="eligible",
             )
 
         return eligible
@@ -689,25 +769,25 @@ class DailyRunner:
         clap_budget_remaining: int,
         dry_run: bool,
         decisions: list[CandidateDecision],
-    ) -> tuple[int, int, int]:
+    ) -> tuple[int, int, int, int, dict[str, int]]:
         attempted = 0
         verified = 0
         clap_attempted = 0
+        clap_verified = 0
+        source_follow_verified_counts: dict[str, int] = {}
         for candidate in eligible_candidates[:max_to_run]:
+            self._assert_operator_not_stopped(task_name="follow_pipeline")
             attempted += 1
 
             if dry_run:
                 if self.settings.enable_pre_follow_clap and clap_budget_remaining > 0:
                     clap_budget_remaining -= 1
                     clap_attempted += 1
-                decisions.append(
-                    CandidateDecision(
-                        user_id=candidate.user_id,
-                        username=candidate.username,
-                        eligible=True,
-                        reason="dry_run:planned_follow",
-                        score=candidate.score,
-                    )
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=True,
+                    reason="dry_run:planned_follow",
                 )
                 continue
 
@@ -718,10 +798,15 @@ class DailyRunner:
                 bio=candidate.bio,
             )
 
-            clap_used = await self._maybe_pre_follow_clap(candidate, clap_budget_remaining=clap_budget_remaining)
+            clap_used, clap_is_verified = await self._maybe_pre_follow_clap(
+                candidate,
+                clap_budget_remaining=clap_budget_remaining,
+            )
             if clap_used:
                 clap_budget_remaining -= 1
                 clap_attempted += 1
+            if clap_is_verified:
+                clap_verified += 1
 
             await self._sleep_action_gap(action_type=ACTION_SUBSCRIBE, target_user_id=candidate.user_id)
             mutation = await self._execute_with_retry(
@@ -729,20 +814,19 @@ class DailyRunner:
                 operations.subscribe_newsletter_v3(candidate.newsletter_v3_id),
             )
             mutation_ok = mutation.status_code == 200 and not mutation.has_errors
+            subscribe_action_key = self._daily_action_key(ACTION_SUBSCRIBE, candidate.user_id)
             self.repository.record_action(
                 ACTION_SUBSCRIBE,
                 candidate.user_id,
                 "ok" if mutation_ok else "failed",
+                action_key=subscribe_action_key,
             )
             if not mutation_ok:
-                decisions.append(
-                    CandidateDecision(
-                        user_id=candidate.user_id,
-                        username=candidate.username,
-                        eligible=True,
-                        reason="follow_failed:mutation_error",
-                        score=candidate.score,
-                    )
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=True,
+                    reason="follow_failed:mutation_error",
                 )
                 continue
 
@@ -750,7 +834,8 @@ class DailyRunner:
                 "follow_verify_user_viewer_edge",
                 operations.user_viewer_edge(candidate.user_id),
             )
-            is_following = self._extract_is_following(verify)
+            is_following = parse_user_viewer_is_following(verify)
+            follow_verify_key = self._daily_action_key(ACTION_FOLLOW_VERIFIED, candidate.user_id)
             if is_following is True:
                 verified += 1
                 self.repository.upsert_relationship_state(
@@ -767,16 +852,23 @@ class DailyRunner:
                     source="SubscribeNewsletterV3Mutation",
                     grace_days=self.settings.unfollow_nonreciprocal_after_days,
                 )
-                self.repository.record_action("follow_verified", candidate.user_id, "verified_following")
-                decisions.append(
-                    CandidateDecision(
-                        user_id=candidate.user_id,
-                        username=candidate.username,
-                        eligible=True,
-                        reason="follow_success:verified_following",
-                        score=candidate.score,
-                    )
+                self.repository.mark_candidate_reconciled(candidate.user_id, UserFollowState.FOLLOWING)
+                self.repository.record_action(
+                    ACTION_FOLLOW_VERIFIED,
+                    candidate.user_id,
+                    "verified_following",
+                    action_key=follow_verify_key,
                 )
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=True,
+                    reason="follow_success:verified_following",
+                    needs_reconcile=False,
+                )
+                for source in candidate.sources:
+                    key = source.value
+                    source_follow_verified_counts[key] = source_follow_verified_counts.get(key, 0) + 1
             else:
                 self.repository.upsert_relationship_state(
                     candidate.user_id,
@@ -786,25 +878,34 @@ class DailyRunner:
                     source_operation="UserViewerEdge",
                     verified_now=is_following is not None,
                 )
-                self.repository.record_action("follow_verified", candidate.user_id, "verification_failed")
-                decisions.append(
-                    CandidateDecision(
-                        user_id=candidate.user_id,
-                        username=candidate.username,
-                        eligible=True,
-                        reason="follow_failed:verification_failed",
-                        score=candidate.score,
-                    )
+                if is_following is False:
+                    self.repository.mark_candidate_reconciled(candidate.user_id, UserFollowState.NOT_FOLLOWING)
+                self.repository.record_action(
+                    ACTION_FOLLOW_VERIFIED,
+                    candidate.user_id,
+                    "verification_failed",
+                    action_key=follow_verify_key,
+                )
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=True,
+                    reason="follow_failed:verification_failed",
                 )
 
-        return attempted, verified, clap_attempted
+        return attempted, verified, clap_attempted, clap_verified, source_follow_verified_counts
 
-    async def _maybe_pre_follow_clap(self, candidate: CandidateUser, *, clap_budget_remaining: int) -> bool:
+    async def _maybe_pre_follow_clap(
+        self,
+        candidate: CandidateUser,
+        *,
+        clap_budget_remaining: int,
+    ) -> tuple[bool, bool]:
         if not self.settings.enable_pre_follow_clap:
-            return False
+            return False, False
         if clap_budget_remaining <= 0:
             self.repository.record_action(ACTION_CLAP_SKIPPED, candidate.user_id, "budget_exhausted")
-            return False
+            return False, False
 
         post_id = candidate.latest_post_id
         if not post_id:
@@ -812,13 +913,13 @@ class DailyRunner:
                 "pre_follow_latest_post",
                 operations.user_latest_post(user_id=candidate.user_id, username=candidate.username),
             )
-            post_id = self._extract_latest_post_id(latest_post)
+            post_id = parse_latest_post_id(latest_post)
             if post_id:
                 candidate.latest_post_id = post_id
 
         if not post_id:
             self.repository.record_action(ACTION_CLAP_SKIPPED, candidate.user_id, "no_post")
-            return False
+            return False, False
 
         if self.settings.pre_follow_read_wait_seconds > 0:
             await self._sleep_read_delay(target_user_id=candidate.user_id)
@@ -826,7 +927,7 @@ class DailyRunner:
         actor_user_id = self.settings.medium_user_ref
         if not actor_user_id:
             self.repository.record_action(ACTION_CLAP_SKIPPED, candidate.user_id, "missing_actor_user_id")
-            return False
+            return False, False
 
         clap_count = random.randint(self.settings.min_clap_count, self.settings.max_clap_count)
         await self._sleep_action_gap(action_type=ACTION_CLAP, target_user_id=candidate.user_id)
@@ -835,12 +936,21 @@ class DailyRunner:
             operations.clap_post(post_id, actor_user_id, num_claps=clap_count),
         )
         clap_ok = clap_result.status_code == 200 and not clap_result.has_errors
+        observed_clap_count = parse_clap_count(clap_result)
+        clap_verified = clap_ok and observed_clap_count is not None and observed_clap_count >= 1
+        clap_action_key = self._daily_action_key(ACTION_CLAP, candidate.user_id, extra=post_id)
+        status_label = (
+            f"verified:{observed_clap_count}"
+            if clap_verified
+            else f"failed:{clap_count}"
+        )
         self.repository.record_action(
             ACTION_CLAP,
             candidate.user_id,
-            f"{'ok' if clap_ok else 'failed'}:{clap_count}",
+            status_label,
+            action_key=clap_action_key,
         )
-        return True
+        return True, clap_verified
 
     async def _execute_cleanup_pipeline(
         self,
@@ -867,6 +977,7 @@ class DailyRunner:
         verified = 0
 
         for row in due:
+            self._assert_operator_not_stopped(task_name="cleanup_pipeline")
             user_id = row["user_id"]
             username = row.get("username")
             if user_id in follower_ids:
@@ -898,8 +1009,14 @@ class DailyRunner:
             await self._sleep_action_gap(action_type=ACTION_UNFOLLOW, target_user_id=user_id)
             mutation = await self._execute_with_retry("cleanup_unfollow", operations.unfollow_user(user_id))
             mutation_ok = mutation.status_code == 200 and not mutation.has_errors
+            unfollow_action_key = self._daily_action_key(ACTION_UNFOLLOW, user_id)
             if not mutation_ok:
-                self.repository.record_action(ACTION_UNFOLLOW, user_id, "mutation_failed")
+                self.repository.record_action(
+                    ACTION_UNFOLLOW,
+                    user_id,
+                    "mutation_failed",
+                    action_key=unfollow_action_key,
+                )
                 decisions.append(
                     CandidateDecision(
                         user_id=user_id,
@@ -911,11 +1028,16 @@ class DailyRunner:
                 continue
 
             verify = await self._execute_with_retry("cleanup_verify", operations.user_viewer_edge(user_id))
-            is_following = self._extract_is_following(verify)
+            is_following = parse_user_viewer_is_following(verify)
             if is_following is False:
                 verified += 1
                 self.repository.mark_nonreciprocal_unfollowed(user_id)
-                self.repository.record_action(ACTION_UNFOLLOW, user_id, "verified_not_following")
+                self.repository.record_action(
+                    ACTION_UNFOLLOW,
+                    user_id,
+                    "verified_not_following",
+                    action_key=unfollow_action_key,
+                )
                 self.repository.upsert_relationship_state(
                     user_id,
                     newsletter_state=NewsletterState.UNKNOWN,
@@ -924,6 +1046,7 @@ class DailyRunner:
                     source_operation="UnfollowUserMutation",
                     verified_now=True,
                 )
+                self.repository.mark_candidate_reconciled(user_id, UserFollowState.NOT_FOLLOWING)
                 decisions.append(
                     CandidateDecision(
                         user_id=user_id,
@@ -934,7 +1057,12 @@ class DailyRunner:
                 )
             else:
                 self.repository.mark_cleanup_checked(user_id)
-                self.repository.record_action(ACTION_UNFOLLOW, user_id, "verification_uncertain")
+                self.repository.record_action(
+                    ACTION_UNFOLLOW,
+                    user_id,
+                    "verification_uncertain",
+                    action_key=unfollow_action_key,
+                )
                 decisions.append(
                     CandidateDecision(
                         user_id=user_id,
@@ -953,55 +1081,8 @@ class DailyRunner:
             "own_followers_scan",
             operations.user_followers(user_id=self.settings.medium_user_ref, limit=limit),
         )
-        users = self._extract_users_from_followers_result(result)
-        return {item["id"] for item in users if isinstance(item, dict) and isinstance(item.get("id"), str)}
-
-    @staticmethod
-    def _extract_users_from_followers_result(result: GraphQLResult) -> list[dict]:
-        if not result.data:
-            return []
-        user_result = result.data.get("userResult", {})
-        if not isinstance(user_result, dict):
-            return []
-        conn = user_result.get("followersUserConnection", {})
-        if not isinstance(conn, dict):
-            return []
-        users = conn.get("users", [])
-        return users if isinstance(users, list) else []
-
-    @staticmethod
-    def _extract_latest_post_id(result: GraphQLResult) -> str | None:
-        if not result.data:
-            return None
-        user_result = result.data.get("userResult", {})
-        if not isinstance(user_result, dict):
-            return None
-        homepage = user_result.get("homepagePostsConnection", {})
-        if not isinstance(homepage, dict):
-            return None
-        posts = homepage.get("posts", [])
-        if not isinstance(posts, list) or not posts:
-            return None
-        first = posts[0]
-        if not isinstance(first, dict):
-            return None
-        post_id = first.get("id")
-        return post_id if isinstance(post_id, str) else None
-
-    @staticmethod
-    def _extract_is_following(result: GraphQLResult) -> bool | None:
-        if not result.data:
-            return None
-        user = result.data.get("user")
-        if not isinstance(user, dict):
-            return None
-        edge = user.get("viewerEdge")
-        if not isinstance(edge, dict):
-            return None
-        value = edge.get("isFollowing")
-        if isinstance(value, bool):
-            return value
-        return None
+        users = parse_user_followers_users(result)
+        return {item.id for item in users if isinstance(item.id, str)}
 
     def _following_follower_ratio(self, candidate: CandidateUser) -> float:
         followers = candidate.follower_count or 0
@@ -1064,6 +1145,34 @@ class DailyRunner:
                 score=round(item.score, 4),
             )
 
+    def _append_decision(
+        self,
+        decisions: list[CandidateDecision],
+        candidate: CandidateUser,
+        *,
+        eligible: bool,
+        reason: str,
+        needs_reconcile: bool = True,
+    ) -> None:
+        decision = CandidateDecision(
+            user_id=candidate.user_id,
+            username=candidate.username,
+            eligible=eligible,
+            reason=reason,
+            score=candidate.score,
+        )
+        decisions.append(decision)
+        self.repository.upsert_candidate_reconciliation(
+            user_id=candidate.user_id,
+            username=candidate.username,
+            newsletter_v3_id=candidate.newsletter_v3_id,
+            source_labels=[source.value for source in candidate.sources],
+            score=candidate.score,
+            decision_reason=reason,
+            eligible=eligible,
+            needs_reconcile=needs_reconcile,
+        )
+
     def _summarize_decisions(self, decisions: list[CandidateDecision]) -> tuple[dict[str, int], dict[str, int]]:
         reason_counts: dict[str, int] = {}
         result_counts: dict[str, int] = {}
@@ -1089,3 +1198,53 @@ class DailyRunner:
         if reason.startswith("cleanup:"):
             return "cleanup"
         return "info"
+
+    @staticmethod
+    def _source_counts(candidates: list[CandidateUser]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for candidate in candidates:
+            for source in candidate.sources:
+                key = source.value
+                counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def _build_kpis(
+        self,
+        *,
+        follow_attempted: int,
+        follow_verified: int,
+        cleanup_attempted: int,
+        cleanup_verified: int,
+        eligible_candidates: int,
+        clap_attempted: int,
+        clap_verified: int,
+    ) -> dict[str, float | int]:
+        follow_verify_rate = (follow_verified / follow_attempted) if follow_attempted > 0 else 0.0
+        cleanup_verify_rate = (cleanup_verified / cleanup_attempted) if cleanup_attempted > 0 else 0.0
+        eligible_conversion_rate = (follow_verified / eligible_candidates) if eligible_candidates > 0 else 0.0
+        clap_verify_rate = (clap_verified / clap_attempted) if clap_attempted > 0 else 0.0
+        return {
+            "follow_verify_rate": round(follow_verify_rate, 4),
+            "cleanup_verify_rate": round(cleanup_verify_rate, 4),
+            "eligible_conversion_rate": round(eligible_conversion_rate, 4),
+            "clap_verify_rate": round(clap_verify_rate, 4),
+            "net_follow_delta": follow_verified - cleanup_verified,
+        }
+
+    @staticmethod
+    def _daily_action_key(action_type: str, user_id: str, *, extra: str | None = None) -> str:
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        parts = [action_type, user_id, day]
+        if extra:
+            parts.append(extra)
+        return ":".join(parts)
+
+    def _assert_operator_not_stopped(self, *, task_name: str) -> None:
+        if not self.settings.operator_kill_switch:
+            return
+        raise RiskHaltError(
+            reason="operator_kill_switch",
+            task_name=task_name,
+            detail="OPERATOR_KILL_SWITCH=true",
+            consecutive_failures=self.risk_guard.consecutive_failures,
+        )

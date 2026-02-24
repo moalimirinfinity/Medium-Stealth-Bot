@@ -63,12 +63,28 @@ class DailyRunOutcome(BaseModel):
     eligible_candidates: int = 0
     follow_actions_attempted: int = 0
     follow_actions_verified: int = 0
+    clap_actions_attempted: int = 0
+    clap_actions_verified: int = 0
     cleanup_actions_attempted: int = 0
     cleanup_actions_verified: int = 0
+    source_candidate_counts: dict[str, int] = Field(default_factory=dict)
+    source_follow_verified_counts: dict[str, int] = Field(default_factory=dict)
+    kpis: dict[str, float | int] = Field(default_factory=dict)
+    client_metrics: dict[str, Any] = Field(default_factory=dict)
     decision_log: list[str] = Field(default_factory=list)
     decision_reason_counts: dict[str, int] = Field(default_factory=dict)
     decision_result_counts: dict[str, int] = Field(default_factory=dict)
     probe: ProbeSnapshot | None = None
+
+
+class ReconcileOutcome(BaseModel):
+    dry_run: bool = True
+    scanned_users: int = 0
+    updated_users: int = 0
+    following_count: int = 0
+    not_following_count: int = 0
+    unknown_count: int = 0
+    decision_log: list[str] = Field(default_factory=list)
 
 
 class NewsletterState(StrEnum):

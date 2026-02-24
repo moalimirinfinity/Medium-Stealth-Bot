@@ -18,6 +18,32 @@ Take the current scaffold to a production-ready local automation tool with expli
    - user id only (`user_id`)
    - `@username` is invalid for this field
 
+## Phase 0 (Foundations Baseline)
+
+### Status
+
+Completed (with ongoing capture freshness enforcement).
+
+### Scope
+
+- Capture corpus and canonical manifest as source of truth.
+- Auth/bootstrap path (`bot auth`) with explicit session material contracts.
+- Fixed product contracts and baseline runtime invariants.
+
+### Implemented in This Iteration
+
+- Explicit Phase 0 definition added to this plan.
+- Capture freshness + canonical manifest coherence checks automated via `scripts/check_capture_integrity.py`.
+- CI gate added to fail on stale or missing canonical capture files.
+
+### Exit Criteria
+
+- Canonical capture pointers in `captures/manifest.json` are valid and in sync.
+- Capture freshness policy is enforced in CI.
+- Bootstrap/auth prerequisites are documented and executable from clean checkout.
+
+---
+
 ## Phase 1 (Completed): Client Architecture — Fingerprint Alignment
 
 ### Status
@@ -63,6 +89,14 @@ In progress (parallel track with Phase 3 delivery).
   - action idempotency checks
 - Schema migration with version table + numbered SQL files.
 - UTC day-boundary budgeting enforced consistently across repository and runtime.
+
+### Implemented in This Iteration
+
+- Typed response parsing for core discovery/verify/mutation paths (`typed_payloads.py`) wired into runtime logic.
+- File-based numbered SQL migrations introduced under `src/medium_stealth_bot/migrations/` with `schema_migrations` tracking.
+- Action idempotency keys added (`action_log.action_key`) with repository-level `INSERT OR IGNORE` semantics.
+- Candidate reconciliation persistence added (`candidate_reconciliation`) and integrated into decision flow.
+- New reconciliation command path (`bot reconcile`) for scheduled live follow-state verification.
 
 ### Exit Criteria
 

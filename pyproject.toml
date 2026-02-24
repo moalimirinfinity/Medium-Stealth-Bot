@@ -26,3 +26,8 @@ packages = ["src/medium_stealth_bot"]
 
 [tool.uv]
 package = true
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+]

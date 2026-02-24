@@ -46,3 +46,16 @@ NODE_PATH="$tmpdir/node_modules" node captures/scripts/live_graphql_capture.js
 This regenerates:
 - `captures/final/live_capture_YYYY-MM-DD.json`
 - `captures/final/live_ops_YYYY-MM-DD.json`
+
+## CI Integrity Check
+
+Repository CI runs:
+
+```bash
+uv run python scripts/check_capture_integrity.py
+```
+
+This enforces:
+- canonical manifest pointers resolve to existing files
+- canonical files are marked `isCanonical` in `manifest.json`
+- capture freshness is within configured age threshold (`CAPTURE_MAX_AGE_DAYS`)

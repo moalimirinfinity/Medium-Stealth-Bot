@@ -9,13 +9,14 @@ from rich.table import Table
 from structlog import contextvars as structlog_contextvars
 
 from medium_stealth_bot import __version__
+from medium_stealth_bot.artifact_schema import validate_artifact_payload
 from medium_stealth_bot.auth import interactive_auth, upsert_env_file
 from medium_stealth_bot.client import MediumAsyncClient
 from medium_stealth_bot.contracts import ContractValidationReport, validate_contract_registry
 from medium_stealth_bot.database import Database
 from medium_stealth_bot.logging import configure_logging
 from medium_stealth_bot.logic import DailyRunner
-from medium_stealth_bot.models import AuthSessionMaterial, DailyRunOutcome, ProbeSnapshot
+from medium_stealth_bot.models import AuthSessionMaterial, DailyRunOutcome, ProbeSnapshot, ReconcileOutcome
 from medium_stealth_bot.observability import new_run_id, read_latest_run_artifact, write_run_artifact
 from medium_stealth_bot.repository import ActionRepository
 from medium_stealth_bot.safety import RiskHaltError
@@ -25,6 +26,8 @@ app = typer.Typer(
     help="Medium Stealth Bot scaffold (dual-mode GraphQL client + Playwright auth + Pydantic settings).",
     no_args_is_help=True,
 )
+artifacts_app = typer.Typer(help="Run artifact diagnostics and schema checks.")
+app.add_typer(artifacts_app, name="artifacts")
 console = Console()
 
 
@@ -102,6 +105,10 @@ def _render_daily_run(outcome: DailyRunOutcome) -> None:
         f"{outcome.follow_actions_attempted}/{outcome.follow_actions_verified}"
     )
     console.print(
+        "Clap attempted/verified: "
+        f"{outcome.clap_actions_attempted}/{outcome.clap_actions_verified}"
+    )
+    console.print(
         "Cleanup attempted/verified: "
         f"{outcome.cleanup_actions_attempted}/{outcome.cleanup_actions_verified}"
     )
@@ -123,6 +130,32 @@ def _render_daily_run(outcome: DailyRunOutcome) -> None:
             remaining = outcome.action_remaining_per_day.get(action_name, 0)
             budget_table.add_row(action_name, str(used), str(limit), str(remaining))
         console.print(budget_table)
+    if outcome.kpis:
+        kpi_table = Table(title="KPI Summary")
+        kpi_table.add_column("KPI")
+        kpi_table.add_column("Value")
+        for key, value in sorted(outcome.kpis.items()):
+            kpi_table.add_row(key, str(value))
+        console.print(kpi_table)
+    if outcome.client_metrics:
+        metrics_table = Table(title="Client Metrics")
+        metrics_table.add_column("Metric")
+        metrics_table.add_column("Value")
+        for key, value in sorted(outcome.client_metrics.items()):
+            metrics_table.add_row(key, str(value))
+        console.print(metrics_table)
+    if outcome.source_candidate_counts:
+        source_table = Table(title="Source Candidate Counts")
+        source_table.add_column("Source")
+        source_table.add_column("Candidates")
+        source_table.add_column("Verified Follows")
+        for source, count in sorted(outcome.source_candidate_counts.items()):
+            source_table.add_row(
+                source,
+                str(count),
+                str(outcome.source_follow_verified_counts.get(source, 0)),
+            )
+        console.print(source_table)
     if outcome.decision_log:
         table = Table(title="Decision Log (sample)")
         table.add_column("#")
@@ -132,6 +165,26 @@ def _render_daily_run(outcome: DailyRunOutcome) -> None:
         console.print(table)
     if outcome.probe:
         _render_probe(outcome.probe)
+
+
+def _render_reconcile_outcome(outcome: ReconcileOutcome) -> None:
+    table = Table(title="Reconcile Outcome")
+    table.add_column("Metric")
+    table.add_column("Value")
+    table.add_row("Mode", "dry-run" if outcome.dry_run else "live")
+    table.add_row("Scanned Users", str(outcome.scanned_users))
+    table.add_row("Updated Users", str(outcome.updated_users))
+    table.add_row("Following", str(outcome.following_count))
+    table.add_row("Not Following", str(outcome.not_following_count))
+    table.add_row("Unknown", str(outcome.unknown_count))
+    console.print(table)
+    if outcome.decision_log:
+        log_table = Table(title="Reconcile Decisions (sample)")
+        log_table.add_column("#")
+        log_table.add_column("Decision")
+        for idx, item in enumerate(outcome.decision_log[:20], start=1):
+            log_table.add_row(str(idx), item)
+        console.print(log_table)
 
 
 def _render_contract_validation(report: ContractValidationReport) -> None:
@@ -238,6 +291,10 @@ def _build_run_artifact_payload(
         "action_counts": {},
         "result_counts": {},
         "reason_counts": {},
+        "kpis": {},
+        "client_metrics": {},
+        "source_candidate_counts": {},
+        "source_follow_verified_counts": {},
     }
     if outcome is None:
         return payload
@@ -250,12 +307,18 @@ def _build_run_artifact_payload(
         "eligible_candidates": outcome.eligible_candidates,
         "follow_actions_attempted": outcome.follow_actions_attempted,
         "follow_actions_verified": outcome.follow_actions_verified,
+        "clap_actions_attempted": outcome.clap_actions_attempted,
+        "clap_actions_verified": outcome.clap_actions_verified,
         "cleanup_actions_attempted": outcome.cleanup_actions_attempted,
         "cleanup_actions_verified": outcome.cleanup_actions_verified,
     }
     payload["action_counts"] = outcome.action_counts_today
     payload["result_counts"] = outcome.decision_result_counts
     payload["reason_counts"] = outcome.decision_reason_counts
+    payload["kpis"] = outcome.kpis
+    payload["client_metrics"] = outcome.client_metrics
+    payload["source_candidate_counts"] = outcome.source_candidate_counts
+    payload["source_follow_verified_counts"] = outcome.source_follow_verified_counts
     payload["decision_log_sample"] = outcome.decision_log[:40]
     if outcome.probe:
         payload["probe"] = {
@@ -301,6 +364,8 @@ def _render_status(artifact: dict, *, artifact_path: Path) -> None:
             "eligible_candidates",
             "follow_actions_attempted",
             "follow_actions_verified",
+            "clap_actions_attempted",
+            "clap_actions_verified",
             "cleanup_actions_attempted",
             "cleanup_actions_verified",
         ):
@@ -312,6 +377,10 @@ def _render_status(artifact: dict, *, artifact_path: Path) -> None:
         ("Action Counts", "action_counts"),
         ("Decision Result Counts", "result_counts"),
         ("Decision Reason Counts", "reason_counts"),
+        ("KPI Summary", "kpis"),
+        ("Client Metrics", "client_metrics"),
+        ("Source Candidate Counts", "source_candidate_counts"),
+        ("Source Verified Follow Counts", "source_follow_verified_counts"),
     ):
         data = artifact.get(key)
         if isinstance(data, dict) and data:
@@ -405,6 +474,11 @@ def contracts_command(
         "--newsletter-slug",
         help="Optional newsletter slug for live NewsletterV3ViewerEdge checks.",
     ),
+    newsletter_username: str | None = typer.Option(
+        None,
+        "--newsletter-username",
+        help="Optional newsletter username paired with --newsletter-slug for live NewsletterV3ViewerEdge checks.",
+    ),
 ) -> None:
     """
     Validate implementation operation contracts against the canonical registry.
@@ -421,6 +495,7 @@ def contracts_command(
             execute_reads=execute_reads,
             settings=settings,
             live_newsletter_slug=newsletter_slug or settings.contract_registry_live_newsletter_slug,
+            live_newsletter_username=newsletter_username or settings.contract_registry_live_newsletter_username,
         )
         _render_contract_validation(report)
         if not report.ok:
@@ -510,6 +585,9 @@ def run_command(
             outcome=outcome,
             error=error_payload,
         )
+        payload_ok, payload_issues = validate_artifact_payload(artifact_payload)
+        if not payload_ok:
+            raise RuntimeError(f"run artifact payload schema validation failed: {', '.join(payload_issues)}")
         artifact_path = write_run_artifact(
             artifacts_dir=settings.run_artifacts_dir,
             run_id=run_id,
@@ -535,6 +613,63 @@ def run_command(
         structlog_contextvars.clear_contextvars()
 
 
+@app.command("reconcile")
+def reconcile_command(
+    dry_run: bool = typer.Option(
+        True,
+        "--dry-run/--live",
+        help="Dry-run only validates follow state. Live mode persists reconciliation updates.",
+    ),
+    max_users: int = typer.Option(
+        200,
+        "--limit",
+        min=1,
+        max=5000,
+        help="Max users to reconcile in this execution.",
+    ),
+    page_size: int = typer.Option(
+        50,
+        "--page-size",
+        min=1,
+        max=500,
+        help="Pagination window for candidate reconciliation scans.",
+    ),
+) -> None:
+    """
+    Reconcile local follow state against live UserViewerEdge checks.
+    """
+    settings = _bootstrap_settings()
+    if not settings.has_session:
+        raise typer.BadParameter("No MEDIUM_SESSION found. Run `uv run bot auth` first.")
+
+    run_id = new_run_id("reconcile")
+    structlog_contextvars.bind_contextvars(
+        run_id=run_id,
+        command="reconcile",
+        mode="dry_run" if dry_run else "live",
+    )
+    try:
+        _, repository = _build_runner(settings)
+
+        async def _run() -> ReconcileOutcome:
+            async with MediumAsyncClient(settings) as client:
+                runner = DailyRunner(settings=settings, client=client, repository=repository)
+                return await runner.reconcile_follow_states(
+                    dry_run=dry_run,
+                    max_users=max_users,
+                    page_size=page_size,
+                )
+
+        try:
+            outcome = asyncio.run(_run())
+        except RiskHaltError as exc:
+            _render_risk_halt(exc)
+            raise typer.Exit(code=2) from exc
+        _render_reconcile_outcome(outcome)
+    finally:
+        structlog_contextvars.clear_contextvars()
+
+
 @app.command("status")
 def status_command() -> None:
     """
@@ -549,7 +684,54 @@ def status_command() -> None:
         )
         return
     artifact, source = latest
+    ok, issues = validate_artifact_payload(artifact)
+    if not ok:
+        console.print(
+            "Latest artifact schema is invalid or unsupported. "
+            f"Issues: {', '.join(issues)}",
+            style="red",
+        )
+        raise typer.Exit(code=1)
     _render_status(artifact, artifact_path=source)
+
+
+@artifacts_app.command("validate")
+def artifacts_validate_command(
+    artifact_path: Path | None = typer.Option(
+        None,
+        "--path",
+        help="Optional path to a run artifact. Defaults to latest artifact in RUN_ARTIFACTS_DIR.",
+    ),
+) -> None:
+    """
+    Validate run artifact schema compatibility and contract shape.
+    """
+    settings = _bootstrap_settings()
+    if artifact_path is None:
+        latest = read_latest_run_artifact(settings.run_artifacts_dir)
+        if not latest:
+            console.print(f"No artifacts found in {settings.run_artifacts_dir}.", style="yellow")
+            raise typer.Exit(code=1)
+        artifact, source = latest
+    else:
+        source = artifact_path
+        try:
+            import json
+
+            payload = json.loads(source.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"Failed to read artifact: {exc}", style="red")
+            raise typer.Exit(code=1) from exc
+        artifact = payload if isinstance(payload, dict) else {}
+
+    ok, issues = validate_artifact_payload(artifact)
+    if not ok:
+        console.print(
+            f"Artifact validation failed for {source}: {', '.join(issues)}",
+            style="red",
+        )
+        raise typer.Exit(code=1)
+    console.print(f"Artifact validation passed: {source}", style="green")
 
 
 if __name__ == "__main__":

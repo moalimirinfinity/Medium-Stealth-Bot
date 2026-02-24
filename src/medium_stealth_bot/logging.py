@@ -3,6 +3,12 @@ import sys
 
 import structlog
 
+from medium_stealth_bot.redaction import redact_payload
+
+
+def _redact_event(_, __, event_dict):
+    return redact_payload(event_dict)
+
 
 def configure_logging(level: str = "INFO") -> None:
     resolved_level = getattr(logging, level.upper(), logging.INFO)
@@ -11,6 +17,7 @@ def configure_logging(level: str = "INFO") -> None:
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
+            _redact_event,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso", utc=True),
             structlog.processors.StackInfoRenderer(),

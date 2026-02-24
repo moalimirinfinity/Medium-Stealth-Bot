@@ -1,96 +1,29 @@
+import hashlib
+import re
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_V1_SQL = """
-CREATE TABLE IF NOT EXISTS users (
-    user_id TEXT PRIMARY KEY,
-    username TEXT,
-    newsletter_id TEXT,
-    bio TEXT,
-    last_scraped_at DATETIME
-);
-
-CREATE TABLE IF NOT EXISTS relationships (
-    user_id TEXT PRIMARY KEY,
-    state TEXT CHECK(state IN ('following', 'blocking', 'muted', 'none')),
-    updated_at DATETIME
-);
-
-CREATE TABLE IF NOT EXISTS action_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    action_type TEXT,
-    target_id TEXT,
-    status TEXT,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    date DATE UNIQUE,
-    follower_count INTEGER,
-    following_count INTEGER
-);
-""".strip()
-
-RELATIONSHIP_STATE_V2_SQL = """
-CREATE TABLE IF NOT EXISTS relationship_state (
-    user_id TEXT PRIMARY KEY,
-    newsletter_state TEXT NOT NULL DEFAULT 'unknown'
-        CHECK(newsletter_state IN ('subscribed', 'unsubscribed', 'unknown')),
-    user_follow_state TEXT NOT NULL DEFAULT 'unknown'
-        CHECK(user_follow_state IN ('following', 'not_following', 'unknown')),
-    confidence TEXT NOT NULL DEFAULT 'observed'
-        CHECK(confidence IN ('observed', 'inferred', 'stubbed')),
-    last_source_operation TEXT,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    last_verified_at DATETIME
-);
-
-CREATE INDEX IF NOT EXISTS idx_relationship_state_user_follow_state
-    ON relationship_state(user_follow_state);
-
-CREATE INDEX IF NOT EXISTS idx_relationship_state_newsletter_state
-    ON relationship_state(newsletter_state);
-""".strip()
-
-FOLLOW_CYCLE_V3_SQL = """
-CREATE TABLE IF NOT EXISTS follow_cycle (
-    user_id TEXT PRIMARY KEY,
-    username TEXT,
-    followed_at DATETIME NOT NULL,
-    follow_source TEXT,
-    follow_deadline_at DATETIME,
-    followed_back_at DATETIME,
-    cleanup_status TEXT NOT NULL DEFAULT 'pending'
-        CHECK(cleanup_status IN ('pending', 'followed_back', 'unfollowed_nonreciprocal', 'kept_whitelist', 'skipped')),
-    last_checked_at DATETIME,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_follow_cycle_status_followed_at
-    ON follow_cycle(cleanup_status, followed_at);
-
-CREATE TABLE IF NOT EXISTS blacklist (
-    user_id TEXT PRIMARY KEY,
-    reason TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-""".strip()
+MIGRATION_PATTERN = re.compile(r"^(\d{3})_(.+)\.sql$")
 
 
-def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
-    row = connection.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table_name,),
-    ).fetchone()
-    return row is not None
+@dataclass(frozen=True)
+class SqlMigration:
+    version: int
+    name: str
+    path: Path
+    sql: str
+    checksum: str
 
 
 class Database:
-    TARGET_SCHEMA_VERSION = 3
+    """SQLite wrapper with file-based numbered SQL migrations."""
+
+    TARGET_SCHEMA_VERSION = 4
 
     def __init__(self, path: Path):
         self.path = path
+        self._migrations_dir = Path(__file__).resolve().with_name("migrations")
 
     def connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,7 +33,12 @@ class Database:
 
     def initialize(self) -> None:
         with self.connect() as connection:
-            self._apply_migrations(connection)
+            self._ensure_schema_migrations_table(connection)
+            migrations = self._load_migrations()
+            self._apply_migrations(connection, migrations)
+            self._ensure_action_log_legacy_columns(connection)
+            self._sync_action_log_occurred_day_utc(connection)
+            self._set_schema_version(connection, self._latest_migration_version(migrations))
             connection.commit()
 
     @staticmethod
@@ -112,83 +50,106 @@ class Database:
     def _set_schema_version(connection: sqlite3.Connection, version: int) -> None:
         connection.execute(f"PRAGMA user_version = {version}")
 
-    def _apply_migrations(self, connection: sqlite3.Connection) -> None:
-        version = self._schema_version(connection)
-
-        if version < 1:
-            connection.executescript(SCHEMA_V1_SQL)
-            self._set_schema_version(connection, 1)
-            version = 1
-
-        if version < 2:
-            self._migrate_relationship_state_v2(connection)
-            self._set_schema_version(connection, 2)
-            version = 2
-
-        if version < 3:
-            self._migrate_follow_cycle_v3(connection)
-            self._set_schema_version(connection, 3)
-
-    def _migrate_relationship_state_v2(self, connection: sqlite3.Connection) -> None:
-        connection.executescript(RELATIONSHIP_STATE_V2_SQL)
-
-        if not _table_exists(connection, "relationships"):
-            return
-
+    def _ensure_schema_migrations_table(self, connection: sqlite3.Connection) -> None:
         connection.execute(
             """
-            INSERT OR IGNORE INTO relationship_state (
-                user_id,
-                newsletter_state,
-                user_follow_state,
-                confidence,
-                last_source_operation,
-                updated_at,
-                last_verified_at
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                checksum TEXT NOT NULL,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
-            SELECT
-                user_id,
-                'unknown',
-                CASE
-                    WHEN state = 'following' THEN 'following'
-                    WHEN state IN ('none', 'blocking', 'muted') THEN 'not_following'
-                    ELSE 'unknown'
-                END,
-                'inferred',
-                'legacy_relationships_state',
-                COALESCE(updated_at, CURRENT_TIMESTAMP),
-                NULL
-            FROM relationships
             """
         )
 
-    def _migrate_follow_cycle_v3(self, connection: sqlite3.Connection) -> None:
-        connection.executescript(FOLLOW_CYCLE_V3_SQL)
+    def _load_migrations(self) -> list[SqlMigration]:
+        if not self._migrations_dir.exists():
+            return []
+        migrations: list[SqlMigration] = []
+        for path in sorted(self._migrations_dir.glob("*.sql")):
+            match = MIGRATION_PATTERN.match(path.name)
+            if not match:
+                continue
+            version = int(match.group(1))
+            name = match.group(2)
+            sql = path.read_text(encoding="utf-8")
+            checksum = hashlib.sha256(sql.encode("utf-8")).hexdigest()
+            migrations.append(
+                SqlMigration(
+                    version=version,
+                    name=name,
+                    path=path,
+                    sql=sql,
+                    checksum=checksum,
+                )
+            )
+        return migrations
 
-        if not _table_exists(connection, "action_log"):
+    def _apply_migrations(self, connection: sqlite3.Connection, migrations: list[SqlMigration]) -> None:
+        for migration in migrations:
+            row = connection.execute(
+                "SELECT version, checksum FROM schema_migrations WHERE version = ?",
+                (migration.version,),
+            ).fetchone()
+            if row is not None:
+                existing_checksum = str(row["checksum"])
+                if existing_checksum != migration.checksum:
+                    raise RuntimeError(
+                        "Migration checksum mismatch for "
+                        f"version={migration.version} ({migration.path.name})."
+                    )
+                continue
+
+            connection.executescript(migration.sql)
+            connection.execute(
+                """
+                INSERT INTO schema_migrations (version, name, checksum)
+                VALUES (?, ?, ?)
+                """,
+                (migration.version, migration.name, migration.checksum),
+            )
+
+    @staticmethod
+    def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
+        row = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ).fetchone()
+        return row is not None
+
+    def _ensure_action_log_legacy_columns(self, connection: sqlite3.Connection) -> None:
+        if not self._table_exists(connection, "action_log"):
             return
-
+        rows = connection.execute("PRAGMA table_info(action_log)").fetchall()
+        existing = {str(row["name"]) for row in rows}
+        if "action_key" not in existing:
+            connection.execute("ALTER TABLE action_log ADD COLUMN action_key TEXT")
+        if "occurred_day_utc" not in existing:
+            connection.execute("ALTER TABLE action_log ADD COLUMN occurred_day_utc TEXT")
         connection.execute(
             """
-            INSERT OR IGNORE INTO follow_cycle (
-                user_id,
-                followed_at,
-                follow_source,
-                follow_deadline_at,
-                cleanup_status,
-                updated_at
-            )
-            SELECT
-                target_id,
-                MIN(timestamp) AS followed_at,
-                'legacy_action_log',
-                datetime(MIN(timestamp), '+7 day'),
-                'pending',
-                CURRENT_TIMESTAMP
-            FROM action_log
-            WHERE action_type = 'follow_verified'
-              AND target_id IS NOT NULL
-              AND TRIM(target_id) != ''
-            GROUP BY target_id
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_action_log_action_key
+                ON action_log(action_key)
+                WHERE action_key IS NOT NULL
             """
         )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_action_log_target_time
+                ON action_log(target_id, timestamp)
+            """
+        )
+
+    @staticmethod
+    def _sync_action_log_occurred_day_utc(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            UPDATE action_log
+            SET occurred_day_utc = date(COALESCE(timestamp, CURRENT_TIMESTAMP), 'utc')
+            WHERE occurred_day_utc IS NULL
+            """
+        )
+
+    @staticmethod
+    def _latest_migration_version(migrations: list[SqlMigration]) -> int:
+        return max((item.version for item in migrations), default=0)

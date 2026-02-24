@@ -28,6 +28,10 @@ class RiskGuard:
         self.log = log
         self._consecutive_failures = 0
 
+    @property
+    def consecutive_failures(self) -> int:
+        return self._consecutive_failures
+
     def evaluate_result(
         self,
         *,

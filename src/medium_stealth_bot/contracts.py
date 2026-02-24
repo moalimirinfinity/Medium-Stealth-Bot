@@ -7,7 +7,7 @@ from pathlib import Path
 
 from medium_stealth_bot import operations
 from medium_stealth_bot.client import MediumAsyncClient
-from medium_stealth_bot.contract_registry import load_operation_contract_registry
+from medium_stealth_bot.contract_registry import OperationContractRegistry, load_operation_contract_registry
 from medium_stealth_bot.models import GraphQLOperation
 from medium_stealth_bot.settings import AppSettings
 
@@ -118,6 +118,7 @@ def _live_read_operation_builders(
     tag_slug: str,
     actor_user_id: str | None,
     newsletter_slug: str | None,
+    newsletter_username: str | None,
 ) -> tuple[dict[str, GraphQLOperation], dict[str, str]]:
     builders: dict[str, GraphQLOperation] = {
         "UseBaseCacheControlQuery": operations.use_base_cache_control(),
@@ -136,8 +137,13 @@ def _live_read_operation_builders(
         skipped["UserViewerEdge"] = "missing_actor_user_id"
         skipped["UserLatestPostQuery"] = "missing_actor_user_id"
 
-    if newsletter_slug:
-        builders["NewsletterV3ViewerEdge"] = operations.newsletter_v3_viewer_edge(newsletter_slug)
+    if newsletter_slug and newsletter_username:
+        builders["NewsletterV3ViewerEdge"] = operations.newsletter_v3_viewer_edge(
+            newsletter_slug,
+            username=newsletter_username,
+        )
+    elif newsletter_slug and not newsletter_username:
+        skipped["NewsletterV3ViewerEdge"] = "missing_newsletter_username"
     else:
         skipped["NewsletterV3ViewerEdge"] = "missing_newsletter_slug"
 
@@ -147,11 +153,13 @@ def _live_read_operation_builders(
 async def _run_live_read_checks(
     *,
     settings: AppSettings,
+    contract_registry: OperationContractRegistry,
     registry_operation_names: list[str],
     read_operation_names: list[str],
     tag_slug: str,
     actor_user_id: str | None,
     newsletter_slug: str | None,
+    newsletter_username: str | None,
 ) -> list[LiveReadCheck]:
     if not settings.has_session:
         return [
@@ -166,6 +174,7 @@ async def _run_live_read_checks(
         tag_slug=tag_slug,
         actor_user_id=actor_user_id,
         newsletter_slug=newsletter_slug,
+        newsletter_username=newsletter_username,
     )
 
     checks: list[LiveReadCheck] = []
@@ -205,6 +214,17 @@ async def _run_live_read_checks(
                 continue
 
             if result.status_code == 200 and not result.has_errors:
+                if settings.contract_registry_validate_response_fields:
+                    missing_paths = contract_registry.validate_response(operation_name, result.data)
+                    if missing_paths:
+                        checks.append(
+                            LiveReadCheck(
+                                operation_name=operation_name,
+                                status="failed",
+                                detail=f"missing_paths:{','.join(missing_paths)}",
+                            )
+                        )
+                        continue
                 checks.append(
                     LiveReadCheck(
                         operation_name=operation_name,
@@ -234,6 +254,7 @@ def validate_contract_registry(
     execute_reads: bool = False,
     settings: AppSettings | None = None,
     live_newsletter_slug: str | None = None,
+    live_newsletter_username: str | None = None,
 ) -> ContractValidationReport:
     registry_resolved = registry_path
     if not registry_resolved.is_absolute():
@@ -301,11 +322,13 @@ def validate_contract_registry(
             live_checks = asyncio.run(
                 _run_live_read_checks(
                     settings=settings,
+                    contract_registry=registry,
                     registry_operation_names=registry_names,
                     read_operation_names=read_operation_names,
                     tag_slug=tag_slug,
                     actor_user_id=actor_user_id,
                     newsletter_slug=live_newsletter_slug,
+                    newsletter_username=live_newsletter_username,
                 )
             )
 

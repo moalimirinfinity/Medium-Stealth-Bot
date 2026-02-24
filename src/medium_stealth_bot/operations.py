@@ -93,6 +93,11 @@ query WhoToFollowModuleQuery {
         }
       }
     }
+    pageInfo {
+      hasNextPage
+      endCursor
+      startCursor
+    }
   }
 }
 """.strip()

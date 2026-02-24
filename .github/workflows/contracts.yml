@@ -1,11 +1,11 @@
-name: Contracts
+name: Quality Gates
 
 on:
   push:
   pull_request:
 
 jobs:
-  contracts:
+  quality:
     runs-on: ubuntu-latest
 
     steps:
@@ -16,10 +16,34 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       - name: Sync Dependencies
-        run: uv sync
+        run: uv sync --group dev
 
       - name: Compile
         run: uv run python -m compileall -q src
 
+      - name: Capture Integrity
+        env:
+          CAPTURE_MAX_AGE_DAYS: "45"
+        run: uv run python scripts/check_capture_integrity.py
+
+      - name: Response Contract Path Check
+        run: uv run python scripts/check_response_contract_paths.py
+
+      - name: Tests
+        run: uv run pytest -q
+
       - name: Validate Contract Registry
+        env:
+          CONTRACT_REGISTRY_VALIDATE_RESPONSE_FIELDS: "true"
         run: uv run bot contracts --tag programming --no-execute-reads
+
+      - name: Validate Contract Registry Live Reads
+        if: ${{ secrets.MEDIUM_SESSION != '' && secrets.MEDIUM_USER_REF != '' && vars.CONTRACT_REGISTRY_LIVE_NEWSLETTER_SLUG != '' && vars.CONTRACT_REGISTRY_LIVE_NEWSLETTER_USERNAME != '' }}
+        env:
+          MEDIUM_SESSION: ${{ secrets.MEDIUM_SESSION }}
+          MEDIUM_USER_REF: ${{ secrets.MEDIUM_USER_REF }}
+          CONTRACT_REGISTRY_LIVE_NEWSLETTER_SLUG: ${{ vars.CONTRACT_REGISTRY_LIVE_NEWSLETTER_SLUG }}
+          CONTRACT_REGISTRY_LIVE_NEWSLETTER_USERNAME: ${{ vars.CONTRACT_REGISTRY_LIVE_NEWSLETTER_USERNAME }}
+          CONTRACT_REGISTRY_VALIDATE_RESPONSE_FIELDS: "true"
+        run: |
+          uv run bot contracts --tag programming --execute-reads --newsletter-slug "$CONTRACT_REGISTRY_LIVE_NEWSLETTER_SLUG" --newsletter-username "$CONTRACT_REGISTRY_LIVE_NEWSLETTER_USERNAME"

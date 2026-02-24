@@ -51,6 +51,10 @@ class AppSettings(BaseSettings):
         default=None,
         validation_alias="CONTRACT_REGISTRY_LIVE_NEWSLETTER_SLUG",
     )
+    contract_registry_live_newsletter_username: str | None = Field(
+        default=None,
+        validation_alias="CONTRACT_REGISTRY_LIVE_NEWSLETTER_USERNAME",
+    )
     apollo_client_name: str = Field(
         default="lite",
         validation_alias="APOLLOGRAPHQL_CLIENT_NAME",
@@ -86,6 +90,8 @@ class AppSettings(BaseSettings):
         validation_alias="MAX_CLAP_ACTIONS_PER_DAY",
     )
     max_follow_actions_per_run: int = Field(default=5, ge=0, le=200, validation_alias="MAX_FOLLOW_ACTIONS_PER_RUN")
+    reconcile_scan_limit: int = Field(default=200, ge=1, le=5000, validation_alias="RECONCILE_SCAN_LIMIT")
+    reconcile_page_size: int = Field(default=50, ge=1, le=500, validation_alias="RECONCILE_PAGE_SIZE")
     follow_candidate_limit: int = Field(default=30, ge=1, le=500, validation_alias="FOLLOW_CANDIDATE_LIMIT")
     follow_cooldown_hours: int = Field(default=72, ge=1, le=24 * 60, validation_alias="FOLLOW_COOLDOWN_HOURS")
     min_following_follower_ratio: float = Field(
@@ -95,6 +101,10 @@ class AppSettings(BaseSettings):
         validation_alias="MIN_FOLLOWING_FOLLOWER_RATIO",
     )
     require_bio_keyword_match: bool = Field(default=False, validation_alias="REQUIRE_BIO_KEYWORD_MATCH")
+    score_weight_ratio: float = Field(default=1.0, ge=0.0, le=10.0, validation_alias="SCORE_WEIGHT_RATIO")
+    score_weight_keyword: float = Field(default=0.35, ge=0.0, le=10.0, validation_alias="SCORE_WEIGHT_KEYWORD")
+    score_weight_source: float = Field(default=0.2, ge=0.0, le=10.0, validation_alias="SCORE_WEIGHT_SOURCE")
+    score_weight_newsletter: float = Field(default=0.2, ge=0.0, le=10.0, validation_alias="SCORE_WEIGHT_NEWSLETTER")
     bio_keywords_raw: str = Field(
         default="coding,software,engineer,developer,python,javascript,react",
         validation_alias="BIO_KEYWORDS",
@@ -156,6 +166,13 @@ class AppSettings(BaseSettings):
     mutation_max_retries: int = Field(default=2, ge=0, le=8, validation_alias="MUTATION_MAX_RETRIES")
     retry_base_delay_seconds: float = Field(default=1.0, ge=0.0, le=60.0, validation_alias="RETRY_BASE_DELAY_SECONDS")
     retry_max_delay_seconds: float = Field(default=8.0, ge=0.0, le=300.0, validation_alias="RETRY_MAX_DELAY_SECONDS")
+    adaptive_retry_failure_multiplier: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=5.0,
+        validation_alias="ADAPTIVE_RETRY_FAILURE_MULTIPLIER",
+    )
+    operator_kill_switch: bool = Field(default=False, validation_alias="OPERATOR_KILL_SWITCH")
 
     playwright_profile_dir: Path = Field(
         default=Path(".data/playwright-profile"),
