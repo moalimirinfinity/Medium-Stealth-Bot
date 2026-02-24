@@ -21,7 +21,19 @@ from medium_stealth_bot.models import (
     UserFollowState,
 )
 from medium_stealth_bot.repository import ActionRepository
+from medium_stealth_bot.safety import RiskGuard
 from medium_stealth_bot.settings import AppSettings
+from medium_stealth_bot.timing import HumanTimingController
+
+ACTION_SUBSCRIBE = "follow_subscribe_attempt"
+ACTION_UNFOLLOW = "cleanup_unfollow"
+ACTION_CLAP = "clap_pre_follow"
+ACTION_CLAP_SKIPPED = "clap_pre_follow_skipped"
+TRACKED_DAILY_ACTION_TYPES: tuple[str, ...] = (
+    ACTION_SUBSCRIBE,
+    ACTION_UNFOLLOW,
+    ACTION_CLAP,
+)
 
 
 class DailyRunner:
@@ -30,34 +42,44 @@ class DailyRunner:
         self.client = client
         self.repository = repository
         self.log = structlog.get_logger(__name__)
+        self.risk_guard = RiskGuard(settings=settings, log=self.log)
+        self.timing = HumanTimingController(settings=settings)
 
     async def probe(self, tag_slug: str = "programming") -> ProbeSnapshot:
+        await self._maybe_sleep_session_warmup()
         started = datetime.now(timezone.utc)
         start_time = time.perf_counter()
 
         task_map: dict[str, asyncio.Task[GraphQLResult]] = {
-            "base_cache": asyncio.create_task(self._execute_safe("base_cache", operations.use_base_cache_control())),
+            "base_cache": asyncio.create_task(self._execute_with_retry("base_cache", operations.use_base_cache_control())),
             "topic_latest_stories": asyncio.create_task(
-                self._execute_safe("topic_latest_stories", operations.topic_latest_stories(tag_slug))
+                self._execute_with_retry("topic_latest_stories", operations.topic_latest_stories(tag_slug))
             ),
             "topic_who_to_follow": asyncio.create_task(
-                self._execute_safe(
+                self._execute_with_retry(
                     "topic_who_to_follow",
                     operations.topic_who_to_follow_publishers(tag_slug=tag_slug, first=5),
                 )
             ),
             "who_to_follow_module": asyncio.create_task(
-                self._execute_safe("who_to_follow_module", operations.who_to_follow_module())
+                self._execute_with_retry("who_to_follow_module", operations.who_to_follow_module())
             ),
         }
 
         # MEDIUM_USER_REF contract is user_id-only, so this check is safe when set.
         if self.settings.medium_user_ref:
             task_map["user_viewer_edge"] = asyncio.create_task(
-                self._execute_safe("user_viewer_edge", operations.user_viewer_edge(self.settings.medium_user_ref))
+                self._execute_with_retry("user_viewer_edge", operations.user_viewer_edge(self.settings.medium_user_ref))
             )
 
-        resolved = await asyncio.gather(*task_map.values())
+        try:
+            resolved = await asyncio.gather(*task_map.values())
+        except Exception:
+            for task in task_map.values():
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*task_map.values(), return_exceptions=True)
+            raise
         results = dict(zip(task_map.keys(), resolved, strict=True))
 
         duration_ms = int((time.perf_counter() - start_time) * 1000)
@@ -76,8 +98,18 @@ class DailyRunner:
         dry_run: bool = True,
         seed_user_refs: list[str] | None = None,
     ) -> DailyRunOutcome:
-        actions_today_start = self.repository.actions_today_utc()
+        actions_today_start = self.repository.actions_today_utc(TRACKED_DAILY_ACTION_TYPES)
         max_actions = self.settings.max_actions_per_day
+        action_counts = self.repository.action_counts_today_utc(TRACKED_DAILY_ACTION_TYPES)
+        action_limits = {
+            ACTION_SUBSCRIBE: self.settings.max_subscribe_actions_per_day,
+            ACTION_UNFOLLOW: self.settings.max_unfollow_actions_per_day,
+            ACTION_CLAP: self.settings.max_clap_actions_per_day,
+        }
+        action_remaining = {
+            action_type: max(0, action_limits[action_type] - action_counts.get(action_type, 0))
+            for action_type in TRACKED_DAILY_ACTION_TYPES
+        }
         if actions_today_start >= max_actions:
             self.log.info(
                 "budget_exhausted",
@@ -89,6 +121,9 @@ class DailyRunner:
                 budget_exhausted=True,
                 actions_today=actions_today_start,
                 max_actions_per_day=max_actions,
+                action_counts_today=action_counts,
+                action_limits_per_day=action_limits,
+                action_remaining_per_day=action_remaining,
                 dry_run=dry_run,
                 probe=None,
             )
@@ -107,23 +142,41 @@ class DailyRunner:
         )
 
         remaining_budget = max(0, max_actions - actions_today_start)
-        follow_slots = min(self.settings.max_follow_actions_per_run, remaining_budget, len(eligible))
-        follow_attempted, follow_verified = await self._execute_follow_pipeline(
+        follow_slots = min(
+            self.settings.max_follow_actions_per_run,
+            remaining_budget,
+            len(eligible),
+            action_remaining[ACTION_SUBSCRIBE],
+        )
+        follow_attempted, follow_verified, clap_attempted = await self._execute_follow_pipeline(
             eligible_candidates=eligible,
             max_to_run=follow_slots,
+            clap_budget_remaining=action_remaining[ACTION_CLAP],
             dry_run=dry_run,
             decisions=decisions,
         )
-        remaining_budget = max(0, remaining_budget - follow_attempted)
+        action_counts[ACTION_SUBSCRIBE] += follow_attempted
+        action_counts[ACTION_CLAP] += clap_attempted
+        action_remaining[ACTION_SUBSCRIBE] = max(0, action_limits[ACTION_SUBSCRIBE] - action_counts[ACTION_SUBSCRIBE])
+        action_remaining[ACTION_CLAP] = max(0, action_limits[ACTION_CLAP] - action_counts[ACTION_CLAP])
+        remaining_budget = max(0, remaining_budget - follow_attempted - clap_attempted)
 
-        cleanup_cap = min(self.settings.cleanup_unfollow_limit, remaining_budget)
+        cleanup_cap = min(self.settings.cleanup_unfollow_limit, remaining_budget, action_remaining[ACTION_UNFOLLOW])
         cleanup_attempted, cleanup_verified = await self._execute_cleanup_pipeline(
             dry_run=dry_run,
             max_to_run=cleanup_cap,
             decisions=decisions,
         )
+        action_counts[ACTION_UNFOLLOW] += cleanup_attempted
+        action_remaining[ACTION_UNFOLLOW] = max(0, action_limits[ACTION_UNFOLLOW] - action_counts[ACTION_UNFOLLOW])
+        decision_reason_counts, decision_result_counts = self._summarize_decisions(decisions)
+        self._emit_decision_logs(decisions)
 
-        actions_today_end = self.repository.actions_today_utc() if not dry_run else actions_today_start
+        actions_today_end = (
+            self.repository.actions_today_utc(TRACKED_DAILY_ACTION_TYPES)
+            if not dry_run
+            else actions_today_start
+        )
         self.log.info(
             "daily_cycle_complete",
             dry_run=dry_run,
@@ -131,16 +184,25 @@ class DailyRunner:
             eligible_candidates=len(eligible),
             follow_attempted=follow_attempted,
             follow_verified=follow_verified,
+            clap_attempted=clap_attempted,
             cleanup_attempted=cleanup_attempted,
             cleanup_verified=cleanup_verified,
             actions_today=actions_today_end,
             max_actions=max_actions,
+            action_counts=action_counts,
+            action_limits=action_limits,
+            action_remaining=action_remaining,
+            decision_reason_counts=decision_reason_counts,
+            decision_result_counts=decision_result_counts,
             day_boundary_policy=self.settings.day_boundary_policy,
         )
         return DailyRunOutcome(
             budget_exhausted=False,
             actions_today=actions_today_end,
             max_actions_per_day=max_actions,
+            action_counts_today=action_counts,
+            action_limits_per_day=action_limits,
+            action_remaining_per_day=action_remaining,
             dry_run=dry_run,
             considered_candidates=len(candidates),
             eligible_candidates=len(eligible),
@@ -152,6 +214,8 @@ class DailyRunner:
                 f"{item.reason} (id={item.user_id})"
                 for item in decisions[:80]
             ],
+            decision_reason_counts=decision_reason_counts,
+            decision_result_counts=decision_result_counts,
             probe=probe,
         )
 
@@ -159,7 +223,6 @@ class DailyRunner:
         try:
             return await self.client.execute(operation)
         except Exception as exc:  # noqa: BLE001
-            self.log.warning("graphql_operation_failed", task_name=task_name, error=str(exc))
             return GraphQLResult(
                 operationName=operation.operation_name,
                 statusCode=0,
@@ -167,6 +230,113 @@ class DailyRunner:
                 errors=[GraphQLError(message=str(exc))],
                 raw={"exception": str(exc)},
             )
+
+    async def _execute_with_retry(self, task_name: str, operation) -> GraphQLResult:
+        max_retries = self._retry_budget_for_task(task_name)
+        target_id = self._operation_target_id(operation)
+        attempt = 0
+        while True:
+            result = await self._execute_safe(task_name, operation)
+            retryable = self._is_retryable_result(result)
+            final_attempt = attempt >= max_retries or not retryable
+            self.risk_guard.evaluate_result(
+                task_name=task_name,
+                result=result,
+                is_final_attempt=final_attempt,
+            )
+            if final_attempt:
+                result_label = self._operation_result_label(result)
+                log_method = self.log.info if result_label == "ok" else self.log.warning
+                log_method(
+                    "operation_result",
+                    operation=task_name,
+                    target_id=target_id,
+                    decision="execute",
+                    result=result_label,
+                    status_code=result.status_code,
+                    error_count=len(result.errors),
+                    attempts=attempt + 1,
+                    max_retries=max_retries,
+                )
+                return result
+            delay = self._retry_delay_seconds(attempt)
+            self.log.warning(
+                "operation_result",
+                operation=task_name,
+                target_id=target_id,
+                decision="retry",
+                result="retry_scheduled",
+                attempt=attempt + 1,
+                max_retries=max_retries,
+                delay_seconds=round(delay, 3),
+                status_code=result.status_code,
+                error_count=len(result.errors),
+            )
+            await asyncio.sleep(delay)
+            attempt += 1
+
+    def _retry_budget_for_task(self, task_name: str) -> int:
+        lowered = task_name.lower()
+        if any(token in lowered for token in ("mutation", "subscribe", "unfollow", "clap")):
+            return self.settings.mutation_max_retries
+        if any(token in lowered for token in ("verify", "viewer_edge")):
+            return self.settings.verify_max_retries
+        return self.settings.query_max_retries
+
+    def _retry_delay_seconds(self, attempt: int) -> float:
+        base = self.settings.retry_base_delay_seconds
+        if base <= 0:
+            return 0.0
+        raw = min(self.settings.retry_max_delay_seconds, base * (2**attempt))
+        jitter = random.uniform(0.0, base)
+        return min(self.settings.retry_max_delay_seconds, raw + jitter)
+
+    @staticmethod
+    def _is_retryable_result(result: GraphQLResult) -> bool:
+        if result.status_code in {0, 408, 425, 429, 500, 502, 503, 504}:
+            return True
+        if not result.has_errors:
+            return False
+        transient_tokens = (
+            "timeout",
+            "temporar",
+            "rate limit",
+            "network",
+            "socket",
+            "tls",
+            "unavailable",
+            "internal server error",
+        )
+        for error in result.errors:
+            message = error.message.lower()
+            if any(token in message for token in transient_tokens):
+                return True
+        return False
+
+    @staticmethod
+    def _operation_result_label(result: GraphQLResult) -> str:
+        return "ok" if result.status_code == 200 and not result.has_errors else "failed"
+
+    @staticmethod
+    def _operation_target_id(operation) -> str | None:
+        variables = getattr(operation, "variables", {})
+        if not isinstance(variables, dict):
+            return None
+        keys = (
+            "userId",
+            "targetUserId",
+            "newsletterV3Id",
+            "newsletterId",
+            "postId",
+            "id",
+            "username",
+            "slug",
+        )
+        for key in keys:
+            value = variables.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return None
 
     async def _build_candidates(
         self,
@@ -178,6 +348,7 @@ class DailyRunner:
 
         self._extract_topic_latest_candidates(probe, pool)
         self._extract_topic_who_to_follow_candidates(probe, pool)
+        self._extract_who_to_follow_module_candidates(probe, pool)
         await self._extract_seed_followers_candidates(seed_user_refs, pool)
 
         for candidate in pool.values():
@@ -233,6 +404,21 @@ class DailyRunner:
             if candidate:
                 self._merge_candidate(pool, candidate)
 
+    def _extract_who_to_follow_module_candidates(self, probe: ProbeSnapshot, pool: dict[str, CandidateUser]) -> None:
+        result = probe.results.get("who_to_follow_module")
+        if not result or not result.data:
+            return
+        edges = result.data.get("recommendedPublishers", {}).get("edges", [])
+        for edge in edges:
+            if not isinstance(edge, dict):
+                continue
+            node = edge.get("node")
+            if not isinstance(node, dict) or node.get("__typename") != "User":
+                continue
+            candidate = self._candidate_from_user_node(node, source=CandidateSource.WHO_TO_FOLLOW_MODULE)
+            if candidate:
+                self._merge_candidate(pool, candidate)
+
     async def _extract_seed_followers_candidates(
         self,
         seed_user_refs: list[str],
@@ -242,7 +428,7 @@ class DailyRunner:
             user_id, username = self._parse_user_ref(seed_ref)
             if not user_id and not username:
                 continue
-            result = await self._execute_safe(
+            result = await self._execute_with_retry(
                 "seed_user_followers",
                 operations.user_followers(
                     user_id=user_id,
@@ -265,7 +451,7 @@ class DailyRunner:
                 if isinstance(item, dict) and isinstance(item.get("id"), str)
             ][: self.settings.discovery_second_hop_seed_limit]
             for root_id in second_hop_roots:
-                hop_result = await self._execute_safe(
+                hop_result = await self._execute_with_retry(
                     "seed_user_followers_second_hop",
                     operations.user_followers(
                         user_id=root_id,
@@ -419,7 +605,7 @@ class DailyRunner:
             if self.repository.has_recent_action(
                 candidate.user_id,
                 within_hours=self.settings.follow_cooldown_hours,
-                action_types=("follow_subscribe_attempt", "follow_verified", "cleanup_unfollow"),
+                action_types=(ACTION_SUBSCRIBE, "follow_verified", ACTION_UNFOLLOW),
             ):
                 decisions.append(
                     CandidateDecision(
@@ -445,7 +631,10 @@ class DailyRunner:
                 )
                 continue
 
-            edge_result = await self._execute_safe("candidate_user_viewer_edge", operations.user_viewer_edge(candidate.user_id))
+            edge_result = await self._execute_with_retry(
+                "candidate_user_viewer_edge",
+                operations.user_viewer_edge(candidate.user_id),
+            )
             is_following = self._extract_is_following(edge_result)
             if is_following is True:
                 if persist_observations:
@@ -497,15 +686,20 @@ class DailyRunner:
         *,
         eligible_candidates: list[CandidateUser],
         max_to_run: int,
+        clap_budget_remaining: int,
         dry_run: bool,
         decisions: list[CandidateDecision],
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, int]:
         attempted = 0
         verified = 0
+        clap_attempted = 0
         for candidate in eligible_candidates[:max_to_run]:
             attempted += 1
 
             if dry_run:
+                if self.settings.enable_pre_follow_clap and clap_budget_remaining > 0:
+                    clap_budget_remaining -= 1
+                    clap_attempted += 1
                 decisions.append(
                     CandidateDecision(
                         user_id=candidate.user_id,
@@ -524,15 +718,19 @@ class DailyRunner:
                 bio=candidate.bio,
             )
 
-            await self._maybe_pre_follow_clap(candidate)
+            clap_used = await self._maybe_pre_follow_clap(candidate, clap_budget_remaining=clap_budget_remaining)
+            if clap_used:
+                clap_budget_remaining -= 1
+                clap_attempted += 1
 
-            mutation = await self._execute_safe(
+            await self._sleep_action_gap(action_type=ACTION_SUBSCRIBE, target_user_id=candidate.user_id)
+            mutation = await self._execute_with_retry(
                 "follow_subscribe_mutation",
                 operations.subscribe_newsletter_v3(candidate.newsletter_v3_id),
             )
             mutation_ok = mutation.status_code == 200 and not mutation.has_errors
             self.repository.record_action(
-                "follow_subscribe_attempt",
+                ACTION_SUBSCRIBE,
                 candidate.user_id,
                 "ok" if mutation_ok else "failed",
             )
@@ -548,7 +746,10 @@ class DailyRunner:
                 )
                 continue
 
-            verify = await self._execute_safe("follow_verify_user_viewer_edge", operations.user_viewer_edge(candidate.user_id))
+            verify = await self._execute_with_retry(
+                "follow_verify_user_viewer_edge",
+                operations.user_viewer_edge(candidate.user_id),
+            )
             is_following = self._extract_is_following(verify)
             if is_following is True:
                 verified += 1
@@ -596,18 +797,18 @@ class DailyRunner:
                     )
                 )
 
-            if attempted < max_to_run:
-                await self._sleep_action_gap()
+        return attempted, verified, clap_attempted
 
-        return attempted, verified
-
-    async def _maybe_pre_follow_clap(self, candidate: CandidateUser) -> None:
+    async def _maybe_pre_follow_clap(self, candidate: CandidateUser, *, clap_budget_remaining: int) -> bool:
         if not self.settings.enable_pre_follow_clap:
-            return
+            return False
+        if clap_budget_remaining <= 0:
+            self.repository.record_action(ACTION_CLAP_SKIPPED, candidate.user_id, "budget_exhausted")
+            return False
 
         post_id = candidate.latest_post_id
         if not post_id:
-            latest_post = await self._execute_safe(
+            latest_post = await self._execute_with_retry(
                 "pre_follow_latest_post",
                 operations.user_latest_post(user_id=candidate.user_id, username=candidate.username),
             )
@@ -616,23 +817,30 @@ class DailyRunner:
                 candidate.latest_post_id = post_id
 
         if not post_id:
-            self.repository.record_action("clap_pre_follow", candidate.user_id, "skipped_no_post")
-            return
+            self.repository.record_action(ACTION_CLAP_SKIPPED, candidate.user_id, "no_post")
+            return False
 
         if self.settings.pre_follow_read_wait_seconds > 0:
-            await self._sleep_read_delay()
+            await self._sleep_read_delay(target_user_id=candidate.user_id)
+
+        actor_user_id = self.settings.medium_user_ref
+        if not actor_user_id:
+            self.repository.record_action(ACTION_CLAP_SKIPPED, candidate.user_id, "missing_actor_user_id")
+            return False
 
         clap_count = random.randint(self.settings.min_clap_count, self.settings.max_clap_count)
-        clap_result = await self._execute_safe(
+        await self._sleep_action_gap(action_type=ACTION_CLAP, target_user_id=candidate.user_id)
+        clap_result = await self._execute_with_retry(
             "clap_pre_follow",
-            operations.clap_post(post_id, candidate.user_id, num_claps=clap_count),
+            operations.clap_post(post_id, actor_user_id, num_claps=clap_count),
         )
         clap_ok = clap_result.status_code == 200 and not clap_result.has_errors
         self.repository.record_action(
-            "clap_pre_follow",
+            ACTION_CLAP,
             candidate.user_id,
             f"{'ok' if clap_ok else 'failed'}:{clap_count}",
         )
+        return True
 
     async def _execute_cleanup_pipeline(
         self,
@@ -687,10 +895,11 @@ class DailyRunner:
                 )
                 continue
 
-            mutation = await self._execute_safe("cleanup_unfollow", operations.unfollow_user(user_id))
+            await self._sleep_action_gap(action_type=ACTION_UNFOLLOW, target_user_id=user_id)
+            mutation = await self._execute_with_retry("cleanup_unfollow", operations.unfollow_user(user_id))
             mutation_ok = mutation.status_code == 200 and not mutation.has_errors
             if not mutation_ok:
-                self.repository.record_action("cleanup_unfollow", user_id, "mutation_failed")
+                self.repository.record_action(ACTION_UNFOLLOW, user_id, "mutation_failed")
                 decisions.append(
                     CandidateDecision(
                         user_id=user_id,
@@ -701,12 +910,12 @@ class DailyRunner:
                 )
                 continue
 
-            verify = await self._execute_safe("cleanup_verify", operations.user_viewer_edge(user_id))
+            verify = await self._execute_with_retry("cleanup_verify", operations.user_viewer_edge(user_id))
             is_following = self._extract_is_following(verify)
             if is_following is False:
                 verified += 1
                 self.repository.mark_nonreciprocal_unfollowed(user_id)
-                self.repository.record_action("cleanup_unfollow", user_id, "verified_not_following")
+                self.repository.record_action(ACTION_UNFOLLOW, user_id, "verified_not_following")
                 self.repository.upsert_relationship_state(
                     user_id,
                     newsletter_state=NewsletterState.UNKNOWN,
@@ -725,7 +934,7 @@ class DailyRunner:
                 )
             else:
                 self.repository.mark_cleanup_checked(user_id)
-                self.repository.record_action("cleanup_unfollow", user_id, "verification_uncertain")
+                self.repository.record_action(ACTION_UNFOLLOW, user_id, "verification_uncertain")
                 decisions.append(
                     CandidateDecision(
                         user_id=user_id,
@@ -735,15 +944,12 @@ class DailyRunner:
                     )
                 )
 
-            if attempted < max_to_run:
-                await self._sleep_action_gap()
-
         return attempted, verified
 
     async def _fetch_own_follower_ids(self, limit: int) -> set[str]:
         if not self.settings.medium_user_ref:
             return set()
-        result = await self._execute_safe(
+        result = await self._execute_with_retry(
             "own_followers_scan",
             operations.user_followers(user_id=self.settings.medium_user_ref, limit=limit),
         )
@@ -810,26 +1016,76 @@ class DailyRunner:
         normalized = bio.lower()
         return [keyword for keyword in self.settings.bio_keywords if keyword in normalized]
 
-    async def _sleep_action_gap(self) -> None:
-        if self.settings.max_action_gap_seconds <= 0:
+    async def _sleep_action_gap(self, *, action_type: str, target_user_id: str) -> None:
+        delay = await self.timing.sleep_action_gap()
+        if delay <= 0:
             return
-        low = float(self.settings.min_action_gap_seconds)
-        high = float(self.settings.max_action_gap_seconds)
-        if high <= low:
-            await asyncio.sleep(low)
-            return
-        # Clamp a gaussian sample so action intervals are non-uniform but bounded.
-        mean = (low + high) / 2.0
-        stddev = max((high - low) / 6.0, 0.1)
-        sampled = random.gauss(mean, stddev)
-        await asyncio.sleep(max(low, min(high, sampled)))
+        self.log.info(
+            "action_gap_sleep",
+            action_type=action_type,
+            target_user_id=target_user_id,
+            delay_seconds=round(delay, 3),
+            min_gap_seconds=self.settings.min_action_gap_seconds,
+            max_gap_seconds=self.settings.max_action_gap_seconds,
+        )
 
-    async def _sleep_read_delay(self) -> None:
-        base = float(self.settings.pre_follow_read_wait_seconds)
-        low = max(0.0, min(float(self.settings.min_read_wait_seconds), base))
-        high = max(float(self.settings.max_read_wait_seconds), base)
-        if high <= low:
-            await asyncio.sleep(base)
+    async def _sleep_read_delay(self, *, target_user_id: str) -> None:
+        delay = await self.timing.sleep_read_delay()
+        if delay <= 0:
             return
-        sampled = random.uniform(low, high)
-        await asyncio.sleep(max(low, min(high, sampled)))
+        self.log.info(
+            "pre_follow_read_sleep",
+            target_user_id=target_user_id,
+            delay_seconds=round(delay, 3),
+            min_read_wait_seconds=self.settings.min_read_wait_seconds,
+            max_read_wait_seconds=self.settings.max_read_wait_seconds,
+        )
+
+    async def _maybe_sleep_session_warmup(self) -> None:
+        delay = await self.timing.maybe_sleep_session_warmup()
+        if delay <= 0:
+            return
+        self.log.info(
+            "session_warmup_sleep",
+            delay_seconds=round(delay, 3),
+            min_session_warmup_seconds=self.settings.min_session_warmup_seconds,
+            max_session_warmup_seconds=self.settings.max_session_warmup_seconds,
+        )
+
+    def _emit_decision_logs(self, decisions: list[CandidateDecision]) -> None:
+        for item in decisions:
+            self.log.info(
+                "candidate_decision",
+                operation="decision_pipeline",
+                target_id=item.user_id,
+                decision="eligible" if item.eligible else "skip",
+                result=self._decision_result_label(item),
+                reason=item.reason,
+                score=round(item.score, 4),
+            )
+
+    def _summarize_decisions(self, decisions: list[CandidateDecision]) -> tuple[dict[str, int], dict[str, int]]:
+        reason_counts: dict[str, int] = {}
+        result_counts: dict[str, int] = {}
+        for item in decisions:
+            reason_counts[item.reason] = reason_counts.get(item.reason, 0) + 1
+            result = self._decision_result_label(item)
+            result_counts[result] = result_counts.get(result, 0) + 1
+        return reason_counts, result_counts
+
+    @staticmethod
+    def _decision_result_label(item: CandidateDecision) -> str:
+        reason = item.reason
+        if reason.startswith("follow_success") or reason == "cleanup:unfollow_verified":
+            return "success"
+        if reason.startswith("dry_run:") or reason == "cleanup:dry_run_unfollow_nonreciprocal":
+            return "planned"
+        if reason.startswith("skip:") or reason == "cleanup:kept_followed_back":
+            return "skipped"
+        if "failed" in reason or "uncertain" in reason or "unavailable" in reason:
+            return "failed"
+        if reason == "eligible":
+            return "eligible"
+        if reason.startswith("cleanup:"):
+            return "cleanup"
+        return "info"
