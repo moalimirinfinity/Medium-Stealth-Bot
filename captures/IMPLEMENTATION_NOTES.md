@@ -3,6 +3,9 @@
 ## Canonical Capture
 Use `captures/final/live_capture_2026-02-24.json` as primary truth for implementation.
 Use `captures/final/implementation_ops_2026-02-24.json` as the focused operation subset for coding.
+The focused subset is runtime-aligned: capture-observed operations plus the runtime helper `UserLatestPostQuery`.
+The subset is also a machine-readable operation registry with per-operation `classification`, `riskLevel`,
+`requiredVariableKeys`, `optionalVariableKeys`, and `expectedTopLevelResponseFields`.
 
 ## Endpoint
 - GraphQL endpoint: `https://medium.com/_/graphql`
@@ -50,9 +53,11 @@ Single request shape:
 
 ### Discover Targets
 - Operations:
+  - `UseBaseCacheControlQuery`
   - `TopicLatestStorieQuery`
   - `TopicWhoToFollowPubishersQuery`
   - `WhoToFollowModuleQuery`
+  - `UserLatestPostQuery` (runtime helper for optional pre-follow clap target resolution)
   - `NewsletterV3ViewerEdge`
 
 ## Safety Notes
@@ -65,3 +70,10 @@ Single request shape:
 2. Never infer `user_follow` from newsletter subscription alone.
 3. Verify follow state with `UserViewerEdge` after follow/unfollow decisions.
 4. Persist both `user_id` and `newsletter_v3_id` in storage.
+5. Validate outgoing operations against the registry contract before request execution.
+
+## Classification Taxonomy
+- `read`: no intended state change.
+- `mutation`: state-changing operation.
+- `state-verify`: canonical verification read (`UserViewerEdge`, `NewsletterV3ViewerEdge`).
+- `high-risk`: mutation with account-visible side effects.
