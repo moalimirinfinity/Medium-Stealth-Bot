@@ -19,7 +19,13 @@ query TopicLatestStorieQuery($tagSlug: String!) {
           title
           creator {
             id
+            name
             username
+            bio
+            socialStats {
+              followerCount
+              followingCount
+            }
             newsletterV3 {
               id
             }
@@ -41,6 +47,11 @@ query TopicWhoToFollowPubishersQuery($first: Int!, $after: String!, $mode: Recom
           id
           name
           username
+          bio
+          socialStats {
+            followerCount
+            followingCount
+          }
           newsletterV3 {
             id
           }
@@ -71,7 +82,64 @@ query WhoToFollowModuleQuery {
           id
           name
           username
+          bio
+          socialStats {
+            followerCount
+            followingCount
+          }
           newsletterV3 {
+            id
+          }
+        }
+      }
+    }
+  }
+}
+""".strip()
+
+USER_FOLLOWERS_QUERY = """
+query UserFollowers($username: ID, $id: ID, $paging: PagingOptions) {
+  userResult(username: $username, id: $id) {
+    __typename
+    ... on User {
+      id
+      followersUserConnection(paging: $paging) {
+        users {
+          id
+          name
+          username
+          bio
+          socialStats {
+            followerCount
+            followingCount
+          }
+          newsletterV3 {
+            id
+          }
+        }
+        pagingInfo {
+          next {
+            from
+            limit
+          }
+        }
+      }
+    }
+  }
+}
+""".strip()
+
+USER_LATEST_POST_QUERY = """
+query UserLatestPostQuery($id: ID, $username: ID) {
+  userResult(id: $id, username: $username) {
+    __typename
+    ... on User {
+      id
+      homepagePostsConnection(paging: {limit: 1}) {
+        posts {
+          id
+          title
+          creator {
             id
           }
         }
@@ -196,6 +264,32 @@ def who_to_follow_module() -> GraphQLOperation:
         operationName="WhoToFollowModuleQuery",
         query=WHO_TO_FOLLOW_MODULE_QUERY,
         variables={},
+    )
+
+
+def user_followers(
+    *,
+    user_id: str | None = None,
+    username: str | None = None,
+    limit: int = 8,
+    paging_from: str | None = None,
+) -> GraphQLOperation:
+    return GraphQLOperation(
+        operationName="UserFollowers",
+        query=USER_FOLLOWERS_QUERY,
+        variables={
+            "id": user_id,
+            "username": username,
+            "paging": {"limit": limit, "from": paging_from or ""},
+        },
+    )
+
+
+def user_latest_post(*, user_id: str | None = None, username: str | None = None) -> GraphQLOperation:
+    return GraphQLOperation(
+        operationName="UserLatestPostQuery",
+        query=USER_LATEST_POST_QUERY,
+        variables={"id": user_id, "username": username},
     )
 
 
