@@ -10,7 +10,8 @@ Implementation-ready GraphQL capture pack for Medium web flows.
   - Compact operation summary derived from the live capture.
   - Includes operation list, mutation list, variable key sets, hit counts, and sample page URLs.
 - `final/implementation_ops_2026-02-24.json`
-  - Curated subset of core operations needed for bot implementation (follow/unfollow/discovery/state checks).
+  - Curated runtime-aligned subset of core operations needed for bot implementation (follow/unfollow/discovery/state checks + helper reads).
+  - Includes operation-registry metadata: `classification`, `riskLevel`, variable contracts, and expected response fields.
 - `FOLLOW_ACTION_NOTE.md`
   - Follow/unfollow semantics and how to classify state transitions for implementation.
 - `IMPLEMENTATION_NOTES.md`
