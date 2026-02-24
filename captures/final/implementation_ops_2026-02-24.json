@@ -1,35 +1,57 @@
 {
-  "capturedAt": "2026-02-24T02:35:15.188Z",
+  "capturedAt": "2026-02-24T08:54:30.118Z",
   "sourceCapture": "captures/final/live_capture_2026-02-24.json",
   "endpoint": "https://medium.com/_/graphql",
+  "registryVersion": 2,
+  "classificationTaxonomy": {
+    "labels": [
+      "read",
+      "mutation",
+      "state-verify",
+      "high-risk"
+    ],
+    "notes": {
+      "read": "No intended state change.",
+      "mutation": "State-changing operation.",
+      "state-verify": "Read operation used as canonical state verification signal.",
+      "high-risk": "Mutation with account-visible side effects or abuse-sensitivity."
+    }
+  },
   "coreOperations": [
     {
-      "operationName": "ClapMutation",
-      "hits": 2,
-      "stubbedHits": 2,
-      "nonStubbedHits": 0,
-      "evidence": "probe_stubbed_only",
+      "operationName": "UseBaseCacheControlQuery",
+      "hits": 4,
+      "stubbedHits": 0,
+      "nonStubbedHits": 4,
+      "evidence": "live_ui_observed",
       "statusCodes": [
         200
       ],
       "variableKeySets": [
-        [
-          "numClaps",
-          "targetPostId",
-          "userId"
-        ]
+        []
       ],
       "samplePageUrls": [
+        "https://medium.com/me/followers",
+        "https://medium.com/me/following",
         "https://medium.com/tag/programming",
         "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
       ],
       "sampleRequestUrls": [
         "https://medium.com/_/graphql",
         "https://thilo-hermann.medium.com/_/graphql"
+      ],
+      "classification": [
+        "read"
+      ],
+      "riskLevel": "low",
+      "requiredVariableKeys": [],
+      "optionalVariableKeys": [],
+      "expectedTopLevelResponseFields": [
+        "viewer"
       ]
     },
     {
-      "operationName": "InteractivePostBodyQuery",
+      "operationName": "TopicLatestStorieQuery",
       "hits": 1,
       "stubbedHits": 0,
       "nonStubbedHits": 1,
@@ -39,16 +61,169 @@
       ],
       "variableKeySets": [
         [
-          "includeHighlightResponseGroups",
-          "postId",
-          "showNotes"
+          "tagSlug"
         ]
       ],
       "samplePageUrls": [
+        "https://medium.com/tag/programming"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ],
+      "classification": [
+        "read"
+      ],
+      "riskLevel": "low",
+      "requiredVariableKeys": [
+        "tagSlug"
+      ],
+      "optionalVariableKeys": [],
+      "expectedTopLevelResponseFields": [
+        "tagFromSlug.posts.edges"
+      ]
+    },
+    {
+      "operationName": "TopicWhoToFollowPubishersQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "after",
+          "first",
+          "mode",
+          "tagSlug"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/tag/programming"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ],
+      "classification": [
+        "read"
+      ],
+      "riskLevel": "low",
+      "requiredVariableKeys": [
+        "first",
+        "after"
+      ],
+      "optionalVariableKeys": [
+        "mode",
+        "tagSlug"
+      ],
+      "expectedTopLevelResponseFields": [
+        "recommendedPublishers.edges",
+        "recommendedPublishers.pageInfo"
+      ]
+    },
+    {
+      "operationName": "WhoToFollowModuleQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        []
+      ],
+      "samplePageUrls": [
+        "https://medium.com/me/following"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ],
+      "classification": [
+        "read"
+      ],
+      "riskLevel": "low",
+      "requiredVariableKeys": [],
+      "optionalVariableKeys": [],
+      "expectedTopLevelResponseFields": [
+        "recommendedPublishers.edges",
+        "recommendedPublishers.pageInfo"
+      ]
+    },
+    {
+      "operationName": "UserFollowers",
+      "hits": 2,
+      "stubbedHits": 0,
+      "nonStubbedHits": 2,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "id",
+          "paging",
+          "username"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/@moalimirinfinity/followers"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ],
+      "classification": [
+        "read"
+      ],
+      "riskLevel": "low",
+      "requiredVariableKeys": [],
+      "optionalVariableKeys": [
+        "id",
+        "username",
+        "paging"
+      ],
+      "expectedTopLevelResponseFields": [
+        "userResult.followersUserConnection.users",
+        "userResult.followersUserConnection.pagingInfo"
+      ]
+    },
+    {
+      "operationName": "UserViewerEdge",
+      "hits": 27,
+      "stubbedHits": 0,
+      "nonStubbedHits": 27,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "userId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/@moalimirinfinity",
+        "https://medium.com/@moalimirinfinity/followers",
+        "https://medium.com/me/following",
+        "https://medium.com/tag/programming",
         "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
       ],
       "sampleRequestUrls": [
+        "https://medium.com/_/graphql",
         "https://thilo-hermann.medium.com/_/graphql"
+      ],
+      "classification": [
+        "read",
+        "state-verify"
+      ],
+      "riskLevel": "low",
+      "requiredVariableKeys": [
+        "userId"
+      ],
+      "optionalVariableKeys": [],
+      "expectedTopLevelResponseFields": [
+        "user.viewerEdge.isFollowing"
       ]
     },
     {
@@ -76,29 +251,192 @@
       "sampleRequestUrls": [
         "https://medium.com/_/graphql",
         "https://thilo-hermann.medium.com/_/graphql"
+      ],
+      "classification": [
+        "read",
+        "state-verify"
+      ],
+      "riskLevel": "low",
+      "requiredVariableKeys": [
+        "newsletterSlug"
+      ],
+      "optionalVariableKeys": [
+        "collectionSlug",
+        "username"
+      ],
+      "expectedTopLevelResponseFields": [
+        "newsletterV3.viewerEdge.isSubscribed"
       ]
     },
     {
-      "operationName": "PostResponsesQuery",
-      "hits": 1,
+      "operationName": "UserLatestPostQuery",
+      "hits": 0,
       "stubbedHits": 0,
-      "nonStubbedHits": 1,
-      "evidence": "live_ui_observed",
+      "nonStubbedHits": 0,
+      "evidence": "runtime_defined_not_capture_observed",
+      "statusCodes": [],
+      "variableKeySets": [
+        [
+          "id",
+          "username"
+        ]
+      ],
+      "samplePageUrls": [],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ],
+      "classification": [
+        "read"
+      ],
+      "riskLevel": "low",
+      "requiredVariableKeys": [],
+      "optionalVariableKeys": [
+        "id",
+        "username"
+      ],
+      "expectedTopLevelResponseFields": [
+        "userResult.homepagePostsConnection.posts"
+      ]
+    },
+    {
+      "operationName": "SubscribeNewsletterV3Mutation",
+      "hits": 1,
+      "stubbedHits": 1,
+      "nonStubbedHits": 0,
+      "evidence": "probe_stubbed_only",
       "statusCodes": [
         200
       ],
       "variableKeySets": [
         [
-          "paging",
-          "postId",
-          "sortType"
+          "newsletterV3Id",
+          "shouldRecordConsent"
         ]
       ],
       "samplePageUrls": [
+        "https://medium.com/tag/programming"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ],
+      "classification": [
+        "mutation",
+        "high-risk"
+      ],
+      "riskLevel": "high",
+      "requiredVariableKeys": [
+        "newsletterV3Id"
+      ],
+      "optionalVariableKeys": [
+        "shouldRecordConsent"
+      ],
+      "expectedTopLevelResponseFields": [
+        "subscribeNewsletterV3"
+      ]
+    },
+    {
+      "operationName": "UnsubscribeNewsletterV3Mutation",
+      "hits": 1,
+      "stubbedHits": 1,
+      "nonStubbedHits": 0,
+      "evidence": "probe_stubbed_only",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "newsletterV3Id"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/tag/programming"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ],
+      "classification": [
+        "mutation",
+        "high-risk"
+      ],
+      "riskLevel": "high",
+      "requiredVariableKeys": [
+        "newsletterV3Id"
+      ],
+      "optionalVariableKeys": [],
+      "expectedTopLevelResponseFields": [
+        "unsubscribeNewsletterV3"
+      ]
+    },
+    {
+      "operationName": "UnfollowUserMutation",
+      "hits": 1,
+      "stubbedHits": 1,
+      "nonStubbedHits": 0,
+      "evidence": "probe_stubbed_only",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "targetUserId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/tag/programming"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ],
+      "classification": [
+        "mutation",
+        "high-risk"
+      ],
+      "riskLevel": "high",
+      "requiredVariableKeys": [
+        "targetUserId"
+      ],
+      "optionalVariableKeys": [],
+      "expectedTopLevelResponseFields": [
+        "unfollowUser.viewerEdge.isFollowing"
+      ]
+    },
+    {
+      "operationName": "ClapMutation",
+      "hits": 2,
+      "stubbedHits": 2,
+      "nonStubbedHits": 0,
+      "evidence": "probe_stubbed_only",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "numClaps",
+          "targetPostId",
+          "userId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/tag/programming",
         "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
       ],
       "sampleRequestUrls": [
+        "https://medium.com/_/graphql",
         "https://thilo-hermann.medium.com/_/graphql"
+      ],
+      "classification": [
+        "mutation",
+        "high-risk"
+      ],
+      "riskLevel": "high",
+      "requiredVariableKeys": [
+        "targetPostId",
+        "userId",
+        "numClaps"
+      ],
+      "optionalVariableKeys": [],
+      "expectedTopLevelResponseFields": [
+        "clap.clapCount"
       ]
     },
     {
@@ -124,183 +462,23 @@
       ],
       "sampleRequestUrls": [
         "https://medium.com/_/graphql"
-      ]
-    },
-    {
-      "operationName": "SubscribeNewsletterV3Mutation",
-      "hits": 1,
-      "stubbedHits": 1,
-      "nonStubbedHits": 0,
-      "evidence": "probe_stubbed_only",
-      "statusCodes": [
-        200
       ],
-      "variableKeySets": [
-        [
-          "newsletterV3Id",
-          "shouldRecordConsent"
-        ]
+      "classification": [
+        "mutation",
+        "high-risk"
       ],
-      "samplePageUrls": [
-        "https://medium.com/tag/programming"
+      "riskLevel": "high",
+      "requiredVariableKeys": [
+        "inResponseToPostId",
+        "deltas"
       ],
-      "sampleRequestUrls": [
-        "https://medium.com/_/graphql"
-      ]
-    },
-    {
-      "operationName": "TopicLatestStorieQuery",
-      "hits": 1,
-      "stubbedHits": 0,
-      "nonStubbedHits": 1,
-      "evidence": "live_ui_observed",
-      "statusCodes": [
-        200
+      "optionalVariableKeys": [
+        "inResponseToQuoteId",
+        "responseDistribution",
+        "sortType"
       ],
-      "variableKeySets": [
-        [
-          "tagSlug"
-        ]
-      ],
-      "samplePageUrls": [
-        "https://medium.com/tag/programming"
-      ],
-      "sampleRequestUrls": [
-        "https://medium.com/_/graphql"
-      ]
-    },
-    {
-      "operationName": "TopicWhoToFollowPubishersQuery",
-      "hits": 1,
-      "stubbedHits": 0,
-      "nonStubbedHits": 1,
-      "evidence": "live_ui_observed",
-      "statusCodes": [
-        200
-      ],
-      "variableKeySets": [
-        [
-          "after",
-          "first",
-          "mode",
-          "tagSlug"
-        ]
-      ],
-      "samplePageUrls": [
-        "https://medium.com/tag/programming"
-      ],
-      "sampleRequestUrls": [
-        "https://medium.com/_/graphql"
-      ]
-    },
-    {
-      "operationName": "UnfollowUserMutation",
-      "hits": 1,
-      "stubbedHits": 1,
-      "nonStubbedHits": 0,
-      "evidence": "probe_stubbed_only",
-      "statusCodes": [
-        200
-      ],
-      "variableKeySets": [
-        [
-          "targetUserId"
-        ]
-      ],
-      "samplePageUrls": [
-        "https://medium.com/tag/programming"
-      ],
-      "sampleRequestUrls": [
-        "https://medium.com/_/graphql"
-      ]
-    },
-    {
-      "operationName": "UnsubscribeNewsletterV3Mutation",
-      "hits": 1,
-      "stubbedHits": 1,
-      "nonStubbedHits": 0,
-      "evidence": "probe_stubbed_only",
-      "statusCodes": [
-        200
-      ],
-      "variableKeySets": [
-        [
-          "newsletterV3Id"
-        ]
-      ],
-      "samplePageUrls": [
-        "https://medium.com/tag/programming"
-      ],
-      "sampleRequestUrls": [
-        "https://medium.com/_/graphql"
-      ]
-    },
-    {
-      "operationName": "UserFollowers",
-      "hits": 2,
-      "stubbedHits": 0,
-      "nonStubbedHits": 2,
-      "evidence": "live_ui_observed",
-      "statusCodes": [
-        200
-      ],
-      "variableKeySets": [
-        [
-          "id",
-          "paging",
-          "username"
-        ]
-      ],
-      "samplePageUrls": [
-        "https://medium.com/@moalimirinfinity/followers"
-      ],
-      "sampleRequestUrls": [
-        "https://medium.com/_/graphql"
-      ]
-    },
-    {
-      "operationName": "UserViewerEdge",
-      "hits": 27,
-      "stubbedHits": 0,
-      "nonStubbedHits": 27,
-      "evidence": "live_ui_observed",
-      "statusCodes": [
-        200
-      ],
-      "variableKeySets": [
-        [
-          "userId"
-        ]
-      ],
-      "samplePageUrls": [
-        "https://medium.com/@moalimirinfinity",
-        "https://medium.com/@moalimirinfinity/followers",
-        "https://medium.com/me/following",
-        "https://medium.com/tag/programming",
-        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
-      ],
-      "sampleRequestUrls": [
-        "https://medium.com/_/graphql",
-        "https://thilo-hermann.medium.com/_/graphql"
-      ]
-    },
-    {
-      "operationName": "WhoToFollowModuleQuery",
-      "hits": 1,
-      "stubbedHits": 0,
-      "nonStubbedHits": 1,
-      "evidence": "live_ui_observed",
-      "statusCodes": [
-        200
-      ],
-      "variableKeySets": [
-        []
-      ],
-      "samplePageUrls": [
-        "https://medium.com/me/following"
-      ],
-      "sampleRequestUrls": [
-        "https://medium.com/_/graphql"
+      "expectedTopLevelResponseFields": [
+        "publishPostThreadedResponse.id"
       ]
     }
   ]
