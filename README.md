@@ -43,21 +43,45 @@ This captures and writes:
 
 ```bash
 uv run bot probe --tag programming
-uv run bot run --tag programming
+uv run bot run --tag programming --dry-run
+uv run bot run --tag programming --live --seed-user @some_creator
 ```
 
 - `probe`: parallel read-only GraphQL checks for current session health.
-- `run`: budget gate + probe scaffold for daily execution.
+- `run`: discovery + scoring + eligibility checks + follow pipeline + non-reciprocal cleanup.
+  - Candidate sources: topic stories, who-to-follow module, optional followers-of-seed users.
+  - Dry-run mode simulates actions and logs decisions without sending follow/unfollow/clap mutations.
+  - Live mode executes subscribe/unfollow/clap mutations with immediate follow-state verification.
 
 ## Configuration
 
 Primary runtime env vars are documented in `.env.example`. Key ones:
 
 - `CLIENT_MODE=stealth|fast`
+- `DAY_BOUNDARY_POLICY=utc`
 - `PLAYWRIGHT_PROFILE_DIR=.data/playwright-profile`
 - `PLAYWRIGHT_HEADLESS=true|false`
 - `MAX_ACTIONS_PER_DAY`
+- `MAX_FOLLOW_ACTIONS_PER_RUN`
+- `FOLLOW_CANDIDATE_LIMIT`
+- `FOLLOW_COOLDOWN_HOURS`
+- `MIN_FOLLOWING_FOLLOWER_RATIO`
+- `BIO_KEYWORDS`
+- `DISCOVERY_FOLLOWERS_DEPTH`
+- `DISCOVERY_SECOND_HOP_SEED_LIMIT`
+- `UNFOLLOW_NONRECIPROCAL_AFTER_DAYS`
+- `ENABLE_PRE_FOLLOW_CLAP`
 - `GRAPHQL_ENDPOINT`
+- `MEDIUM_USER_REF=<user_id>` (explicitly a Medium `user_id`, not `@username`)
+
+## Product Rules
+
+- Canonical relationship model is two-dimensional:
+  - `newsletter_state`: `subscribed | unsubscribed | unknown`
+  - `user_follow_state`: `following | not_following | unknown`
+- Daily budget is always computed on UTC calendar boundaries.
+- `MEDIUM_USER_REF` is treated as `user_id` only for `UserViewerEdge` verification.
+- Newsletter subscribe state is never treated as guaranteed user-follow state.
 
 ## Repository Layout
 
