@@ -1,175 +1,211 @@
 # Medium Stealth Bot
 
-Local-first Medium automation scaffold focused on stealth-safe execution and capture-driven API contracts.
+Local-first Medium automation focused on safety guardrails, capture-driven contracts, and auditable local state.
+
+## What It Does
+
+- Runs Medium discovery/follow/cleanup loops with strict daily budgets.
+- Verifies follow state using canonical read checks.
+- Persists decisions and outcomes into local SQLite state.
+- Emits machine-readable run artifacts for diagnostics.
 
 ## Stack
 
-- `uv` + `pyproject.toml` (single Python project config)
-- `Pydantic v2` + `pydantic-settings` (typed env/config)
-- `asyncio` orchestration
-- Dual network clients:
-  - `CLIENT_MODE=stealth` (default): Playwright persistent profile + `APIRequestContext`
-  - `CLIENT_MODE=fast`: `curl-cffi` async session (`impersonate="chrome142"`)
-- `structlog` JSON logging
-- `Typer` + `Rich` CLI
-- `SQLite` local state
+- `uv` + `pyproject.toml`
+- Python 3.12+
+- `Typer` + `Rich`
+- `Pydantic v2` + `pydantic-settings`
+- `structlog`
+- `SQLite`
+- `Playwright` (stealth mode) + `curl-cffi` (fast mode)
 
-## Why Two Modes
+## Execution Modes
 
-- `stealth` keeps auth and execution on the same browser stack/fingerprint path.
-- `fast` is lighter for local development and dry iteration.
+1. `CLIENT_MODE=stealth` (default)
+   - Playwright persistent profile + `APIRequestContext`
+2. `CLIENT_MODE=fast`
+   - async `curl-cffi` for lighter local loops
 
 ## Quickstart
 
 ```bash
-uv sync
+uv sync --group dev
 uv run playwright install chromium
 cp .env.example .env
 uv run bot --help
 ```
 
-Then authenticate once:
+Authenticate once:
 
 ```bash
 uv run bot auth
 ```
 
-This captures and writes:
+This writes:
+
 - `MEDIUM_SESSION`
 - `MEDIUM_CSRF`
 - `MEDIUM_USER_REF`
 
-## Main Commands
+Or use guided setup:
 
 ```bash
+uv run bot setup
+```
+
+This wizard can:
+
+- capture auth if missing
+- set common runtime defaults (mode, budgets, discovery depth, seed users)
+- save everything into `.env`
+
+## Core Commands
+
+```bash
+uv run bot setup
+uv run bot start
+uv run bot start --dry-run-first
 uv run bot probe --tag programming
 uv run bot contracts --tag programming
-uv run bot contracts --tag programming --execute-reads
-uv run bot run --tag programming --dry-run
-uv run bot run --tag programming --live --seed-user @some_creator
-uv run bot reconcile --dry-run
+uv run bot contracts --tag programming --execute-reads \
+  --newsletter-slug "$CONTRACT_REGISTRY_LIVE_NEWSLETTER_SLUG" \
+  --newsletter-username "$CONTRACT_REGISTRY_LIVE_NEWSLETTER_USERNAME"
+uv run bot run --tag programming
+uv run bot run --tag programming --dry-run --seed-user @some_creator
+uv run bot reconcile --limit 200 --page-size 50
+uv run bot reconcile --dry-run --limit 200 --page-size 50
 uv run bot artifacts validate
 uv run bot status
 ```
 
-- `probe`: parallel read-only GraphQL checks for current session health.
-- `contracts`: validates runtime operation builders against the canonical implementation registry.
-  - `--execute-reads` optionally executes read/state-verify operations live (requires `MEDIUM_SESSION`).
-  - `--newsletter-slug` and `--newsletter-username` provide a live `NewsletterV3ViewerEdge` input pair.
-- `run`: discovery + scoring + eligibility checks + follow pipeline + non-reciprocal cleanup.
-  - Candidate sources: topic stories, who-to-follow module, optional followers-of-seed users.
-  - Dry-run mode simulates actions and logs decisions without sending follow/unfollow/clap mutations.
-  - Live mode executes subscribe/unfollow/clap mutations with immediate follow-state verification.
-  - Enforces per-action daily budgets (`subscribe`, `unfollow`, `clap`) plus global daily budget.
-  - Uses retry/backoff policy with operation-specific retry limits.
-  - Persists candidate reconciliation state for later verification loops.
-  - Applies session warm-up + non-uniform action timing and halts on risk signals.
-  - Emits machine-readable run artifacts with action/result/reason summaries.
-- `reconcile`: scheduled follow-state reconciliation loop using `UserViewerEdge`.
-  - Scans persisted candidate/follow-cycle state in pages (`--limit`, `--page-size`).
-  - Dry-run validates state without persistence; live mode persists canonical state updates.
-- `artifacts validate`: schema/version compatibility checks for run artifacts.
-- `status`: prints last-run health diagnostics from the latest run artifact.
+### Command Notes
 
-## Configuration
+- `setup`: interactive wizard for auth + common `.env` defaults.
+- `start`: guided entrypoint that executes live by default, with optional dry-run preflight.
+- `probe`: parallel read-only GraphQL health checks.
+- `contracts`: implementation-registry parity and optional live read checks.
+- `run`: full daily cycle (discovery, scoring, follow pipeline, cleanup), live by default.
+- `reconcile`: follow-state reconciliation over persisted candidates/follow-cycle rows, live by default.
+- `artifacts validate`: schema/version validation for run artifacts.
+- `status`: diagnostics summary from latest artifact.
 
-Primary runtime env vars are documented in `.env.example`. Key ones:
+## Product Rules
 
-- `CLIENT_MODE=stealth|fast`
-- `DAY_BOUNDARY_POLICY=utc`
-- `RUN_ARTIFACTS_DIR=.data/runs`
-- `PLAYWRIGHT_PROFILE_DIR=.data/playwright-profile`
-- `PLAYWRIGHT_HEADLESS=true|false`
+1. Budget windows are UTC day boundaries only.
+2. `MEDIUM_USER_REF` must be a Medium `user_id` (not `@username`).
+3. Newsletter state and user-follow state are tracked separately.
+4. Canonical follow-state truth is `UserViewerEdge.isFollowing`.
+5. `PublishPostThreadedResponse` is contract-covered but excluded from default daily execution.
+
+## Key Configuration
+
+See `.env.example` for the full set. Important variables:
+
+- `CLIENT_MODE`
+- `DAY_BOUNDARY_POLICY`
+- `LOG_LEVEL`
+- `LOG_FORMAT` (`pretty` default, `json` for machine log parsing)
 - `MAX_ACTIONS_PER_DAY`
 - `MAX_SUBSCRIBE_ACTIONS_PER_DAY`
 - `MAX_UNFOLLOW_ACTIONS_PER_DAY`
 - `MAX_CLAP_ACTIONS_PER_DAY`
 - `MAX_FOLLOW_ACTIONS_PER_RUN`
-- `RECONCILE_SCAN_LIMIT`
-- `RECONCILE_PAGE_SIZE`
 - `FOLLOW_CANDIDATE_LIMIT`
 - `FOLLOW_COOLDOWN_HOURS`
-- `MIN_FOLLOWING_FOLLOWER_RATIO`
+- `UNFOLLOW_NONRECIPROCAL_AFTER_DAYS`
+- `RECONCILE_SCAN_LIMIT`
+- `RECONCILE_PAGE_SIZE`
 - `SCORE_WEIGHT_RATIO`
 - `SCORE_WEIGHT_KEYWORD`
 - `SCORE_WEIGHT_SOURCE`
 - `SCORE_WEIGHT_NEWSLETTER`
-- `BIO_KEYWORDS`
-- `DISCOVERY_FOLLOWERS_DEPTH`
-- `DISCOVERY_SECOND_HOP_SEED_LIMIT`
-- `UNFOLLOW_NONRECIPROCAL_AFTER_DAYS`
-- `ENABLE_PRE_FOLLOW_CLAP`
-- `MIN_SESSION_WARMUP_SECONDS`
-- `MAX_SESSION_WARMUP_SECONDS`
-- `RISK_HALT_CONSECUTIVE_FAILURES`
-- `ENABLE_CHALLENGE_HALT`
-- `CHALLENGE_STATUS_CODES`
-- `CHALLENGE_DETECTION_TOKENS`
-- `ENABLE_SESSION_EXPIRY_HALT`
-- `SESSION_EXPIRY_STATUS_CODES`
-- `SESSION_EXPIRY_DETECTION_TOKENS`
-- `QUERY_MAX_RETRIES`
-- `VERIFY_MAX_RETRIES`
-- `MUTATION_MAX_RETRIES`
-- `RETRY_BASE_DELAY_SECONDS`
-- `RETRY_MAX_DELAY_SECONDS`
-- `ADAPTIVE_RETRY_FAILURE_MULTIPLIER`
-- `OPERATOR_KILL_SWITCH`
-- `GRAPHQL_ENDPOINT`
-- `IMPLEMENTATION_OPS_REGISTRY_PATH`
-- `CONTRACT_REGISTRY_STRICT`
 - `CONTRACT_REGISTRY_VALIDATE_RESPONSE_FIELDS`
 - `CONTRACT_REGISTRY_LIVE_NEWSLETTER_SLUG`
 - `CONTRACT_REGISTRY_LIVE_NEWSLETTER_USERNAME`
-- `MEDIUM_USER_REF=<user_id>` (explicitly a Medium `user_id`, not `@username`)
+- `RISK_HALT_CONSECUTIVE_FAILURES`
+- `ENABLE_CHALLENGE_HALT`
+- `ENABLE_SESSION_EXPIRY_HALT`
+- `OPERATOR_KILL_SWITCH`
 
-## Product Rules
+### Logging Modes
 
-- Canonical relationship model is two-dimensional:
-  - `newsletter_state`: `subscribed | unsubscribed | unknown`
-  - `user_follow_state`: `following | not_following | unknown`
-- Daily budget is always computed on UTC calendar boundaries.
-- `MEDIUM_USER_REF` is treated as `user_id` only for `UserViewerEdge` verification.
-- `--seed-user` accepts `@username` or `user_id` for discovery input; this is separate from `MEDIUM_USER_REF`.
-- Newsletter subscribe state is never treated as guaranteed user-follow state.
-- `PublishPostThreadedResponse` is kept in the operation registry but intentionally out of the default daily action engine.
-- Runtime hard-stops on risk signals:
-  - challenge signature detection
-  - auth/session-expiry detection
-  - consecutive operation-failure threshold
-  - operator kill switch (`OPERATOR_KILL_SWITCH=true`)
+- Default (`LOG_FORMAT=pretty`) prints concise, human-friendly event lines and rich summary tables.
+- `LOG_FORMAT=json` restores structured JSON lines for ingestion and machine parsing.
+- Quick overrides:
+  - `LOG_FORMAT=pretty uv run bot run --tag programming --dry-run`
+  - `LOG_FORMAT=json uv run bot run --tag programming --dry-run`
+
+## Safety Model
+
+Runtime halts on:
+
+- challenge signatures/statuses
+- auth/session-expiry signatures
+- consecutive failure threshold
+- operator kill switch
+
+Timing behavior includes session warm-up, read delays, and inter-action gaps.
+
+## Local State and Artifacts
+
+- DB path: `.data/medium-stealth-bot.db`
+- Artifacts: `.data/runs/` + `.data/runs/latest.json`
+- Migrations: `src/medium_stealth_bot/migrations/`
+- Migration history: `schema_migrations`
+
+## Quality Gates
+
+Local sanity:
+
+```bash
+uv run python scripts/check_capture_integrity.py
+uv run python scripts/check_response_contract_paths.py
+uv run --group dev pytest -q
+uv run bot contracts --tag programming --no-execute-reads
+```
+
+CI workflow (`.github/workflows/contracts.yml`) runs:
+
+- compile check
+- capture integrity check
+- response-path contract check
+- tests
+- contract parity checks
+- optional live read checks when secrets/vars are configured
+
+## Deployment Readiness Notes
+
+Code and local gates are in place; production readiness still requires:
+
+1. explicit release/scheduling workflow
+2. production runbook (including rollback)
+3. promotion policy for sustained live scheduling (with optional dry-run preflight gates)
 
 ## Repository Layout
 
 ```text
 src/medium_stealth_bot/
-  __init__.py
   main.py
   settings.py
-  models.py
-  logging.py
-  contract_registry.py
-  artifact_schema.py
-  client.py
-  auth.py
-  operations.py
-  database.py
-  typed_payloads.py
-  redaction.py
+  logic.py
   repository.py
-  observability.py
+  database.py
+  operations.py
+  contracts.py
+  client.py
   safety.py
   timing.py
-  logic.py
+  observability.py
+  artifact_schema.py
+  redaction.py
+  typed_payloads.py
   migrations/
+scripts/
 captures/
-  final/
-  scripts/
-Project-Overview.md
-DEVELOPMENT_PLAN.md
+tests/
 ```
 
-## Reference Docs
+## References
 
 - [Project-Overview.md](Project-Overview.md)
 - [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md)
