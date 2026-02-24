@@ -1,0 +1,42 @@
+{
+  "generatedAt": "2026-02-24T02:26:00Z",
+  "canonicalCapture": "captures/final/live_capture_2026-02-24.json",
+  "canonicalOps": "captures/final/live_ops_2026-02-24.json",
+  "files": [
+    {
+      "path": "captures/final/live_capture_2026-02-24.json",
+      "operationNames": 39,
+      "mutationNames": 8,
+      "evidenceLevel": "live_ui_observed_plus_stubbed_probes",
+      "isCanonical": true
+    },
+    {
+      "path": "captures/final/live_ops_2026-02-24.json",
+      "operationNames": 39,
+      "mutationNames": 8,
+      "evidenceLevel": "derived_summary",
+      "isCanonical": true
+    },
+    {
+      "path": "captures/final/implementation_ops_2026-02-24.json",
+      "operationNames": 13,
+      "mutationNames": 5,
+      "evidenceLevel": "curated_implementation_subset",
+      "isCanonical": true
+    },
+    {
+      "path": "captures/final/practical_capture_2026-02-21.json",
+      "operationNames": 29,
+      "mutationNames": 6,
+      "evidenceLevel": "legacy_reference",
+      "isCanonical": false
+    },
+    {
+      "path": "captures/final/practical_ops_2026-02-21.json",
+      "operationNames": 29,
+      "mutationNames": 6,
+      "evidenceLevel": "legacy_reference",
+      "isCanonical": false
+    }
+  ]
+}

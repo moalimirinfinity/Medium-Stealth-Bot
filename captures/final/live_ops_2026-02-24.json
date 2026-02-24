@@ -1,0 +1,951 @@
+{
+  "capturedAt": "2026-02-24T02:35:15.188Z",
+  "purpose": "live_graphql_ops_summary",
+  "sourceCapture": "captures/final/live_capture_2026-02-24.json",
+  "totalUniqueOperationNames": 39,
+  "operationNames": [
+    "AddToCatalogBaseQuery",
+    "AvatarMenuQuery",
+    "BecomeMemberUpsellQuery",
+    "ClapCountQuery",
+    "ClapMutation",
+    "CollectionViewerEdge",
+    "CreatorActionOverflowPopoverQuery",
+    "InteractivePostBodyQuery",
+    "LogClientEventsMutation",
+    "LogExperimentExposure",
+    "MoreFromAuthorAndMaybePubQuery",
+    "MoreFromMediumRecircQuery",
+    "NewsletterV3ViewerEdge",
+    "Paywall",
+    "PostGiveTipOnExternalPlatformQuery",
+    "PostResponsesQuery",
+    "PostViewerEdgeContentQuery",
+    "PostViewerEdgeQuery",
+    "PublicationNavigationContextQuery",
+    "PublishPostThreadedResponse",
+    "SubscribeNewsletterV3Mutation",
+    "TagViewerEdge",
+    "TopicCuratedListQuery",
+    "TopicLatestStorieQuery",
+    "TopicWhoToFollowPubishersQuery",
+    "UnfollowUserMutation",
+    "UnreadNotificationCount",
+    "UnsubscribeNewsletterV3Mutation",
+    "UpdateFollowedEntityViewedAtMutation",
+    "UseBaseCacheControlQuery",
+    "UserCatalogsListQuery",
+    "UserFollowers",
+    "UserHasListQuery",
+    "UserProfileQuery",
+    "UserProfileRightColQuery",
+    "UserSearchQuery",
+    "UserViewerEdge",
+    "VisitorQuery",
+    "WhoToFollowModuleQuery"
+  ],
+  "mutationNames": [
+    "ClapMutation",
+    "LogClientEventsMutation",
+    "LogExperimentExposure",
+    "PublishPostThreadedResponse",
+    "SubscribeNewsletterV3Mutation",
+    "UnfollowUserMutation",
+    "UnsubscribeNewsletterV3Mutation",
+    "UpdateFollowedEntityViewedAtMutation"
+  ],
+  "practicalCritical": [
+    "ClapMutation",
+    "NewsletterV3ViewerEdge",
+    "SubscribeNewsletterV3Mutation",
+    "TopicLatestStorieQuery",
+    "TopicWhoToFollowPubishersQuery",
+    "UnfollowUserMutation",
+    "UnsubscribeNewsletterV3Mutation",
+    "UserViewerEdge",
+    "WhoToFollowModuleQuery"
+  ],
+  "operationStats": [
+    {
+      "operationName": "AddToCatalogBaseQuery",
+      "hits": 32,
+      "stubbedHits": 0,
+      "nonStubbedHits": 32,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "isPostKind",
+          "postId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/@moalimirinfinity",
+        "https://medium.com/tag/programming",
+        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql",
+        "https://thilo-hermann.medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "AvatarMenuQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        []
+      ],
+      "samplePageUrls": [
+        "https://medium.com/me/followers"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "BecomeMemberUpsellQuery",
+      "hits": 4,
+      "stubbedHits": 0,
+      "nonStubbedHits": 4,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        []
+      ],
+      "samplePageUrls": [
+        "https://medium.com/@moalimirinfinity",
+        "https://medium.com/me/following",
+        "https://medium.com/tag/programming",
+        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql",
+        "https://thilo-hermann.medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "ClapCountQuery",
+      "hits": 33,
+      "stubbedHits": 0,
+      "nonStubbedHits": 33,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "postId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/@moalimirinfinity",
+        "https://medium.com/tag/programming",
+        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql",
+        "https://thilo-hermann.medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "ClapMutation",
+      "hits": 2,
+      "stubbedHits": 2,
+      "nonStubbedHits": 0,
+      "evidence": "probe_stubbed_only",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "numClaps",
+          "targetPostId",
+          "userId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/tag/programming",
+        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql",
+        "https://thilo-hermann.medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "CollectionViewerEdge",
+      "hits": 10,
+      "stubbedHits": 0,
+      "nonStubbedHits": 10,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "collectionId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/me/following",
+        "https://medium.com/tag/programming",
+        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql",
+        "https://thilo-hermann.medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "CreatorActionOverflowPopoverQuery",
+      "hits": 5,
+      "stubbedHits": 0,
+      "nonStubbedHits": 5,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "postId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/@moalimirinfinity"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "InteractivePostBodyQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "includeHighlightResponseGroups",
+          "postId",
+          "showNotes"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+      ],
+      "sampleRequestUrls": [
+        "https://thilo-hermann.medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "LogClientEventsMutation",
+      "hits": 8,
+      "stubbedHits": 0,
+      "nonStubbedHits": 8,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "payload"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/@moalimirinfinity",
+        "https://medium.com/me/following",
+        "https://medium.com/tag/programming",
+        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql",
+        "https://thilo-hermann.medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "LogExperimentExposure",
+      "hits": 12,
+      "stubbedHits": 0,
+      "nonStubbedHits": 12,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "input"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/me/followers",
+        "https://medium.com/me/following",
+        "https://medium.com/tag/programming",
+        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql",
+        "https://thilo-hermann.medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "MoreFromAuthorAndMaybePubQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "input"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+      ],
+      "sampleRequestUrls": [
+        "https://thilo-hermann.medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "MoreFromMediumRecircQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "postId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+      ],
+      "sampleRequestUrls": [
+        "https://thilo-hermann.medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "NewsletterV3ViewerEdge",
+      "hits": 26,
+      "stubbedHits": 0,
+      "nonStubbedHits": 26,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "collectionSlug",
+          "newsletterSlug",
+          "username"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/@moalimirinfinity/followers",
+        "https://medium.com/me/following",
+        "https://medium.com/tag/programming",
+        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql",
+        "https://thilo-hermann.medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "Paywall",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "postId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+      ],
+      "sampleRequestUrls": [
+        "https://thilo-hermann.medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "PostGiveTipOnExternalPlatformQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "userId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+      ],
+      "sampleRequestUrls": [
+        "https://thilo-hermann.medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "PostResponsesQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "paging",
+          "postId",
+          "sortType"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+      ],
+      "sampleRequestUrls": [
+        "https://thilo-hermann.medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "PostViewerEdgeContentQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "postId",
+          "postMeteringOptions"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+      ],
+      "sampleRequestUrls": [
+        "https://thilo-hermann.medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "PostViewerEdgeQuery",
+      "hits": 2,
+      "stubbedHits": 0,
+      "nonStubbedHits": 2,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "postId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+      ],
+      "sampleRequestUrls": [
+        "https://thilo-hermann.medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "PublicationNavigationContextQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "domainOrSlug"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/@moalimirinfinity"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "PublishPostThreadedResponse",
+      "hits": 1,
+      "stubbedHits": 1,
+      "nonStubbedHits": 0,
+      "evidence": "probe_stubbed_only",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "deltas",
+          "inResponseToPostId",
+          "inResponseToQuoteId",
+          "responseDistribution",
+          "sortType"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/tag/programming"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "SubscribeNewsletterV3Mutation",
+      "hits": 1,
+      "stubbedHits": 1,
+      "nonStubbedHits": 0,
+      "evidence": "probe_stubbed_only",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "newsletterV3Id",
+          "shouldRecordConsent"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/tag/programming"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "TagViewerEdge",
+      "hits": 6,
+      "stubbedHits": 0,
+      "nonStubbedHits": 6,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "tagSlug"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/me/following",
+        "https://medium.com/tag/programming"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "TopicCuratedListQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "tagSlug"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/tag/programming"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "TopicLatestStorieQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "tagSlug"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/tag/programming"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "TopicWhoToFollowPubishersQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "after",
+          "first",
+          "mode",
+          "tagSlug"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/tag/programming"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "UnfollowUserMutation",
+      "hits": 1,
+      "stubbedHits": 1,
+      "nonStubbedHits": 0,
+      "evidence": "probe_stubbed_only",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "targetUserId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/tag/programming"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "UnreadNotificationCount",
+      "hits": 4,
+      "stubbedHits": 0,
+      "nonStubbedHits": 4,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        []
+      ],
+      "samplePageUrls": [
+        "https://medium.com/me/followers",
+        "https://medium.com/me/following",
+        "https://medium.com/tag/programming",
+        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql",
+        "https://thilo-hermann.medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "UnsubscribeNewsletterV3Mutation",
+      "hits": 1,
+      "stubbedHits": 1,
+      "nonStubbedHits": 0,
+      "evidence": "probe_stubbed_only",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "newsletterV3Id"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/tag/programming"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "UpdateFollowedEntityViewedAtMutation",
+      "hits": 1,
+      "stubbedHits": 1,
+      "nonStubbedHits": 0,
+      "evidence": "probe_stubbed_only",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "input"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/@moalimirinfinity"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "UseBaseCacheControlQuery",
+      "hits": 4,
+      "stubbedHits": 0,
+      "nonStubbedHits": 4,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        []
+      ],
+      "samplePageUrls": [
+        "https://medium.com/me/followers",
+        "https://medium.com/me/following",
+        "https://medium.com/tag/programming",
+        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql",
+        "https://thilo-hermann.medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "UserCatalogsListQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "id",
+          "username"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/@moalimirinfinity"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "UserFollowers",
+      "hits": 2,
+      "stubbedHits": 0,
+      "nonStubbedHits": 2,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "id",
+          "paging",
+          "username"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/@moalimirinfinity/followers"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "UserHasListQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "id",
+          "username"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/@moalimirinfinity"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "UserProfileQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "homepagePostsFrom",
+          "homepagePostsLimit",
+          "id",
+          "includeDistributedResponses",
+          "includeShouldFollowPostForExternalSearch",
+          "username"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/@moalimirinfinity"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "UserProfileRightColQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "id",
+          "username"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/@moalimirinfinity"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "UserSearchQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "id",
+          "username"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/@moalimirinfinity"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "UserViewerEdge",
+      "hits": 27,
+      "stubbedHits": 0,
+      "nonStubbedHits": 27,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "userId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/@moalimirinfinity",
+        "https://medium.com/@moalimirinfinity/followers",
+        "https://medium.com/me/following",
+        "https://medium.com/tag/programming",
+        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql",
+        "https://thilo-hermann.medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "VisitorQuery",
+      "hits": 4,
+      "stubbedHits": 0,
+      "nonStubbedHits": 4,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        []
+      ],
+      "samplePageUrls": [
+        "https://medium.com/me/followers",
+        "https://medium.com/me/following",
+        "https://medium.com/tag/programming",
+        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql",
+        "https://thilo-hermann.medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "WhoToFollowModuleQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        []
+      ],
+      "samplePageUrls": [
+        "https://medium.com/me/following"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    }
+  ]
+}
