@@ -15,11 +15,7 @@ class ActionRepository:
     def _utc_modifier_hours(hours: int) -> str:
         return f"-{hours} hours"
 
-    @staticmethod
-    def _utc_modifier_days(days: int) -> str:
-        return f"-{days} day"
-
-    def actions_today_utc(self) -> int:
+    def actions_today_utc(self, action_types: tuple[str, ...] | None = None) -> int:
         # Product rule: daily budgets are calculated on UTC calendar day boundaries.
         query = """
         SELECT COUNT(*) AS count
@@ -27,13 +23,37 @@ class ActionRepository:
         WHERE timestamp >= datetime('now', 'utc', 'start of day')
           AND timestamp < datetime('now', 'utc', 'start of day', '+1 day')
         """
+        params: tuple[object, ...] = ()
+        if action_types:
+            placeholders = ", ".join(["?"] * len(action_types))
+            query += f"\n  AND action_type IN ({placeholders})"
+            params = action_types
         with self.database.connect() as connection:
-            row = connection.execute(query).fetchone()
+            row = connection.execute(query, params).fetchone()
             return int(row["count"])
 
     def actions_today(self) -> int:
         # Backward-compatible alias for older call sites.
         return self.actions_today_utc()
+
+    def action_counts_today_utc(self, action_types: tuple[str, ...]) -> dict[str, int]:
+        if not action_types:
+            return {}
+        placeholders = ", ".join(["?"] * len(action_types))
+        query = f"""
+        SELECT action_type, COUNT(*) AS count
+        FROM action_log
+        WHERE timestamp >= datetime('now', 'utc', 'start of day')
+          AND timestamp < datetime('now', 'utc', 'start of day', '+1 day')
+          AND action_type IN ({placeholders})
+        GROUP BY action_type
+        """
+        counts = {action_type: 0 for action_type in action_types}
+        with self.database.connect() as connection:
+            rows = connection.execute(query, action_types).fetchall()
+            for row in rows:
+                counts[str(row["action_type"])] = int(row["count"])
+        return counts
 
     def record_action(self, action_type: str, target_id: str | None, status: str) -> None:
         query = """
@@ -189,12 +209,13 @@ class ActionRepository:
         SELECT user_id, username, followed_at
         FROM follow_cycle
         WHERE cleanup_status = 'pending'
-          AND followed_at <= datetime('now', 'utc', ?)
+          AND COALESCE(follow_deadline_at, datetime(followed_at, ?)) <= datetime('now', 'utc')
         ORDER BY followed_at ASC
         LIMIT ?
         """
+        fallback_deadline_modifier = f"+{grace_days} day"
         with self.database.connect() as connection:
-            rows = connection.execute(query, (self._utc_modifier_days(grace_days), limit)).fetchall()
+            rows = connection.execute(query, (fallback_deadline_modifier, limit)).fetchall()
             return [
                 {"user_id": row["user_id"], "username": row["username"], "followed_at": row["followed_at"]}
                 for row in rows
