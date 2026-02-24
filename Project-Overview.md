@@ -2,228 +2,179 @@
 
 ## 1. Mission
 
-Medium Stealth Bot is a local-first CLI that automates Medium growth workflows with strong emphasis on:
+Medium Stealth Bot is a local-first CLI for Medium growth automation with three core principles:
 
-- behavior realism
-- safety controls
-- capture-driven API contracts
-- simple single-machine operation
+1. safety-first execution
+2. capture-driven API contracts
+3. inspectable local state and diagnostics
 
-The system is intentionally not distributed and does not require external services.
+The system is intentionally single-machine and does not depend on hosted orchestration.
 
-## 2. Current Architecture (2026 Scaffold)
+## 2. Architecture Snapshot
 
 ### Runtime Stack
 
 - Python 3.12+
-- `uv` + `pyproject.toml` for dependency/runtime management
+- `uv` project/runtime management
 - `Typer` + `Rich` CLI
 - `Pydantic v2` + `pydantic-settings`
-- `structlog` JSON logging
-- `SQLite` local state
-- `Playwright` for interactive auth and stealth execution mode
-- `curl-cffi` for fast execution mode
+- `structlog` logging (`pretty` console default, optional JSON mode)
+- `SQLite` persistence
+- `Playwright` + `curl-cffi` clients
 
-### Dual Client Strategy
+### Dual Client Modes
 
 1. `CLIENT_MODE=stealth` (default)
-   - Uses Playwright persistent browser profile and `APIRequestContext`.
-   - Keeps auth and request execution on the same browser/TLS stack.
-   - Preferred for production-like runs.
-
+   - Playwright persistent profile + `APIRequestContext`
+   - preferred for production-like behavior and session continuity
 2. `CLIENT_MODE=fast`
-   - Uses `curl-cffi` async session with Chrome impersonation.
-   - Lower overhead for local dev and test loops.
+   - async `curl-cffi` session with Chrome impersonation
+   - optimized for lower-overhead local iteration
 
-### Authentication Flow
+### Auth Bootstrap
 
-1. User runs `uv run bot auth`.
-2. Playwright opens a headed browser for manual login.
-3. Session cookies are extracted and written to `.env`.
-4. Persistent browser profile is stored under `.data/playwright-profile`.
+1. Run `uv run bot auth`.
+2. Complete login in headed Playwright session.
+3. Persist session material to `.env`.
+4. Reuse browser profile under `.data/playwright-profile`.
 
-## 3. API Contract Source of Truth
+## 3. Contract Source of Truth
 
-Implementation is based on the curated capture pack under `captures/`.
+Implementation contracts are derived from capture artifacts in `captures/final/`, primarily:
 
-Canonical files:
+- `live_capture_2026-02-24.json`
+- `live_ops_2026-02-24.json`
+- `implementation_ops_2026-02-24.json`
 
-- `captures/final/live_capture_2026-02-24.json`
-- `captures/final/live_ops_2026-02-24.json`
-- `captures/final/implementation_ops_2026-02-24.json`
+The implementation registry defines:
 
-These captures include:
+- operation set and variable requirements
+- classification labels (`read`, `mutation`, `state-verify`, `high-risk`)
+- expected response field paths for strict validation
 
-- operation names
-- variable shapes
-- practical mutation semantics
-- confidence markers (`live_ui_observed` vs `probe_stubbed_only`)
+## 4. Follow Semantics Model
 
-## 4. Medium Follow Semantics
+Observed Medium semantics used by runtime:
 
-Critical behavior mapping currently used by the project:
+1. subscribe path: `SubscribeNewsletterV3Mutation`
+2. unsubscribe notifications path: `UnsubscribeNewsletterV3Mutation`
+3. graph unfollow path: `UnfollowUserMutation`
+4. canonical follow-state verification: `UserViewerEdge.user.viewerEdge.isFollowing`
 
-1. Default follow button path:
-   - `SubscribeNewsletterV3Mutation`
-   - Classified as `newsletter_subscribe`
-2. Notification-off path:
-   - `UnsubscribeNewsletterV3Mutation`
-   - Classified as `newsletter_unsubscribe`
-3. Full graph unfollow path:
-   - `UnfollowUserMutation`
-   - Classified as `user_unfollow`
-4. True follow state verification:
-   - `UserViewerEdge.user.viewerEdge.isFollowing`
+Design rule: newsletter subscription is not treated as guaranteed user-follow state.
 
-The bot must not treat newsletter subscription as guaranteed user follow.
+## 5. Local Data Model
 
-## 5. Data Model
-
-Current scaffold initializes these tables:
+### Core Tables
 
 - `users`
-- `relationships` (legacy compatibility source)
-- `relationship_state` (canonical runtime state model)
-- `follow_cycle` (follow-back grace tracking and cleanup state)
-- `blacklist` (hard block list for candidate safety checks)
+- `relationships` (legacy compatibility table)
+- `relationship_state` (canonical)
+- `follow_cycle`
+- `candidate_reconciliation`
+- `blacklist`
 - `action_log`
 - `snapshots`
+- `schema_migrations`
 
-Canonical relationship state columns:
+### Canonical Relationship State
 
 - `newsletter_state`: `subscribed | unsubscribed | unknown`
 - `user_follow_state`: `following | not_following | unknown`
 - `confidence`: `observed | inferred | stubbed`
-- `last_source_operation`, `updated_at`, `last_verified_at`
 
-Migration policy:
+### Migration Strategy
 
-- DB schema is versioned using `PRAGMA user_version`.
-- Existing `relationships.state` values are migrated into `relationship_state.user_follow_state` as inferred values.
+- Numbered SQL files in `src/medium_stealth_bot/migrations/`
+- Migration history tracked in `schema_migrations`
+- `PRAGMA user_version` synchronized to latest applied migration version
+- Migration checksum validation prevents silent drift
 
-`action_log` is used for daily budget gating in `bot run`.
+## 6. Runtime Behavior
 
-## 6. Product Rules
+### Daily Run (`bot run`)
 
-1. Daily budget boundary is UTC calendar day only (`DAY_BOUNDARY_POLICY=utc`).
-2. `MEDIUM_USER_REF` contract is `user_id` only (not `@username`).
-3. Newsletter state and user-follow state are tracked separately.
-4. `user_follow` reporting is valid only after `UserViewerEdge.isFollowing` verification.
+Pipeline stages:
 
-## 7. Current CLI Surface
+1. probe
+2. candidate discovery
+3. scoring
+4. eligibility filtering
+5. follow/subscribe attempt (or dry-run planning)
+6. verification
+7. state persistence
+8. optional cleanup of due non-reciprocal follows
 
+Discovery sources:
+
+- topic latest stories
+- topic who-to-follow
+- who-to-follow module
+- optional seed followers (plus optional second hop)
+
+### Reconciliation (`bot reconcile`)
+
+- Scans persisted `candidate_reconciliation` and pending `follow_cycle` users.
+- Executes `UserViewerEdge` checks.
+- Writes canonical follow-state updates in live mode.
+
+### Safety
+
+Hard-stop triggers:
+
+- challenge detection (status/text signatures)
+- session/auth expiry signatures
+- consecutive failure threshold
+- operator kill switch (`OPERATOR_KILL_SWITCH=true`)
+
+### Timing
+
+- session warm-up sleep
+- read-delay sleeps
+- inter-action non-uniform cooldowns
+
+## 7. CLI Surface
+
+- `uv run bot setup`
+- `uv run bot start [--dry-run-first]`
 - `uv run bot auth`
-  - interactive login + env cookie capture
 - `uv run bot probe --tag programming`
-  - parallel read-only GraphQL probes
-- `uv run bot contracts --tag programming`
-  - contract-registry parity checks
-- `uv run bot run --tag programming`
-  - full daily cycle (discovery, scoring, follow pipeline, cleanup)
-  - supports `--dry-run/--live` and repeated `--seed-user` inputs
-- `uv run bot reconcile --dry-run|--live`
-  - follow-state reconciliation loop over persisted candidate/follow-cycle state
-- `uv run bot artifacts validate`
-  - validates latest (or provided) run artifact schema compatibility
+- `uv run bot contracts --tag programming [--execute-reads]`
+- `uv run bot run --tag programming [--dry-run] [--seed-user ...]`
+- `uv run bot reconcile --limit N --page-size N [--dry-run]`
+- `uv run bot artifacts validate [--path <artifact>]`
 - `uv run bot status`
-  - last-run diagnostics from `.data/runs/latest.json`
 
-## 8. Current Status
+## 8. Operational Contracts
 
-Implemented and validated:
+1. UTC day boundary is mandatory for budget accounting.
+2. `MEDIUM_USER_REF` is `user_id` only.
+3. State verification and mutation side effects are recorded independently.
+4. `PublishPostThreadedResponse` remains in contract coverage, but is intentionally excluded from default daily execution flow.
 
-- auth capture workflow
-- dual network client modes
-- async batch GraphQL execution
-- candidate discovery from topic feeds, who-to-follow module, and optional seed followers/followers-of-followers source
-- scoring/filtering pipeline (ratio + keyword + cooldown + blacklist + live follow-state check)
-- dry-run and live follow pipeline with post-action verification
-- non-reciprocal cleanup pass with grace-window state tracking
-- per-action daily budget partitioning (`subscribe`, `unfollow`, `clap`) with global UTC budget gate
-- operation-specific retry/backoff policy (query/verify/mutation tiers)
-- centralized timing controls for session warm-up, read delays, and inter-action gaps
-- hard-stop safety guardrails for repeated failures, challenge signals, and session-expiry signals
-- structured observability events (`run_id`, `operation`, `target_id`, `decision`, `result`)
-- run artifacts under `.data/runs/` plus `bot status` diagnostics command
-- expanded local persistence and migration bootstrap (`relationship_state`, `follow_cycle`, `blacklist`)
-- file-based SQL migrations + `schema_migrations` tracking
-- candidate reconciliation persistence + `bot reconcile` command
-- artifact schema validation command (`bot artifacts validate`)
-- structured redaction for logs/artifacts
-- baseline test suite + CI quality gates (contracts, capture integrity, response-path checks, pytest)
-- capture corpus and implementation notes
-- explicit de-scope of threaded-response mutation from default daily execution path
+## 9. Quality and Validation
 
-Not yet implemented:
+Current baseline includes:
 
-- adaptive weight tuning and source performance optimization
-- multi-window deep reconciliation heuristics and campaign-level scheduling
-- expanded integration/e2e coverage with richer fixtures
-- production runbook and failure recovery automation
+- contract parity checks
+- strict response-path checks
+- capture freshness/integrity checks
+- unit/integration-style local tests
+- CI quality workflow in `.github/workflows/contracts.yml`
 
-## 9. Next Steps
+Optional CI live-read validation runs when required secrets/variables are configured.
 
-Execution plan is tracked in `DEVELOPMENT_PLAN.md`.
+## 10. Current Maturity
 
-## 10. Feature Roadmap (Practical Priority Order)
+### Implemented
 
-### P1: Core Growth Engine (Must-Have)
+- phases 0 through 6 from the development plan
+- live-read strict contract checks with newsletter slug + username inputs
+- file-based migrations, idempotency keys, reconciliation persistence
+- safety guardrails, run artifacts, status diagnostics, redaction layer
 
-1. Candidate discovery from:
-   - topic/tag feeds
-   - followers of seed users
-   - followers-of-followers expansion
-2. Candidate enrichment:
-   - `followers_count`, `following_count`
-   - profile bio keywords (e.g., coding/software/engineering terms)
-   - recency/activity hints from feed presence
-3. Candidate scoring:
-   - weighted ratio signal (followers-to-following quality)
-   - weighted relevance signal from bio/topic terms
-   - weighted network proximity signal (distance from seed sources)
-4. Eligibility filters:
-   - skip already-followed users
-   - skip recently actioned users (cooldown/idempotency)
-   - skip blocked/blacklisted users
-5. Follow execution + verification:
-   - execute follow path mutation
-   - verify with `UserViewerEdge.isFollowing`
-   - persist canonical `relationship_state`
-6. Follow-back tracking:
-   - track whether target follows back within configurable window (`N` days)
-7. Non-reciprocal cleanup:
-   - unfollow users who did not follow back after grace period
-   - honor whitelist/exemptions
-8. Safety envelope:
-   - daily/hourly action caps
-   - randomized delays and cooldown gaps
-   - hard-stop on repeated failures/challenge signals
+### Remaining for full deployment maturity
 
-### P2: Quality and Control Layer
-
-1. Campaigns:
-   - run targeted sources like "followers of `<seed_user>`" with per-campaign limits
-2. Configurable weighting profiles:
-   - profile-level keyword packs (`coding`, `software`, `ai`, etc.)
-3. Retry/error strategy:
-   - classify transient vs hard failures
-   - bounded retries with backoff
-4. State reconciliation jobs:
-   - periodic re-checks to correct local state drift
-5. Whitelist/blacklist management:
-   - with reason metadata and optional expiry
-
-### P3: Optimization and Operations
-
-1. KPI reporting:
-   - follow-back rate
-   - source conversion rate
-   - net daily/weekly growth
-2. Source ranking:
-   - score seed users/tags by downstream follow-back quality
-3. Adaptive tuning:
-   - iteratively tune discovery/scoring weights based on outcomes
-4. Dry-run simulation:
-   - full decision trace without write mutations
-5. Operational safeguards:
-   - kill switch and anomaly alerts for error spikes
+- explicit release/scheduling workflow
+- production runbook and rollback procedure
+- policy for sustained live scheduling and preflight gating strategy
