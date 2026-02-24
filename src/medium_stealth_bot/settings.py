@@ -25,6 +25,7 @@ class AppSettings(BaseSettings):
 
     app_env: str = Field(default="dev", validation_alias="APP_ENV")
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
+    log_format: Literal["pretty", "json"] = Field(default="pretty", validation_alias="LOG_FORMAT")
     client_mode: Literal["stealth", "fast"] = Field(default="stealth", validation_alias="CLIENT_MODE")
     day_boundary_policy: Literal["utc"] = Field(default="utc", validation_alias="DAY_BOUNDARY_POLICY")
 
