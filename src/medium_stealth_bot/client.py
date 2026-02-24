@@ -6,6 +6,10 @@ import structlog
 from curl_cffi import requests as curl_requests
 from playwright.async_api import APIRequestContext, BrowserContext, Playwright, async_playwright
 
+from medium_stealth_bot.contract_registry import (
+    OperationContractRegistry,
+    load_operation_contract_registry,
+)
 from medium_stealth_bot.models import GraphQLError, GraphQLOperation, GraphQLResult
 from medium_stealth_bot.settings import AppSettings
 
@@ -25,6 +29,7 @@ class MediumAsyncClient:
     def __init__(self, settings: AppSettings):
         self.settings = settings
         self.log = structlog.get_logger(__name__)
+        self._contract_registry = self._load_contract_registry()
         self._headers: dict[str, str] = {}
         self._session: curl_requests.AsyncSession | None = None
         self._playwright: Playwright | None = None
@@ -58,7 +63,7 @@ class MediumAsyncClient:
 
         if self.settings.client_mode == "fast":
             self._session = curl_requests.AsyncSession(
-                impersonate="chrome120",
+                impersonate="chrome142",
                 headers=headers,
                 cookies=cookie_map,
             )
@@ -121,6 +126,7 @@ class MediumAsyncClient:
         if self._session is None and self._api_request is None:
             raise RuntimeError("HTTP session is not initialized")
 
+        self._validate_outgoing_operations(operations)
         payload = [op.model_dump(by_alias=True) for op in operations]
         status, headers, raw_json = await self._post_graphql(payload)
         stubbed = headers.get("x-codex-stubbed") == "1"
@@ -146,6 +152,8 @@ class MediumAsyncClient:
                 raw=raw_item,
                 stubbed=stubbed,
             )
+            if self.settings.contract_registry_validate_response_fields:
+                self._log_response_contract_mismatch(operation.operation_name, result)
             results.append(result)
 
         self.log.info(
@@ -170,7 +178,12 @@ class MediumAsyncClient:
             try:
                 raw_json = response.json()
             except Exception:
-                raw_json = {}
+                raw_text = ""
+                try:
+                    raw_text = str(response.text or "")
+                except Exception:
+                    raw_text = ""
+                raw_json = {"_raw_text": raw_text[:4000]} if raw_text else {}
             return response.status_code, headers, raw_json
 
         if self._api_request is None:
@@ -190,5 +203,70 @@ class MediumAsyncClient:
             maybe_json = response.json()
             raw_json = await maybe_json if inspect.isawaitable(maybe_json) else maybe_json
         except Exception:
-            raw_json = {}
+            raw_text = ""
+            try:
+                maybe_text = response.text()
+                raw_text = await maybe_text if inspect.isawaitable(maybe_text) else maybe_text
+            except Exception:
+                raw_text = ""
+            raw_json = {"_raw_text": raw_text[:4000]} if isinstance(raw_text, str) and raw_text else {}
         return response.status, headers, raw_json
+
+    def _load_contract_registry(self) -> OperationContractRegistry:
+        path = self.settings.implementation_ops_registry_path
+        try:
+            registry = load_operation_contract_registry(
+                path=path,
+                strict=self.settings.contract_registry_strict,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"Failed to load operation contract registry from {path}: {exc}"
+            ) from exc
+
+        self.log.info(
+            "operation_contract_registry_loaded",
+            path=str(path),
+            strict=self.settings.contract_registry_strict,
+            operation_count=registry.operation_count,
+        )
+        return registry
+
+    def _validate_outgoing_operations(self, operations: Sequence[GraphQLOperation]) -> None:
+        violations: list[dict[str, Any]] = []
+        for operation in operations:
+            issues = self._contract_registry.validate_request(operation)
+            if issues:
+                violations.append(
+                    {
+                        "operationName": operation.operation_name,
+                        "issues": issues,
+                    }
+                )
+        if not violations:
+            return
+
+        self.log.error(
+            "operation_contract_request_validation_failed",
+            strict=self.settings.contract_registry_strict,
+            violations=violations,
+        )
+        if self.settings.contract_registry_strict:
+            details = "; ".join(
+                f"{item['operationName']}[{','.join(item['issues'])}]"
+                for item in violations
+            )
+            raise ValueError(f"Operation contract validation failed: {details}")
+
+    def _log_response_contract_mismatch(self, operation_name: str, result: GraphQLResult) -> None:
+        missing_paths = self._contract_registry.validate_response(operation_name, result.data)
+        if not missing_paths:
+            return
+        self.log.warning(
+            "operation_contract_response_mismatch",
+            operation_name=operation_name,
+            missing_paths=missing_paths,
+            status_code=result.status_code,
+            has_errors=result.has_errors,
+            stubbed=result.stubbed,
+        )
