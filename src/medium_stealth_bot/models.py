@@ -55,6 +55,9 @@ class DailyRunOutcome(BaseModel):
     budget_exhausted: bool
     actions_today: int
     max_actions_per_day: int
+    action_counts_today: dict[str, int] = Field(default_factory=dict)
+    action_limits_per_day: dict[str, int] = Field(default_factory=dict)
+    action_remaining_per_day: dict[str, int] = Field(default_factory=dict)
     dry_run: bool = True
     considered_candidates: int = 0
     eligible_candidates: int = 0
@@ -63,6 +66,8 @@ class DailyRunOutcome(BaseModel):
     cleanup_actions_attempted: int = 0
     cleanup_actions_verified: int = 0
     decision_log: list[str] = Field(default_factory=list)
+    decision_reason_counts: dict[str, int] = Field(default_factory=dict)
+    decision_result_counts: dict[str, int] = Field(default_factory=dict)
     probe: ProbeSnapshot | None = None
 
 
@@ -97,6 +102,7 @@ class CanonicalRelationshipState(BaseModel):
 class CandidateSource(StrEnum):
     TOPIC_LATEST_STORIES = "topic_latest_stories"
     TOPIC_WHO_TO_FOLLOW = "topic_who_to_follow"
+    WHO_TO_FOLLOW_MODULE = "who_to_follow_module"
     SEED_FOLLOWERS = "seed_followers"
 
 
