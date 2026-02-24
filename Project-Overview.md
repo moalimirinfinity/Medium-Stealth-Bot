@@ -116,9 +116,13 @@ Migration policy:
   - interactive login + env cookie capture
 - `uv run bot probe --tag programming`
   - parallel read-only GraphQL probes
+- `uv run bot contracts --tag programming`
+  - contract-registry parity checks
 - `uv run bot run --tag programming`
   - full daily cycle (discovery, scoring, follow pipeline, cleanup)
   - supports `--dry-run/--live` and repeated `--seed-user` inputs
+- `uv run bot status`
+  - last-run diagnostics from `.data/runs/latest.json`
 
 ## 8. Current Status
 
@@ -127,10 +131,16 @@ Implemented and validated:
 - auth capture workflow
 - dual network client modes
 - async batch GraphQL execution
-- candidate discovery from topic feeds + optional seed followers/followers-of-followers source
+- candidate discovery from topic feeds, who-to-follow module, and optional seed followers/followers-of-followers source
 - scoring/filtering pipeline (ratio + keyword + cooldown + blacklist + live follow-state check)
 - dry-run and live follow pipeline with post-action verification
 - non-reciprocal cleanup pass with grace-window state tracking
+- per-action daily budget partitioning (`subscribe`, `unfollow`, `clap`) with global UTC budget gate
+- operation-specific retry/backoff policy (query/verify/mutation tiers)
+- centralized timing controls for session warm-up, read delays, and inter-action gaps
+- hard-stop safety guardrails for repeated failures, challenge signals, and session-expiry signals
+- structured observability events (`run_id`, `operation`, `target_id`, `decision`, `result`)
+- run artifacts under `.data/runs/` plus `bot status` diagnostics command
 - expanded local persistence and migration bootstrap (`relationship_state`, `follow_cycle`, `blacklist`)
 - capture corpus and implementation notes
 
