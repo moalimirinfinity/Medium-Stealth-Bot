@@ -4,30 +4,38 @@
 
 Take the current scaffold to a production-ready local automation tool with explicit safety controls and measurable reliability.
 
-## Phase 1: Client Architecture — Fix the Fingerprint Split
+## Fixed Product Contracts (Now Defined)
 
-### Problem
+1. Canonical relationship model:
+   - `newsletter_state`: `subscribed | unsubscribed | unknown`
+   - `user_follow_state`: `following | not_following | unknown`
+2. Schema migration path:
+   - canonical table `relationship_state`
+   - legacy `relationships.state` migrated as inferred `user_follow_state`
+3. Day-boundary policy:
+   - budget windows use UTC calendar day only
+4. `MEDIUM_USER_REF` contract:
+   - user id only (`user_id`)
+   - `@username` is invalid for this field
 
-Authentication runs through **Playwright Chromium** (real Chrome TLS fingerprint), but all subsequent GraphQL execution goes through **`curl-cffi` with `impersonate="chrome120"`** (synthetic Chrome TLS fingerprint). These produce similar but non-identical JA3/JA4 signatures. Cloudflare can correlate that a session born from fingerprint X is now making requests from fingerprint Y — a classic detection vector.
+## Phase 1 (Completed): Client Architecture — Fingerprint Alignment
 
-### Scope
+### Status
 
-- Introduce a **Playwright API request context** client mode that reuses the persistent browser profile from `auth`.
-- Requests inherit the browser's exact TLS stack, cookies, and headers — zero fingerprint mismatch.
-- Retain `curl-cffi` as a `"fast"` mode for local development and testing.
-- Client mode is controlled by a single setting: `CLIENT_MODE=stealth|fast`.
+Completed.
 
-### Deliverables
+### Delivered
 
-- `client.py` refactored: abstract `BaseClient` protocol, `CurlCffiClient` (existing), `PlaywrightClient` (new).
-- `settings.py` gains `client_mode` field with `stealth` default.
-- `main.py` wires the correct client based on settings.
-- Auth and execution share the same Playwright persistent profile directory.
+- `CLIENT_MODE=stealth|fast` implemented.
+- `stealth` mode uses Playwright persistent browser profile + `APIRequestContext`.
+- `fast` mode retains async `curl-cffi` for lighter development loops.
+- Auth and execution reuse the same Playwright profile directory.
 
-### Exit Criteria
+### Validation Criteria (Updated to Match Design)
 
-- `bot probe --tag programming` works identically in both modes.
-- In `stealth` mode, auth fingerprint and execution fingerprint are the same (verified by checking that no separate browser process or TLS library is involved in the request path).
+- `bot probe --tag programming` succeeds in both modes.
+- In `stealth` mode, GraphQL requests are executed through Playwright `APIRequestContext` bound to the persistent browser context profile.
+- In `stealth` mode, no `curl-cffi` request path is used.
 
 ---
 
@@ -50,6 +58,7 @@ Authentication runs through **Playwright Chromium** (real Chrome TLS fingerprint
   - relationship state updates (`newsletter_subscribe`, `user_follow`, etc.)
   - action idempotency checks
 - Schema migration with version table + numbered SQL files.
+- UTC day-boundary budgeting enforced consistently across repository and runtime.
 
 ### Exit Criteria
 
@@ -61,6 +70,10 @@ Authentication runs through **Playwright Chromium** (real Chrome TLS fingerprint
 
 ## Phase 3: Action Engine v1 (Dry-Run First)
 
+### Status
+
+In progress.
+
 ### Scope
 
 - Implement the controlled action pipeline:
@@ -68,7 +81,7 @@ Authentication runs through **Playwright Chromium** (real Chrome TLS fingerprint
   2. Evaluate eligibility (not already following, not recently actioned).
   3. Execute mutation (or simulate in dry-run mode).
   4. Verify follow state via `UserViewerEdge`.
-  5. Persist outcome to `action_log` and `relationships`.
+  5. Persist outcome to `action_log` and `relationship_state`.
 - Dry-run mode performs all read/verify calls but stubs write mutations.
 
 ### Deliverables
@@ -77,6 +90,17 @@ Authentication runs through **Playwright Chromium** (real Chrome TLS fingerprint
 - Budget partitioning by action type (`subscribe`, `unsubscribe`, `unfollow`, `clap`).
 - Retry policy with per-operation backoff.
 - `--dry-run` flag on `bot run` that simulates writes with full decision logging.
+
+### Implemented in This Iteration
+
+- Candidate extraction from `TopicWhoToFollowPubishersQuery` and `TopicLatestStorieQuery`.
+- Optional "followers of seed user" discovery via `UserFollowers`.
+- Eligibility checks: blacklist, cooldown, local/live follow-state checks.
+- `--dry-run/--live` run mode with decision log output.
+- Live follow path: `SubscribeNewsletterV3Mutation` + `UserViewerEdge` verification + canonical state persistence.
+- Follow-cycle state tracking (`follow_cycle`) for non-reciprocal cleanup windows.
+- Cleanup path: non-reciprocal `UnfollowUserMutation` with verification.
+- Organic interaction scaffold: optional pre-follow clap with configurable clap randomizer.
 
 ### Exit Criteria
 
@@ -173,12 +197,11 @@ Authentication runs through **Playwright Chromium** (real Chrome TLS fingerprint
 
 ---
 
-## Immediate Priority Order
+## Active Priority Order (Renumbered)
 
-1. **Phase 1** — Fix the fingerprint split (foundational, blocks everything).
-2. **Phase 2** — Harden contracts and data layer.
-3. **Phase 3** — Action engine with dry-run (first real capability).
-4. **Phase 4** — Safety and timing (production readiness).
-5. **Phase 5** — Observability.
-6. **Phase 6** — Tests and CI.
-7. **Phase 7** — Runbook and release.
+1. **Phase 2** — Harden contracts and data layer.
+2. **Phase 3** — Action engine with dry-run (first real capability).
+3. **Phase 4** — Safety and timing (production readiness).
+4. **Phase 5** — Observability.
+5. **Phase 6** — Tests and CI.
+6. **Phase 7** — Runbook and release.
