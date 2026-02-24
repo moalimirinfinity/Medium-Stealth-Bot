@@ -16,7 +16,7 @@ from medium_stealth_bot.repository import ActionRepository
 from medium_stealth_bot.settings import AppSettings
 
 app = typer.Typer(
-    help="Medium Stealth Bot scaffold (async curl-cffi + Playwright auth + Pydantic settings).",
+    help="Medium Stealth Bot scaffold (dual-mode GraphQL client + Playwright auth + Pydantic settings).",
     no_args_is_help=True,
 )
 console = Console()
@@ -78,14 +78,34 @@ def _render_probe(snapshot: ProbeSnapshot) -> None:
 def _render_daily_run(outcome: DailyRunOutcome) -> None:
     if outcome.budget_exhausted:
         console.print(
-            f"Daily budget exhausted: {outcome.actions_today}/{outcome.max_actions_per_day}.",
+            f"Daily budget exhausted (UTC day): {outcome.actions_today}/{outcome.max_actions_per_day}.",
             style="yellow",
         )
         return
+    mode_label = "dry-run" if outcome.dry_run else "live"
     console.print(
-        f"Daily budget check passed: {outcome.actions_today}/{outcome.max_actions_per_day}.",
+        f"Daily budget check passed (UTC day): {outcome.actions_today}/{outcome.max_actions_per_day} (mode={mode_label}).",
         style="green",
     )
+    console.print(
+        "Candidates considered/eligible: "
+        f"{outcome.considered_candidates}/{outcome.eligible_candidates}"
+    )
+    console.print(
+        "Follow attempted/verified: "
+        f"{outcome.follow_actions_attempted}/{outcome.follow_actions_verified}"
+    )
+    console.print(
+        "Cleanup attempted/verified: "
+        f"{outcome.cleanup_actions_attempted}/{outcome.cleanup_actions_verified}"
+    )
+    if outcome.decision_log:
+        table = Table(title="Decision Log (sample)")
+        table.add_column("#")
+        table.add_column("Decision")
+        for idx, item in enumerate(outcome.decision_log[:12], start=1):
+            table.add_row(str(idx), item)
+        console.print(table)
     if outcome.probe:
         _render_probe(outcome.probe)
 
@@ -137,9 +157,19 @@ def probe_command(
 @app.command("run")
 def run_command(
     tag_slug: str = typer.Option("programming", "--tag"),
+    dry_run: bool = typer.Option(
+        True,
+        "--dry-run/--live",
+        help="Run decision/action pipeline in dry-run mode or execute live mutations.",
+    ),
+    seed_user_refs: list[str] | None = typer.Option(
+        None,
+        "--seed-user",
+        help="Optional seed for followers discovery. Repeat option. Supports @username or user_id.",
+    ),
 ) -> None:
     """
-    Run one daily-cycle scaffold pass (budget check + parallel probe).
+    Run one daily-cycle pass (discovery + scoring + follow pipeline + cleanup).
     """
     settings = _bootstrap_settings()
     if not settings.has_session:
@@ -150,7 +180,11 @@ def run_command(
     async def _run() -> DailyRunOutcome:
         async with MediumAsyncClient(settings) as client:
             runner = DailyRunner(settings=settings, client=client, repository=repository)
-            return await runner.run_daily_cycle(tag_slug=tag_slug)
+            return await runner.run_daily_cycle(
+                tag_slug=tag_slug,
+                dry_run=dry_run,
+                seed_user_refs=seed_user_refs or None,
+            )
 
     outcome = asyncio.run(_run())
     _render_daily_run(outcome)
