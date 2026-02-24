@@ -39,10 +39,41 @@ def _mask(value: str | None, keep: int = 4) -> str:
     return f"{value[:keep]}...{value[-keep:]}"
 
 
-def _bootstrap_settings() -> AppSettings:
-    settings = AppSettings()
+def _quote_env_value(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _upsert_env_values(env_path: Path, updates: dict[str, str]) -> None:
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    existing_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+
+    written_keys: set[str] = set()
+    output_lines: list[str] = []
+    for line in existing_lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            output_lines.append(line)
+            continue
+        key = line.split("=", 1)[0].strip()
+        if key not in updates:
+            output_lines.append(line)
+            continue
+        output_lines.append(f"{key}={_quote_env_value(updates[key])}")
+        written_keys.add(key)
+
+    for key, value in updates.items():
+        if key in written_keys:
+            continue
+        output_lines.append(f"{key}={_quote_env_value(value)}")
+
+    env_path.write_text("\n".join(output_lines).rstrip() + "\n", encoding="utf-8")
+
+
+def _bootstrap_settings(*, env_path: Path | None = None) -> AppSettings:
+    settings = AppSettings(_env_file=env_path) if env_path else AppSettings()
     settings.ensure_directories()
-    configure_logging(settings.log_level)
+    configure_logging(settings.log_level, settings.log_format)
     return settings
 
 
@@ -425,6 +456,173 @@ def auth_command(
     _render_auth(material)
 
 
+@app.command("setup")
+def setup_command(
+    env_path: Path = typer.Option(
+        Path(".env"),
+        "--env-path",
+        help="Env file to read and write interactive runtime defaults.",
+    ),
+    auth_if_missing: bool = typer.Option(
+        True,
+        "--auth-if-missing/--no-auth-if-missing",
+        help="Offer interactive auth capture when MEDIUM_SESSION is missing.",
+    ),
+) -> None:
+    """
+    Interactive setup wizard for common runtime defaults.
+    """
+    settings = _bootstrap_settings(env_path=env_path)
+
+    console.print("Interactive setup wizard")
+    console.print(f"Target env file: {env_path}")
+
+    if auth_if_missing and not settings.has_session:
+        do_auth = typer.confirm(
+            "No MEDIUM_SESSION found. Launch interactive Medium auth now?",
+            default=True,
+        )
+        if do_auth:
+            material = asyncio.run(interactive_auth(settings=settings))
+            upsert_env_file(env_path=env_path, material=material)
+            console.print("Auth session material saved.", style="green")
+            settings = _bootstrap_settings(env_path=env_path)
+
+    client_mode = str(
+        typer.prompt(
+            "Client mode (stealth/fast)",
+            default=settings.client_mode,
+        )
+    ).strip().lower()
+    while client_mode not in {"stealth", "fast"}:
+        console.print("Invalid mode. Choose 'stealth' or 'fast'.", style="yellow")
+        client_mode = str(typer.prompt("Client mode (stealth/fast)", default="stealth")).strip().lower()
+
+    max_actions = int(typer.prompt("Max actions per day", default=settings.max_actions_per_day, type=int))
+    max_subscribe = int(
+        typer.prompt("Max subscribe actions per day", default=settings.max_subscribe_actions_per_day, type=int)
+    )
+    max_unfollow = int(
+        typer.prompt("Max unfollow actions per day", default=settings.max_unfollow_actions_per_day, type=int)
+    )
+    max_follow_per_run = int(
+        typer.prompt("Max follow actions per run", default=settings.max_follow_actions_per_run, type=int)
+    )
+    follow_candidate_limit = int(
+        typer.prompt("Follow candidate limit per run", default=settings.follow_candidate_limit, type=int)
+    )
+    follow_cooldown_hours = int(
+        typer.prompt("Follow cooldown hours", default=settings.follow_cooldown_hours, type=int)
+    )
+    discovery_depth = int(
+        typer.prompt(
+            "Discovery followers depth (1 or 2)",
+            default=settings.discovery_followers_depth,
+            type=int,
+        )
+    )
+    while discovery_depth not in {1, 2}:
+        console.print("Discovery depth must be 1 or 2.", style="yellow")
+        discovery_depth = int(typer.prompt("Discovery followers depth (1 or 2)", default=1, type=int))
+
+    seed_followers_limit = int(
+        typer.prompt("Seed followers fetch limit", default=settings.discovery_seed_followers_limit, type=int)
+    )
+    second_hop_seed_limit = int(
+        typer.prompt("Second-hop seed limit", default=settings.discovery_second_hop_seed_limit, type=int)
+    )
+    seed_users_raw = str(
+        typer.prompt(
+            "Default seed users (comma-separated, supports @username or id:<user_id>)",
+            default=settings.discovery_seed_users_raw,
+        )
+    ).strip()
+
+    enable_pre_follow_clap = typer.confirm(
+        "Enable pre-follow clap?",
+        default=settings.enable_pre_follow_clap,
+    )
+    cleanup_unfollow_limit = int(
+        typer.prompt(
+            "Cleanup unfollow limit per run",
+            default=settings.cleanup_unfollow_limit,
+            type=int,
+        )
+    )
+
+    updates = {
+        "CLIENT_MODE": client_mode,
+        "MAX_ACTIONS_PER_DAY": str(max_actions),
+        "MAX_SUBSCRIBE_ACTIONS_PER_DAY": str(max_subscribe),
+        "MAX_UNFOLLOW_ACTIONS_PER_DAY": str(max_unfollow),
+        "MAX_FOLLOW_ACTIONS_PER_RUN": str(max_follow_per_run),
+        "FOLLOW_CANDIDATE_LIMIT": str(follow_candidate_limit),
+        "FOLLOW_COOLDOWN_HOURS": str(follow_cooldown_hours),
+        "DISCOVERY_FOLLOWERS_DEPTH": str(discovery_depth),
+        "DISCOVERY_SEED_FOLLOWERS_LIMIT": str(seed_followers_limit),
+        "DISCOVERY_SECOND_HOP_SEED_LIMIT": str(second_hop_seed_limit),
+        "DISCOVERY_SEED_USERS": seed_users_raw,
+        "ENABLE_PRE_FOLLOW_CLAP": "true" if enable_pre_follow_clap else "false",
+        "CLEANUP_UNFOLLOW_LIMIT": str(cleanup_unfollow_limit),
+    }
+    _upsert_env_values(env_path=env_path, updates=updates)
+
+    summary = Table(title="Setup Profile Saved")
+    summary.add_column("Key")
+    summary.add_column("Value")
+    for key, value in updates.items():
+        summary.add_row(key, value if value else "(empty)")
+    console.print(summary)
+    console.print(
+        "Next step: run `uv run bot start` for immediate live execution "
+        "(or `uv run bot run --dry-run` for preview-only).",
+        style="green",
+    )
+
+
+@app.command("start")
+def start_command(
+    tag_slug: str = typer.Option("programming", "--tag"),
+    dry_run_first: bool = typer.Option(
+        False,
+        "--dry-run-first/--live-only",
+        help="Optionally run a dry-run preflight before live execution.",
+    ),
+    seed_user_refs: list[str] | None = typer.Option(
+        None,
+        "--seed-user",
+        help="Optional seed users. Repeat option. Falls back to DISCOVERY_SEED_USERS from .env.",
+    ),
+) -> None:
+    """
+    Guided start: live execution by default, with optional dry-run preflight.
+    """
+    settings = _bootstrap_settings()
+    if not settings.has_session:
+        raise typer.BadParameter("No MEDIUM_SESSION found. Run `uv run bot auth` or `uv run bot setup` first.")
+
+    resolved_seeds = seed_user_refs if seed_user_refs else (settings.discovery_seed_users or None)
+
+    if dry_run_first:
+        console.print("Step 1/2: running dry-run sanity check", style="cyan")
+        run_command(
+            tag_slug=tag_slug,
+            live=False,
+            seed_user_refs=resolved_seeds,
+        )
+        console.print("Dry-run preflight complete; continuing to live execution.", style="green")
+    else:
+        console.print("Step 1/1: running live cycle", style="cyan")
+
+    if dry_run_first:
+        console.print("Step 2/2: running live cycle", style="cyan")
+    run_command(
+        tag_slug=tag_slug,
+        live=True,
+        seed_user_refs=resolved_seeds,
+    )
+
+
 @app.command("probe")
 def probe_command(
     tag_slug: str = typer.Option("programming", "--tag"),
@@ -507,10 +705,10 @@ def contracts_command(
 @app.command("run")
 def run_command(
     tag_slug: str = typer.Option("programming", "--tag"),
-    dry_run: bool = typer.Option(
+    live: bool = typer.Option(
         True,
-        "--dry-run/--live",
-        help="Run decision/action pipeline in dry-run mode or execute live mutations.",
+        "--live/--dry-run",
+        help="Execute live mutations by default. Use --dry-run for preview-only execution.",
     ),
     seed_user_refs: list[str] | None = typer.Option(
         None,
@@ -530,7 +728,7 @@ def run_command(
         run_id=run_id,
         command="run",
         tag_slug=tag_slug,
-        mode="dry_run" if dry_run else "live",
+        mode="live" if live else "dry_run",
     )
     log = structlog.get_logger(__name__)
     started_at = _utc_now()
@@ -549,7 +747,7 @@ def run_command(
                     runner = DailyRunner(settings=settings, client=client, repository=repository)
                     return await runner.run_daily_cycle(
                         tag_slug=tag_slug,
-                        dry_run=dry_run,
+                        dry_run=not live,
                         seed_user_refs=seed_user_refs or None,
                     )
 
@@ -580,7 +778,7 @@ def run_command(
             started_at=started_at,
             ended_at=ended_at,
             tag_slug=tag_slug,
-            dry_run=dry_run,
+            dry_run=not live,
             status=status,
             outcome=outcome,
             error=error_payload,
@@ -615,10 +813,10 @@ def run_command(
 
 @app.command("reconcile")
 def reconcile_command(
-    dry_run: bool = typer.Option(
+    live: bool = typer.Option(
         True,
-        "--dry-run/--live",
-        help="Dry-run only validates follow state. Live mode persists reconciliation updates.",
+        "--live/--dry-run",
+        help="Persist reconciliation updates by default. Use --dry-run for read-only validation.",
     ),
     max_users: int = typer.Option(
         200,
@@ -646,7 +844,7 @@ def reconcile_command(
     structlog_contextvars.bind_contextvars(
         run_id=run_id,
         command="reconcile",
-        mode="dry_run" if dry_run else "live",
+        mode="live" if live else "dry_run",
     )
     try:
         _, repository = _build_runner(settings)
@@ -655,7 +853,7 @@ def reconcile_command(
             async with MediumAsyncClient(settings) as client:
                 runner = DailyRunner(settings=settings, client=client, repository=repository)
                 return await runner.reconcile_follow_states(
-                    dry_run=dry_run,
+                    dry_run=not live,
                     max_users=max_users,
                     page_size=page_size,
                 )
@@ -679,7 +877,7 @@ def status_command() -> None:
     latest = read_latest_run_artifact(settings.run_artifacts_dir)
     if not latest:
         console.print(
-            f"No run artifacts found in {settings.run_artifacts_dir}. Execute `uv run bot run --dry-run` first.",
+            f"No run artifacts found in {settings.run_artifacts_dir}. Execute `uv run bot run` first.",
             style="yellow",
         )
         return
