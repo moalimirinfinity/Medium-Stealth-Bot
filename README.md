@@ -1,187 +1,138 @@
 # Medium Stealth Bot
 
-Local-first Medium automation focused on safety guardrails, capture-driven contracts, and auditable local state.
+Automate Medium growth with a local-first, safety-guarded engine built for repeatable live execution.
 
-## What It Does
+This project turns manual follower discovery, scoring, follow/reconcile cycles, and diagnostics into a structured CLI workflow with strict risk controls.
 
-- Runs Medium discovery/follow/cleanup loops with strict daily budgets.
-- Verifies follow state using canonical read checks.
-- Persists decisions and outcomes into local SQLite state.
-- Emits machine-readable run artifacts for diagnostics.
+## Why This Project
 
-## Stack
+- Runs real growth loops with enforceable budgets and timing gates.
+- Keeps control local: local auth, local DB, local artifacts, local scheduler.
+- Uses capture-driven GraphQL contracts to detect drift before it breaks runs.
+- Ships with deployment hardening for public OSS and daily production-style usage.
 
-- `uv` + `pyproject.toml`
-- Python 3.12+
-- `Typer` + `Rich`
-- `Pydantic v2` + `pydantic-settings`
-- `structlog`
-- `SQLite`
-- `Playwright` (stealth mode) + `curl-cffi` (fast mode)
+## Feature Highlights
 
-## Execution Modes
+- Interactive CLI menu (`bot start`) with guided options for live, dry-run, reconcile, contracts, and status.
+- Quick-live mode (`bot start --quick-live`) for automation and scheduler use.
+- Contract integrity layer:
+  - operation parity checks
+  - response field/path validation
+  - optional live read verification
+- Safety model:
+  - challenge/session-expiry halt detection
+  - consecutive-failure halts
+  - operator kill switch
+- Local observability:
+  - versioned run artifacts
+  - artifact schema validation
+  - latest-run diagnostics (`bot status`)
+- Deployment tooling:
+  - production profile validator
+  - daily scheduler runner
+  - release helper + release workflow
+  - secret scanning gate
 
-1. `CLIENT_MODE=stealth` (default)
-   - Playwright persistent profile + `APIRequestContext`
-2. `CLIENT_MODE=fast`
-   - async `curl-cffi` for lighter local loops
-
-## Quickstart
+## Quick Start
 
 ```bash
 uv sync --group dev
 uv run playwright install chromium
 cp .env.example .env
-uv run bot --help
-```
-
-Authenticate once:
-
-```bash
-uv run bot auth
-```
-
-This writes:
-
-- `MEDIUM_SESSION`
-- `MEDIUM_CSRF`
-- `MEDIUM_USER_REF`
-
-Or use guided setup:
-
-```bash
 uv run bot setup
+uv run bot start
 ```
 
-This wizard can:
+`bot setup` can capture auth (if needed) and write sane defaults to `.env`.
 
-- capture auth if missing
-- set common runtime defaults (mode, budgets, discovery depth, seed users)
-- save everything into `.env`
+## Live Run Flow (Recommended)
 
-For scheduled production-style runs:
+1. Prepare a production profile.
 
 ```bash
 cp .env.production.example .env.production
 uv run bot profile-validate --env-path .env.production
 ```
 
+2. Run a preflight + live cycle.
+
+```bash
+uv run bot start --quick-live --dry-run-first --tag programming
+```
+
+3. Check diagnostics.
+
+```bash
+uv run bot status
+uv run bot artifacts validate
+```
+
 ## Core Commands
 
 ```bash
 uv run bot setup
+uv run bot auth
 uv run bot start
-uv run bot start --dry-run-first
 uv run bot start --quick-live
-uv run bot profile-validate --env-path .env.production
+uv run bot start --quick-live --dry-run-first --tag programming
+uv run bot run --tag programming
+uv run bot run --dry-run --tag programming
+uv run bot reconcile --limit 200 --page-size 50
+uv run bot reconcile --dry-run --limit 200 --page-size 50
 uv run bot probe --tag programming
-uv run bot contracts --tag programming
+uv run bot contracts --tag programming --no-execute-reads
 uv run bot contracts --tag programming --execute-reads \
   --newsletter-slug "$CONTRACT_REGISTRY_LIVE_NEWSLETTER_SLUG" \
   --newsletter-username "$CONTRACT_REGISTRY_LIVE_NEWSLETTER_USERNAME"
-uv run bot run --tag programming
-uv run bot run --tag programming --dry-run --seed-user @some_creator
-uv run bot reconcile --limit 200 --page-size 50
-uv run bot reconcile --dry-run --limit 200 --page-size 50
-uv run bot artifacts validate
+uv run bot profile-validate --env-path .env.production
 uv run bot status
+uv run bot artifacts validate
 ```
 
-### Command Notes
+## Safety and Guardrails
 
-- `setup`: interactive wizard for auth + common `.env` defaults.
-- `start`: interactive numbered menu (14 options) for running live/dry cycles, reconcile, probe, contracts, status, setup, and auth without typing full commands.
-- `start --quick-live`: direct mode that executes live by default, with optional `--dry-run-first`.
-- `profile-validate`: validates production guardrails from an env profile file.
-- `probe`: parallel read-only GraphQL health checks.
-- `contracts`: implementation-registry parity and optional live read checks.
-- `run`: full daily cycle (discovery, scoring, follow pipeline, cleanup), live by default.
-- `reconcile`: follow-state reconciliation over persisted candidates/follow-cycle rows, live by default.
-- `artifacts validate`: schema/version validation for run artifacts.
-- `status`: diagnostics summary from latest artifact.
-
-## Product Rules
-
-1. Budget windows are UTC day boundaries only.
-2. `MEDIUM_USER_REF` must be a Medium `user_id` (not `@username`).
-3. Newsletter state and user-follow state are tracked separately.
-4. Canonical follow-state truth is `UserViewerEdge.isFollowing`.
-5. `PublishPostThreadedResponse` is contract-covered but excluded from default daily execution.
+- UTC day-boundary policy for all daily budgets.
+- `MEDIUM_USER_REF` must be a Medium `user_id` (not `@username`).
+- Live halts on:
+  - challenge detections/status codes
+  - session-expiry/auth failure signatures
+  - consecutive failure threshold
+  - `OPERATOR_KILL_SWITCH=true`
+- Dry-run and live paths are explicit and auditable in artifacts.
 
 ## Key Configuration
 
-See `.env.example` for the full set. Important variables:
+Start from `.env.example` and tune:
 
-- `CLIENT_MODE`
-- `DAY_BOUNDARY_POLICY`
-- `LOG_LEVEL`
-- `LOG_FORMAT` (`pretty` default, `json` for machine log parsing)
-- `MAX_ACTIONS_PER_DAY`
-- `MAX_SUBSCRIBE_ACTIONS_PER_DAY`
-- `MAX_UNFOLLOW_ACTIONS_PER_DAY`
-- `MAX_CLAP_ACTIONS_PER_DAY`
-- `MAX_FOLLOW_ACTIONS_PER_RUN`
-- `FOLLOW_CANDIDATE_LIMIT`
-- `FOLLOW_COOLDOWN_HOURS`
-- `UNFOLLOW_NONRECIPROCAL_AFTER_DAYS`
-- `RECONCILE_SCAN_LIMIT`
-- `RECONCILE_PAGE_SIZE`
-- `SCORE_WEIGHT_RATIO`
-- `SCORE_WEIGHT_KEYWORD`
-- `SCORE_WEIGHT_SOURCE`
-- `SCORE_WEIGHT_NEWSLETTER`
-- `CONTRACT_REGISTRY_VALIDATE_RESPONSE_FIELDS`
-- `CONTRACT_REGISTRY_LIVE_NEWSLETTER_SLUG`
-- `CONTRACT_REGISTRY_LIVE_NEWSLETTER_USERNAME`
-- `RISK_HALT_CONSECUTIVE_FAILURES`
-- `ENABLE_CHALLENGE_HALT`
-- `ENABLE_SESSION_EXPIRY_HALT`
-- `OPERATOR_KILL_SWITCH`
-
-## Responsible Usage
-
-- You are responsible for complying with Medium terms, rate limits, and applicable law.
-- Keep automation conservative and safety-first; do not bypass security or challenge flows.
-- Use dry-run/preflight and profile validation before enabling recurring live schedules.
-- Never share or commit live session material.
-
-## Public Repo Security Notes
-
-- `.env` is ignored by git; keep all live credentials there only.
-- Do not commit real values for `MEDIUM_SESSION`, `MEDIUM_CSRF`, or user identifiers.
-- Capture files in `captures/final/` are sanitized for public push; regenerate/sanitize before committing new captures.
-
-### Logging Modes
-
-- Default (`LOG_FORMAT=pretty`) prints concise, human-friendly event lines and rich summary tables.
-- `LOG_FORMAT=json` restores structured JSON lines for ingestion and machine parsing.
-- Quick overrides:
-  - `LOG_FORMAT=pretty uv run bot run --tag programming --dry-run`
-  - `LOG_FORMAT=json uv run bot run --tag programming --dry-run`
-
-## Safety Model
-
-Runtime halts on:
-
-- challenge signatures/statuses
-- auth/session-expiry signatures
-- consecutive failure threshold
-- operator kill switch
-
-Timing behavior includes session warm-up, read delays, and inter-action gaps.
-
-## Local State and Artifacts
-
-- DB path: `.data/medium-stealth-bot.db`
-- Artifacts: `.data/runs/` + `.data/runs/latest.json`
-- Migrations: `src/medium_stealth_bot/migrations/`
-- Migration history: `schema_migrations`
+- runtime:
+  - `CLIENT_MODE`
+  - `DAY_BOUNDARY_POLICY`
+  - `LOG_FORMAT`
+- budgets:
+  - `MAX_ACTIONS_PER_DAY`
+  - `MAX_FOLLOW_ACTIONS_PER_RUN`
+  - `MAX_SUBSCRIBE_ACTIONS_PER_DAY`
+  - `MAX_UNFOLLOW_ACTIONS_PER_DAY`
+  - `MAX_CLAP_ACTIONS_PER_DAY`
+- pacing:
+  - `MIN_READ_WAIT_SECONDS`
+  - `MIN_ACTION_GAP_SECONDS`
+- safety:
+  - `RISK_HALT_CONSECUTIVE_FAILURES`
+  - `ENABLE_CHALLENGE_HALT`
+  - `ENABLE_SESSION_EXPIRY_HALT`
+  - `OPERATOR_KILL_SWITCH`
+- contracts:
+  - `CONTRACT_REGISTRY_VALIDATE_RESPONSE_FIELDS`
+  - `CONTRACT_REGISTRY_LIVE_NEWSLETTER_SLUG`
+  - `CONTRACT_REGISTRY_LIVE_NEWSLETTER_USERNAME`
 
 ## Quality Gates
 
-Local sanity:
+Local checks:
 
 ```bash
+uv run python -m compileall -q src
 uv run python scripts/check_capture_integrity.py
 uv run python scripts/check_capture_sanitization.py
 uv run python scripts/check_response_contract_paths.py
@@ -190,74 +141,40 @@ uv run bot contracts --tag programming --no-execute-reads
 uv run bot profile-validate --env-path .env.production.example
 ```
 
-CI workflows:
+CI:
 
-- `.github/workflows/contracts.yml`
-- compile check
-- capture integrity check
-- capture sanitization check
-- response-path contract check
-- tests
-- contract parity checks
-- optional live read checks when secrets/vars are configured
-- `.github/workflows/secrets.yml`
-- blocking secret scan gate
-- `.github/workflows/release.yml`
-- tag-triggered release checks + artifact build + GitHub Release
+- quality checks: `.github/workflows/contracts.yml`
+- secret scanning: `.github/workflows/secrets.yml`
+- release workflow: `.github/workflows/release.yml`
 
-## Deployment Workflows
+## Deployment and Release
 
-- Scheduler runner:
+- Daily local scheduler runner:
   - `scripts/run_daily_live.sh --env-file .env.production --tag programming`
-- Cron template:
+- Schedule templates:
   - `ops/scheduling/cron.example`
-- launchd template:
   - `ops/scheduling/com.mediumstealthbot.daily.plist`
 - Local release helper:
   - `scripts/release_local.sh <version>`
 
-Operational docs:
+## Responsible Usage
 
-- `docs/SCHEDULING.md`
-- `docs/RELEASE.md`
-- `docs/RUNBOOK.md`
-- `docs/ROLLBACK.md`
-- `docs/PROMOTION_POLICY.md`
+- You are responsible for compliance with Medium policy, rate limits, and applicable law.
+- Do not attempt to bypass challenges or account protections.
+- Never commit live credentials or raw cookie material.
+- Captures in `captures/final/` must remain sanitized for public pushes.
 
-## Repository Layout
+## Repo Map
 
 ```text
-src/medium_stealth_bot/
-  main.py
-  settings.py
-  deployment.py
-  logic.py
-  repository.py
-  database.py
-  operations.py
-  contracts.py
-  client.py
-  safety.py
-  timing.py
-  observability.py
-  artifact_schema.py
-  redaction.py
-  typed_payloads.py
-  migrations/
-scripts/
-docs/
-ops/
-captures/
-tests/
+src/medium_stealth_bot/   core application
+scripts/                  checks, scheduler, release helpers
+captures/                 capture corpus + manifest + capture docs
+ops/scheduling/           cron/launchd templates
+tests/                    test suite
 ```
 
 ## References
 
 - [Project-Overview.md](Project-Overview.md)
-- [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md)
 - [captures/README.md](captures/README.md)
-- [docs/SCHEDULING.md](docs/SCHEDULING.md)
-- [docs/RELEASE.md](docs/RELEASE.md)
-- [docs/RUNBOOK.md](docs/RUNBOOK.md)
-- [docs/ROLLBACK.md](docs/ROLLBACK.md)
-- [docs/PROMOTION_POLICY.md](docs/PROMOTION_POLICY.md)
