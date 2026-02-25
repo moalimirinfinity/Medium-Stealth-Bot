@@ -8,15 +8,20 @@ on:
     inputs:
       tag_name:
         description: "Release tag (for manual runs), e.g. v0.2.0"
-        required: false
+        required: true
         type: string
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
 
     steps:
       - name: Checkout
@@ -27,8 +32,48 @@ jobs:
       - name: Setup UV
         uses: astral-sh/setup-uv@v4
 
+      - name: Resolve Release Tag
+        id: resolve_tag
+        env:
+          INPUT_TAG: ${{ inputs.tag_name || '' }}
+        run: |
+          set -euo pipefail
+          resolved_tag=""
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            resolved_tag="${GITHUB_REF_NAME}"
+          else
+            if [[ -z "${INPUT_TAG}" ]]; then
+              echo "tag_name input is required for workflow_dispatch runs."
+              exit 1
+            fi
+            resolved_tag="${INPUT_TAG}"
+          fi
+          if [[ ! "${resolved_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must match v<major>.<minor>.<patch>; got: ${resolved_tag}"
+            exit 1
+          fi
+          echo "value=${resolved_tag}" >> "$GITHUB_OUTPUT"
+
       - name: Sync Dependencies
         run: uv sync --group dev
+
+      - name: Validate Tag Matches Project Version
+        env:
+          RESOLVED_TAG: ${{ steps.resolve_tag.outputs.value }}
+        run: |
+          set -euo pipefail
+          PROJECT_VERSION="$(uv run python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          print(data["project"]["version"])
+          PY
+          )"
+          if [[ "${RESOLVED_TAG}" != "v${PROJECT_VERSION}" ]]; then
+            echo "Release tag ${RESOLVED_TAG} does not match pyproject version v${PROJECT_VERSION}."
+            exit 1
+          fi
 
       - name: Compile
         run: uv run python -m compileall -q src
@@ -61,22 +106,6 @@ jobs:
       - name: Generate Checksums
         run: sha256sum dist/* > dist/SHA256SUMS.txt
 
-      - name: Resolve Release Tag
-        id: resolve_tag
-        env:
-          INPUT_TAG: ${{ inputs.tag_name || '' }}
-        run: |
-          set -euo pipefail
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [[ -z "${INPUT_TAG}" ]]; then
-            echo "tag_name input is required for workflow_dispatch runs."
-            exit 1
-          fi
-          echo "value=${INPUT_TAG}" >> "$GITHUB_OUTPUT"
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -84,4 +113,3 @@ jobs:
           generate_release_notes: true
           files: |
             dist/*
-            dist/SHA256SUMS.txt

@@ -3,10 +3,19 @@ name: Quality Gates
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   quality:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -39,6 +48,9 @@ jobs:
         env:
           CONTRACT_REGISTRY_VALIDATE_RESPONSE_FIELDS: "true"
         run: uv run bot contracts --tag programming --no-execute-reads
+
+      - name: Validate Production Profile Template
+        run: uv run bot profile-validate --env-path .env.production.example
 
       - name: Validate Contract Registry Live Reads
         if: ${{ secrets.MEDIUM_SESSION != '' && secrets.MEDIUM_USER_REF != '' && vars.CONTRACT_REGISTRY_LIVE_NEWSLETTER_SLUG != '' && vars.CONTRACT_REGISTRY_LIVE_NEWSLETTER_USERNAME != '' }}
