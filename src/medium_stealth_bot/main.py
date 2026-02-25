@@ -14,6 +14,7 @@ from medium_stealth_bot.auth import interactive_auth, upsert_env_file
 from medium_stealth_bot.client import MediumAsyncClient
 from medium_stealth_bot.contracts import ContractValidationReport, validate_contract_registry
 from medium_stealth_bot.database import Database
+from medium_stealth_bot.deployment import validate_production_profile
 from medium_stealth_bot.logging import configure_logging
 from medium_stealth_bot.logic import DailyRunner
 from medium_stealth_bot.models import AuthSessionMaterial, DailyRunOutcome, ProbeSnapshot, ReconcileOutcome
@@ -439,6 +440,45 @@ def version_command() -> None:
     console.print(f"medium-stealth-bot {__version__}")
 
 
+@app.command("profile-validate")
+def profile_validate_command(
+    env_path: Path = typer.Option(
+        Path(".env.production"),
+        "--env-path",
+        help="Production env profile file to validate.",
+    ),
+) -> None:
+    """
+    Validate production profile guardrails before enabling scheduled live runs.
+    """
+    if not env_path.exists():
+        console.print(f"Profile file not found: {env_path}", style="red")
+        raise typer.Exit(code=1)
+
+    try:
+        settings = _bootstrap_settings(env_path=env_path)
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"Failed to load profile from {env_path}: {exc}", style="red")
+        raise typer.Exit(code=1) from exc
+
+    issues = validate_production_profile(settings)
+    summary = Table(title=f"Production Profile Validation ({env_path})")
+    summary.add_column("Rule")
+    summary.add_column("Expected")
+    summary.add_column("Actual")
+
+    if issues:
+        for issue in issues:
+            summary.add_row(issue.key, issue.expected, issue.actual)
+        console.print(summary)
+        console.print("Production profile validation failed.", style="red")
+        raise typer.Exit(code=1)
+
+    summary.add_row("status", "all checks passed", "ok")
+    console.print(summary)
+    console.print("Production profile validation passed.", style="green")
+
+
 @app.command("auth")
 def auth_command(
     write_env: bool = typer.Option(True, "--write-env/--no-write-env"),
@@ -580,6 +620,250 @@ def setup_command(
     )
 
 
+def _normalize_seed_user_refs(values: list[str] | None) -> list[str] | None:
+    if not values:
+        return None
+    normalized = [item.strip() for item in values if item and item.strip()]
+    return normalized or None
+
+
+def _parse_seed_user_refs(raw: str) -> list[str] | None:
+    text = raw.strip()
+    if not text:
+        return None
+    return _normalize_seed_user_refs(text.split(","))
+
+
+def _seed_refs_summary(seed_user_refs: list[str] | None) -> str:
+    if not seed_user_refs:
+        return "-"
+    if len(seed_user_refs) <= 3:
+        return ", ".join(seed_user_refs)
+    return f"{', '.join(seed_user_refs[:3])} (+{len(seed_user_refs) - 3} more)"
+
+
+def _render_start_menu(
+    *,
+    has_session: bool,
+    tag_slug: str,
+    seed_user_refs: list[str] | None,
+    reconcile_limit: int,
+    reconcile_page_size: int,
+    newsletter_slug: str | None,
+    newsletter_username: str | None,
+) -> None:
+    status_style = "green" if has_session else "yellow"
+    status_label = "ready" if has_session else "missing (choose option 13: auth)"
+    console.print(f"Session status: {status_label}", style=status_style)
+
+    defaults = Table(title="Current Defaults")
+    defaults.add_column("Key")
+    defaults.add_column("Value")
+    defaults.add_row("Tag", tag_slug)
+    defaults.add_row("Seed Users", _seed_refs_summary(seed_user_refs))
+    defaults.add_row("Reconcile Limit", str(reconcile_limit))
+    defaults.add_row("Reconcile Page Size", str(reconcile_page_size))
+    defaults.add_row("Newsletter Slug", newsletter_slug or "-")
+    defaults.add_row("Newsletter Username", newsletter_username or "-")
+    console.print(defaults)
+
+    menu = Table(title="Start Menu")
+    menu.add_column("Option", justify="right")
+    menu.add_column("Action")
+    menu.add_row("1", "Run growth cycle (live)")
+    menu.add_row("2", "Run growth cycle (dry-run)")
+    menu.add_row("3", "Run dry-run preflight then live growth cycle")
+    menu.add_row("4", "Reconcile follow states (live)")
+    menu.add_row("5", "Reconcile follow states (dry-run)")
+    menu.add_row("6", "Probe GraphQL reads")
+    menu.add_row("7", "Validate operation contracts (parity only)")
+    menu.add_row("8", "Validate contracts + execute live read checks")
+    menu.add_row("9", "Show latest run status")
+    menu.add_row("10", "Validate latest run artifact schema")
+    menu.add_row("11", "Edit defaults")
+    menu.add_row("12", "Run setup wizard")
+    menu.add_row("13", "Refresh auth session")
+    menu.add_row("14", "Exit")
+    console.print(menu)
+
+
+def _run_start_menu(
+    *,
+    initial_tag_slug: str,
+    initial_seed_user_refs: list[str] | None,
+    initial_reconcile_limit: int,
+    initial_reconcile_page_size: int,
+    initial_newsletter_slug: str | None,
+    initial_newsletter_username: str | None,
+) -> None:
+    tag_slug = initial_tag_slug.strip() or "programming"
+    seed_user_refs = _normalize_seed_user_refs(initial_seed_user_refs)
+    reconcile_limit = max(1, initial_reconcile_limit)
+    reconcile_page_size = min(500, max(1, initial_reconcile_page_size))
+    newsletter_slug = (initial_newsletter_slug or "").strip()
+    newsletter_username = (initial_newsletter_username or "").strip()
+    valid_choices = {str(value) for value in range(1, 15)}
+
+    while True:
+        settings = _bootstrap_settings()
+        _render_start_menu(
+            has_session=settings.has_session,
+            tag_slug=tag_slug,
+            seed_user_refs=seed_user_refs,
+            reconcile_limit=reconcile_limit,
+            reconcile_page_size=reconcile_page_size,
+            newsletter_slug=newsletter_slug or None,
+            newsletter_username=newsletter_username or None,
+        )
+
+        choice = str(typer.prompt("Select option", default="1")).strip().lower()
+        if choice in {"q", "quit", "exit"}:
+            choice = "14"
+        if choice not in valid_choices:
+            console.print("Invalid option. Choose a number from 1 to 14.", style="yellow")
+            continue
+
+        def _execute(action_name: str, fn) -> bool:
+            console.print(f"Running: {action_name}", style="cyan")
+            try:
+                fn()
+                return True
+            except typer.Exit as exc:
+                if exc.exit_code == 0:
+                    return True
+                console.print(f"{action_name} ended with exit code {exc.exit_code}.", style="yellow")
+                return False
+            except Exception as exc:  # noqa: BLE001
+                console.print(f"{action_name} failed: {exc}", style="red")
+                return False
+
+        if choice == "1":
+            _execute(
+                "run live cycle",
+                lambda: run_command(tag_slug=tag_slug, live=True, seed_user_refs=seed_user_refs),
+            )
+        elif choice == "2":
+            _execute(
+                "run dry-run cycle",
+                lambda: run_command(tag_slug=tag_slug, live=False, seed_user_refs=seed_user_refs),
+            )
+        elif choice == "3":
+            preflight_ok = _execute(
+                "dry-run preflight",
+                lambda: run_command(tag_slug=tag_slug, live=False, seed_user_refs=seed_user_refs),
+            )
+            if preflight_ok:
+                _execute(
+                    "run live cycle",
+                    lambda: run_command(tag_slug=tag_slug, live=True, seed_user_refs=seed_user_refs),
+                )
+        elif choice == "4":
+            _execute(
+                "reconcile live",
+                lambda: reconcile_command(live=True, max_users=reconcile_limit, page_size=reconcile_page_size),
+            )
+        elif choice == "5":
+            _execute(
+                "reconcile dry-run",
+                lambda: reconcile_command(live=False, max_users=reconcile_limit, page_size=reconcile_page_size),
+            )
+        elif choice == "6":
+            _execute("probe reads", lambda: probe_command(tag_slug=tag_slug))
+        elif choice == "7":
+            _execute(
+                "validate contracts",
+                lambda: contracts_command(
+                    tag_slug=tag_slug,
+                    strict=True,
+                    execute_reads=False,
+                    newsletter_slug=None,
+                    newsletter_username=None,
+                ),
+            )
+        elif choice == "8":
+            _execute(
+                "validate contracts with live reads",
+                lambda: contracts_command(
+                    tag_slug=tag_slug,
+                    strict=True,
+                    execute_reads=True,
+                    newsletter_slug=newsletter_slug or None,
+                    newsletter_username=newsletter_username or None,
+                ),
+            )
+        elif choice == "9":
+            _execute("show status", status_command)
+        elif choice == "10":
+            _execute("validate latest artifact", lambda: artifacts_validate_command(artifact_path=None))
+        elif choice == "11":
+            updated_tag = str(typer.prompt("Default tag", default=tag_slug)).strip()
+            if updated_tag:
+                tag_slug = updated_tag
+
+            seed_default = ", ".join(seed_user_refs) if seed_user_refs else ""
+            seed_input = str(
+                typer.prompt(
+                    "Default seed users (comma-separated, '-' to clear)",
+                    default=seed_default,
+                )
+            ).strip()
+            if seed_input == "-":
+                seed_user_refs = None
+            else:
+                seed_user_refs = _parse_seed_user_refs(seed_input)
+
+            limit_value = int(typer.prompt("Default reconcile limit", default=reconcile_limit, type=int))
+            if limit_value < 1:
+                console.print("Reconcile limit must be >= 1. Keeping previous value.", style="yellow")
+            else:
+                reconcile_limit = limit_value
+
+            page_size_value = int(typer.prompt("Default reconcile page size", default=reconcile_page_size, type=int))
+            if page_size_value < 1 or page_size_value > 500:
+                console.print("Reconcile page size must be between 1 and 500. Keeping previous value.", style="yellow")
+            else:
+                reconcile_page_size = page_size_value
+
+            slug_input = str(
+                typer.prompt(
+                    "Default newsletter slug for contracts live reads ('-' to clear)",
+                    default=newsletter_slug,
+                )
+            ).strip()
+            newsletter_slug = "" if slug_input == "-" else slug_input
+
+            username_input = str(
+                typer.prompt(
+                    "Default newsletter username for contracts live reads ('-' to clear)",
+                    default=newsletter_username,
+                )
+            ).strip()
+            newsletter_username = "" if username_input == "-" else username_input
+
+            console.print("Defaults updated.", style="green")
+        elif choice == "12":
+            _execute("run setup wizard", lambda: setup_command(env_path=Path(".env"), auth_if_missing=True))
+            refreshed_settings = _bootstrap_settings()
+            if not seed_user_refs and refreshed_settings.discovery_seed_users:
+                seed_user_refs = refreshed_settings.discovery_seed_users
+            if not newsletter_slug and refreshed_settings.contract_registry_live_newsletter_slug:
+                newsletter_slug = refreshed_settings.contract_registry_live_newsletter_slug
+            if not newsletter_username and refreshed_settings.contract_registry_live_newsletter_username:
+                newsletter_username = refreshed_settings.contract_registry_live_newsletter_username
+        elif choice == "13":
+            _execute(
+                "refresh auth session",
+                lambda: auth_command(
+                    write_env=True,
+                    env_path=Path(".env"),
+                    login_url="https://medium.com/m/signin",
+                ),
+            )
+        else:
+            console.print("Exiting start menu.", style="green")
+            return
+
+
 @app.command("start")
 def start_command(
     tag_slug: str = typer.Option("programming", "--tag"),
@@ -593,15 +877,31 @@ def start_command(
         "--seed-user",
         help="Optional seed users. Repeat option. Falls back to DISCOVERY_SEED_USERS from .env.",
     ),
+    interactive: bool = typer.Option(
+        True,
+        "--interactive/--quick-live",
+        help="Open interactive numbered menu (default). Use --quick-live for direct execution.",
+    ),
 ) -> None:
     """
-    Guided start: live execution by default, with optional dry-run preflight.
+    Guided start command with interactive menu and optional quick-live mode.
     """
     settings = _bootstrap_settings()
+    resolved_seeds = _normalize_seed_user_refs(seed_user_refs if seed_user_refs else settings.discovery_seed_users)
+
+    if interactive:
+        _run_start_menu(
+            initial_tag_slug=tag_slug,
+            initial_seed_user_refs=resolved_seeds,
+            initial_reconcile_limit=settings.reconcile_scan_limit,
+            initial_reconcile_page_size=settings.reconcile_page_size,
+            initial_newsletter_slug=settings.contract_registry_live_newsletter_slug,
+            initial_newsletter_username=settings.contract_registry_live_newsletter_username,
+        )
+        return
+
     if not settings.has_session:
         raise typer.BadParameter("No MEDIUM_SESSION found. Run `uv run bot auth` or `uv run bot setup` first.")
-
-    resolved_seeds = seed_user_refs if seed_user_refs else (settings.discovery_seed_users or None)
 
     if dry_run_first:
         console.print("Step 1/2: running dry-run sanity check", style="cyan")
