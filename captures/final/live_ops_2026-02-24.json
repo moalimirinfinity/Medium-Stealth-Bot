@@ -82,13 +82,12 @@
         ]
       ],
       "samplePageUrls": [
-        "https://medium.com/@moalimirinfinity",
+        "https://medium.com/user/profile",
         "https://medium.com/tag/programming",
-        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+        "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
-        "https://medium.com/_/graphql",
-        "https://thilo-hermann.medium.com/_/graphql"
+        "https://medium.com/_/graphql"
       ]
     },
     {
@@ -123,14 +122,13 @@
         []
       ],
       "samplePageUrls": [
-        "https://medium.com/@moalimirinfinity",
+        "https://medium.com/user/profile",
         "https://medium.com/me/following",
         "https://medium.com/tag/programming",
-        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+        "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
-        "https://medium.com/_/graphql",
-        "https://thilo-hermann.medium.com/_/graphql"
+        "https://medium.com/_/graphql"
       ]
     },
     {
@@ -148,13 +146,12 @@
         ]
       ],
       "samplePageUrls": [
-        "https://medium.com/@moalimirinfinity",
+        "https://medium.com/user/profile",
         "https://medium.com/tag/programming",
-        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+        "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
-        "https://medium.com/_/graphql",
-        "https://thilo-hermann.medium.com/_/graphql"
+        "https://medium.com/_/graphql"
       ]
     },
     {
@@ -175,11 +172,10 @@
       ],
       "samplePageUrls": [
         "https://medium.com/tag/programming",
-        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+        "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
-        "https://medium.com/_/graphql",
-        "https://thilo-hermann.medium.com/_/graphql"
+        "https://medium.com/_/graphql"
       ]
     },
     {
@@ -199,11 +195,10 @@
       "samplePageUrls": [
         "https://medium.com/me/following",
         "https://medium.com/tag/programming",
-        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+        "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
-        "https://medium.com/_/graphql",
-        "https://thilo-hermann.medium.com/_/graphql"
+        "https://medium.com/_/graphql"
       ]
     },
     {
@@ -221,7 +216,7 @@
         ]
       ],
       "samplePageUrls": [
-        "https://medium.com/@moalimirinfinity"
+        "https://medium.com/user/profile"
       ],
       "sampleRequestUrls": [
         "https://medium.com/_/graphql"
@@ -244,10 +239,10 @@
         ]
       ],
       "samplePageUrls": [
-        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+        "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
-        "https://thilo-hermann.medium.com/_/graphql"
+        "https://medium.com/_/graphql"
       ]
     },
     {
@@ -265,14 +260,13 @@
         ]
       ],
       "samplePageUrls": [
-        "https://medium.com/@moalimirinfinity",
+        "https://medium.com/user/profile",
         "https://medium.com/me/following",
         "https://medium.com/tag/programming",
-        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+        "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
-        "https://medium.com/_/graphql",
-        "https://thilo-hermann.medium.com/_/graphql"
+        "https://medium.com/_/graphql"
       ]
     },
     {
@@ -293,11 +287,10 @@
         "https://medium.com/me/followers",
         "https://medium.com/me/following",
         "https://medium.com/tag/programming",
-        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+        "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
-        "https://medium.com/_/graphql",
-        "https://thilo-hermann.medium.com/_/graphql"
+        "https://medium.com/_/graphql"
       ]
     },
     {
@@ -315,10 +308,10 @@
         ]
       ],
       "samplePageUrls": [
-        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+        "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
-        "https://thilo-hermann.medium.com/_/graphql"
+        "https://medium.com/_/graphql"
       ]
     },
     {
@@ -336,10 +329,10 @@
         ]
       ],
       "samplePageUrls": [
-        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+        "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
-        "https://thilo-hermann.medium.com/_/graphql"
+        "https://medium.com/_/graphql"
       ]
     },
     {
@@ -359,14 +352,13 @@
         ]
       ],
       "samplePageUrls": [
-        "https://medium.com/@moalimirinfinity/followers",
+        "https://medium.com/user/followers",
         "https://medium.com/me/following",
         "https://medium.com/tag/programming",
-        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+        "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
-        "https://medium.com/_/graphql",
-        "https://thilo-hermann.medium.com/_/graphql"
+        "https://medium.com/_/graphql"
       ]
     },
     {
@@ -384,10 +376,10 @@
         ]
       ],
       "samplePageUrls": [
-        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+        "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
-        "https://thilo-hermann.medium.com/_/graphql"
+        "https://medium.com/_/graphql"
       ]
     },
     {
@@ -405,10 +397,10 @@
         ]
       ],
       "samplePageUrls": [
-        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+        "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
-        "https://thilo-hermann.medium.com/_/graphql"
+        "https://medium.com/_/graphql"
       ]
     },
     {
@@ -428,10 +420,10 @@
         ]
       ],
       "samplePageUrls": [
-        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+        "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
-        "https://thilo-hermann.medium.com/_/graphql"
+        "https://medium.com/_/graphql"
       ]
     },
     {
@@ -450,10 +442,10 @@
         ]
       ],
       "samplePageUrls": [
-        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+        "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
-        "https://thilo-hermann.medium.com/_/graphql"
+        "https://medium.com/_/graphql"
       ]
     },
     {
@@ -471,10 +463,10 @@
         ]
       ],
       "samplePageUrls": [
-        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+        "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
-        "https://thilo-hermann.medium.com/_/graphql"
+        "https://medium.com/_/graphql"
       ]
     },
     {
@@ -492,7 +484,7 @@
         ]
       ],
       "samplePageUrls": [
-        "https://medium.com/@moalimirinfinity"
+        "https://medium.com/user/profile"
       ],
       "sampleRequestUrls": [
         "https://medium.com/_/graphql"
@@ -670,11 +662,10 @@
         "https://medium.com/me/followers",
         "https://medium.com/me/following",
         "https://medium.com/tag/programming",
-        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+        "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
-        "https://medium.com/_/graphql",
-        "https://thilo-hermann.medium.com/_/graphql"
+        "https://medium.com/_/graphql"
       ]
     },
     {
@@ -713,7 +704,7 @@
         ]
       ],
       "samplePageUrls": [
-        "https://medium.com/@moalimirinfinity"
+        "https://medium.com/user/profile"
       ],
       "sampleRequestUrls": [
         "https://medium.com/_/graphql"
@@ -735,11 +726,10 @@
         "https://medium.com/me/followers",
         "https://medium.com/me/following",
         "https://medium.com/tag/programming",
-        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+        "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
-        "https://medium.com/_/graphql",
-        "https://thilo-hermann.medium.com/_/graphql"
+        "https://medium.com/_/graphql"
       ]
     },
     {
@@ -758,7 +748,7 @@
         ]
       ],
       "samplePageUrls": [
-        "https://medium.com/@moalimirinfinity"
+        "https://medium.com/user/profile"
       ],
       "sampleRequestUrls": [
         "https://medium.com/_/graphql"
@@ -781,7 +771,7 @@
         ]
       ],
       "samplePageUrls": [
-        "https://medium.com/@moalimirinfinity/followers"
+        "https://medium.com/user/followers"
       ],
       "sampleRequestUrls": [
         "https://medium.com/_/graphql"
@@ -803,7 +793,7 @@
         ]
       ],
       "samplePageUrls": [
-        "https://medium.com/@moalimirinfinity"
+        "https://medium.com/user/profile"
       ],
       "sampleRequestUrls": [
         "https://medium.com/_/graphql"
@@ -829,7 +819,7 @@
         ]
       ],
       "samplePageUrls": [
-        "https://medium.com/@moalimirinfinity"
+        "https://medium.com/user/profile"
       ],
       "sampleRequestUrls": [
         "https://medium.com/_/graphql"
@@ -851,7 +841,7 @@
         ]
       ],
       "samplePageUrls": [
-        "https://medium.com/@moalimirinfinity"
+        "https://medium.com/user/profile"
       ],
       "sampleRequestUrls": [
         "https://medium.com/_/graphql"
@@ -873,7 +863,7 @@
         ]
       ],
       "samplePageUrls": [
-        "https://medium.com/@moalimirinfinity"
+        "https://medium.com/user/profile"
       ],
       "sampleRequestUrls": [
         "https://medium.com/_/graphql"
@@ -894,15 +884,14 @@
         ]
       ],
       "samplePageUrls": [
-        "https://medium.com/@moalimirinfinity",
-        "https://medium.com/@moalimirinfinity/followers",
+        "https://medium.com/user/profile",
+        "https://medium.com/user/followers",
         "https://medium.com/me/following",
         "https://medium.com/tag/programming",
-        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+        "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
-        "https://medium.com/_/graphql",
-        "https://thilo-hermann.medium.com/_/graphql"
+        "https://medium.com/_/graphql"
       ]
     },
     {
@@ -921,11 +910,10 @@
         "https://medium.com/me/followers",
         "https://medium.com/me/following",
         "https://medium.com/tag/programming",
-        "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+        "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
-        "https://medium.com/_/graphql",
-        "https://thilo-hermann.medium.com/_/graphql"
+        "https://medium.com/_/graphql"
       ]
     },
     {
@@ -947,5 +935,6 @@
         "https://medium.com/_/graphql"
       ]
     }
-  ]
+  ],
+  "sanitizedForPublicPush": true
 }

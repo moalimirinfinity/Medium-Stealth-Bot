@@ -52,5 +52,6 @@
     "TopicLatestStorieQuery",
     "TopicWhoToFollowPubishersQuery",
     "UserViewerEdge"
-  ]
+  ],
+  "sanitizedForPublicPush": true
 }

@@ -53,9 +53,37 @@ Repository CI runs:
 
 ```bash
 uv run python scripts/check_capture_integrity.py
+uv run python scripts/check_capture_sanitization.py
 ```
 
 This enforces:
 - canonical manifest pointers resolve to existing files
 - canonical files are marked `isCanonical` in `manifest.json`
 - capture freshness is within configured age threshold (`CAPTURE_MAX_AGE_DAYS`)
+- sanitized public-push invariants are preserved
+
+## Public Sanitization Policy
+
+Tracked files in `captures/final/*.json` must include:
+
+- `sanitizedForPublicPush: true`
+
+Public sanitization removes high-granularity/sensitive capture fields:
+
+- request-level `pageUrl`
+- request-level `requestBodyPreview`
+- raw `variables` payload values
+- `referer` from request header subsets
+
+URL-like fields are normalized to route-safe forms with no personal identifiers.
+
+## Refresh + Sanitize Flow
+
+```bash
+tmpdir=$(mktemp -d)
+npm install --prefix "$tmpdir" playwright@latest
+NODE_PATH="$tmpdir/node_modules" node captures/scripts/live_graphql_capture.js
+uv run python scripts/sanitize_captures.py
+uv run python scripts/check_capture_integrity.py
+uv run python scripts/check_capture_sanitization.py
+```

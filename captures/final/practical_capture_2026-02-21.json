@@ -6,7 +6,7 @@
     "https://medium.com/me/followers",
     "https://medium.com/me/following",
     "https://medium.com/tag/programming",
-    "https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2"
+    "https://medium.com/post/redacted"
   ],
   "actions": [
     "feed-follow-buttons-seen:6",
@@ -121,68 +121,50 @@
     {
       "operationName": "VisitorQuery",
       "query": "query VisitorQuery {\n  visitor {\n    id\n    geolocation {\n      country\n      __typename\n    }\n    __typename\n  }\n}\n",
-      "variableKeys": [],
-      "variables": {}
+      "variableKeys": []
     },
     {
       "operationName": "UnreadNotificationCount",
       "query": "query UnreadNotificationCount {\n  notificationStatus {\n    unreadNotificationCount\n    __typename\n  }\n}\n",
-      "variableKeys": [],
-      "variables": {}
+      "variableKeys": []
     },
     {
       "operationName": "UseBaseCacheControlQuery",
       "query": "query UseBaseCacheControlQuery {\n  viewer {\n    __typename\n    id\n  }\n}\n",
-      "variableKeys": [],
-      "variables": {}
+      "variableKeys": []
     },
     {
       "operationName": "LogExperimentExposure",
       "query": "mutation LogExperimentExposure($input: LogExperimentExposureInput!) {\n  logExperimentExposure(input: $input) {\n    success\n    __typename\n  }\n}\n",
       "variableKeys": [
         "input"
-      ],
-      "variables": {
-        "input": {
-          "experimentId": "enable_global_navigation"
-        }
-      }
+      ]
     },
     {
       "operationName": "LogClientEventsMutation",
       "query": "mutation LogClientEventsMutation($payload: String!) {\n  logClientEvents(input: {payload: $payload}) {\n    success\n    __typename\n  }\n}\n",
       "variableKeys": [
         "payload"
-      ],
-      "variables": {
-        "payload": "[REDACTED]"
-      }
+      ]
     },
     {
       "operationName": "BecomeMemberUpsellQuery",
       "query": "query BecomeMemberUpsellQuery {\n  viewer {\n    id\n    membership {\n      id\n      __typename\n    }\n    ...UseFreeStoryCTAVisible_viewer\n    __typename\n  }\n}\n\nfragment UseFreeStoryCTAVisible_viewer on User {\n  id\n  dismissableFlags\n  membership {\n    id\n    __typename\n  }\n  viewerEdge {\n    id\n    isEligibleForSignupFreeReading\n    signupFreeReadPostId\n    __typename\n  }\n  __typename\n}\n",
-      "variableKeys": [],
-      "variables": {}
+      "variableKeys": []
     },
     {
       "operationName": "UserViewerEdge",
       "query": "query UserViewerEdge($userId: ID!) {\n  user(id: $userId) {\n    ... on User {\n      id\n      viewerEdge {\n        ...User_viewerEdge\n        __typename\n      }\n      __typename\n    }\n    __typename\n  }\n}\n\nfragment User_viewerEdge on UserViewerEdge {\n  id\n  createdAt\n  hasCompletedProfile\n  isAllowEdsEnabled\n  isBlocking\n  isFollowing\n  isMuting\n  isFacebookFollowing\n  isMediumFollowing\n  isSuperFollowing\n  isTwitterFollowing\n  isUser\n  lastPostCreatedAt\n  readPostsCount\n  __typename\n}\n",
       "variableKeys": [
         "userId"
-      ],
-      "variables": {
-        "userId": "cf6627889e92"
-      }
+      ]
     },
     {
       "operationName": "TagViewerEdge",
       "query": "query TagViewerEdge($tagSlug: String!) {\n  tagFromSlug(tagSlug: $tagSlug) {\n    ... on Tag {\n      id\n      viewerEdge {\n        id\n        isFollowing\n        __typename\n      }\n      __typename\n    }\n    __typename\n  }\n}\n",
       "variableKeys": [
         "tagSlug"
-      ],
-      "variables": {
-        "tagSlug": "programming"
-      }
+      ]
     },
     {
       "operationName": "NewsletterV3ViewerEdge",
@@ -191,38 +173,26 @@
         "collectionSlug",
         "newsletterSlug",
         "username"
-      ],
-      "variables": {
-        "newsletterSlug": "cf6627889e92",
-        "collectionSlug": null,
-        "username": "gxldsociety"
-      }
+      ]
     },
     {
       "operationName": "WhoToFollowModuleQuery",
       "query": "query WhoToFollowModuleQuery {\n  recommendedPublishers(first: 3, after: \"\", mode: ALL) {\n    ...useTransformedPublishersData_recommendedPublishers\n    __typename\n  }\n}\n\nfragment userUrl_user on User {\n  __typename\n  id\n  customDomainState {\n    live {\n      domain\n      __typename\n    }\n    __typename\n  }\n  hasSubdomain\n  username\n}\n\nfragment UserAvatar_user on User {\n  __typename\n  id\n  imageId\n  membership {\n    tier\n    __typename\n    id\n  }\n  name\n  username\n  ...userUrl_user\n}\n\nfragment EntityPresentationRankedModulePublishingTracker_entity on RankedModulePublishingEntity {\n  __typename\n  ... on Collection {\n    id\n    __typename\n  }\n  ... on User {\n    id\n    __typename\n  }\n}\n\nfragment SignInOptions_user on User {\n  id\n  name\n  imageId\n  __typename\n}\n\nfragment SignUpOptions_user on User {\n  id\n  name\n  imageId\n  __typename\n}\n\nfragment SusiModal_user on User {\n  ...SignInOptions_user\n  ...SignUpOptions_user\n  __typename\n  id\n}\n\nfragment useNewsletterV3Subscription_newsletterV3 on NewsletterV3 {\n  id\n  type\n  slug\n  name\n  collection {\n    slug\n    __typename\n    id\n  }\n  user {\n    id\n    name\n    username\n    newsletterV3 {\n      id\n      __typename\n    }\n    __typename\n  }\n  __typename\n}\n\nfragment useNewsletterV3Subscription_user on User {\n  id\n  username\n  newsletterV3 {\n    ...useNewsletterV3Subscription_newsletterV3\n    __typename\n    id\n  }\n  __typename\n}\n\nfragment useAuthorFollowSubscribeButton_user on User {\n  id\n  name\n  ...useNewsletterV3Subscription_user\n  __typename\n}\n\nfragment useAuthorFollowSubscribeButton_newsletterV3 on NewsletterV3 {\n  id\n  name\n  ...useNewsletterV3Subscription_newsletterV3\n  __typename\n}\n\nfragment AuthorFollowSubscribeButton_user on User {\n  id\n  name\n  imageId\n  ...SusiModal_user\n  ...useAuthorFollowSubscribeButton_user\n  newsletterV3 {\n    id\n    ...useAuthorFollowSubscribeButton_newsletterV3\n    __typename\n  }\n  __typename\n}\n\nfragment EntityFollowList_user on User {\n  __typename\n  id\n  algoliaObjectId\n  name\n  bio\n  ...UserAvatar_user\n  ...userUrl_user\n  ...EntityPresentationRankedModulePublishingTracker_entity\n  ...AuthorFollowSubscribeButton_user\n}\n\nfragment isUserVerifiedBookAuthor_user on User {\n  verifications {\n    isBookAuthor\n    __typename\n  }\n  __typename\n  id\n}\n\nfragment UserFollowRow_user on User {\n  __typename\n  id\n  name\n  bio\n  ...UserAvatar_user\n  ...isUserVerifiedBookAuthor_user\n  ...AuthorFollowSubscribeButton_user\n}\n\nfragment collectionUrl_collection on Collection {\n  id\n  domain\n  slug\n  __typename\n}\n\nfragment CollectionAvatar_collection on Collection {\n  name\n  avatar {\n    id\n    __typename\n  }\n  ...collectionUrl_collection\n  __typename\n  id\n}\n\nfragment SignInOptions_collection on Collection {\n  id\n  name\n  __typename\n}\n\nfragment SignUpOptions_collection on Collection {\n  id\n  name\n  __typename\n}\n\nfragment SusiModal_collection on Collection {\n  name\n  ...SignInOptions_collection\n  ...SignUpOptions_collection\n  __typename\n  id\n}\n\nfragment PublicationFollowButton_collection on Collection {\n  id\n  slug\n  name\n  ...SusiModal_collection\n  __typename\n}\n\nfragment usePublicationSearchResultClickTracker_collection on Collection {\n  id\n  algoliaObjectId\n  domain\n  slug\n  __typename\n}\n\nfragment EntityFollowList_collection on Collection {\n  __typename\n  algoliaObjectId\n  id\n  name\n  description\n  ...CollectionAvatar_collection\n  ...PublicationFollowButton_collection\n  ...EntityPresentationRankedModulePublishingTracker_entity\n  ...usePublicationSearchResultClickTracker_collection\n}\n\nfragment PublicationFollowRow_collection on Collection {\n  __typename\n  id\n  name\n  description\n  ...CollectionAvatar_collection\n  ...PublicationFollowButton_collection\n}\n\nfragment useTransformedPublishersData_recommendedPublishers on RecommendedPublishersConnection {\n  edges {\n    node {\n      __typename\n      ... on User {\n        ...EntityFollowList_user\n        ...UserFollowRow_user\n        __typename\n        id\n      }\n      ... on Collection {\n        ...EntityFollowList_collection\n        ...PublicationFollowRow_collection\n        __typename\n        id\n      }\n    }\n    cursor\n    __typename\n  }\n  pageInfo {\n    hasNextPage\n    endCursor\n    startCursor\n    __typename\n  }\n  __typename\n}\n",
-      "variableKeys": [],
-      "variables": {}
+      "variableKeys": []
     },
     {
       "operationName": "CollectionViewerEdge",
       "query": "query CollectionViewerEdge($collectionId: ID!) {\n  collection(id: $collectionId) {\n    ... on Collection {\n      id\n      viewerEdge {\n        ...Collection_viewerEdge\n        __typename\n      }\n      __typename\n    }\n    __typename\n  }\n}\n\nfragment Collection_viewerEdge on CollectionViewerEdge {\n  id\n  canEditOwnPosts\n  canEditPosts\n  isEditor\n  isFollowing\n  isMuting\n  isSubscribedToLetters\n  isSubscribedToMediumNewsletter\n  isSubscribedToEmails\n  isWriter\n  __typename\n}\n",
       "variableKeys": [
         "collectionId"
-      ],
-      "variables": {
-        "collectionId": "77543052fd53"
-      }
+      ]
     },
     {
       "operationName": "ClapCountQuery",
       "query": "query ClapCountQuery($postId: ID!) {\n  postResult(id: $postId) {\n    __typename\n    ... on Post {\n      id\n      clapCount\n      __typename\n    }\n  }\n}\n",
       "variableKeys": [
         "postId"
-      ],
-      "variables": {
-        "postId": "7d66cfdfa301"
-      }
+      ]
     },
     {
       "operationName": "AddToCatalogBaseQuery",
@@ -230,31 +200,21 @@
       "variableKeys": [
         "isPostKind",
         "postId"
-      ],
-      "variables": {
-        "postId": "7d66cfdfa301",
-        "isPostKind": true
-      }
+      ]
     },
     {
       "operationName": "TopicCuratedListQuery",
       "query": "query TopicCuratedListQuery($tagSlug: String!) {\n  tagFromSlug(tagSlug: $tagSlug) {\n    curatedLists(first: 1) {\n      edges {\n        node {\n          id\n          name\n          creator {\n            ...UserName_user\n            __typename\n          }\n          itemsConnection(pagingOptions: {limit: 3}) {\n            items {\n              catalogItemId\n              entity {\n                ...GridPostPreview_post\n                __typename\n              }\n              __typename\n            }\n            __typename\n          }\n          ...catalogUrl_catalog\n          __typename\n        }\n        __typename\n      }\n      __typename\n    }\n    ...TopicCuratedList_tag\n    __typename\n  }\n}\n\nfragment isUserVerifiedBookAuthor_user on User {\n  verifications {\n    isBookAuthor\n    __typename\n  }\n  __typename\n  id\n}\n\nfragment userUrl_user on User {\n  __typename\n  id\n  customDomainState {\n    live {\n      domain\n      __typename\n    }\n    __typename\n  }\n  hasSubdomain\n  username\n}\n\nfragment UserLink_user on User {\n  ...userUrl_user\n  __typename\n  id\n}\n\nfragment GridPostPreviewImage_imageMetadata on ImageMetadata {\n  id\n  focusPercentX\n  focusPercentY\n  alt\n  __typename\n}\n\nfragment getGridPostPreviewImage_post on Post {\n  id\n  previewImage {\n    id\n    __typename\n  }\n  __typename\n}\n\nfragment GridPostPreviewImage_post on Post {\n  title\n  previewImage {\n    ...GridPostPreviewImage_imageMetadata\n    __typename\n    id\n  }\n  ...getGridPostPreviewImage_post\n  __typename\n  id\n}\n\nfragment SignInOptions_user on User {\n  id\n  name\n  imageId\n  __typename\n}\n\nfragment SignUpOptions_user on User {\n  id\n  name\n  imageId\n  __typename\n}\n\nfragment SusiModal_user on User {\n  ...SignInOptions_user\n  ...SignUpOptions_user\n  __typename\n  id\n}\n\nfragment SusiClickable_user on User {\n  ...SusiModal_user\n  __typename\n  id\n}\n\nfragment SusiModal_post on Post {\n  id\n  creator {\n    id\n    __typename\n  }\n  __typename\n}\n\nfragment SusiClickable_post on Post {\n  id\n  mediumUrl\n  ...SusiModal_post\n  __typename\n}\n\nfragment MultiVoteCount_post on Post {\n  id\n  __typename\n}\n\nfragment MultiVote_post on Post {\n  id\n  creator {\n    id\n    ...SusiClickable_user\n    __typename\n  }\n  isPublished\n  ...SusiClickable_post\n  collection {\n    id\n    slug\n    __typename\n  }\n  isLimitedState\n  ...MultiVoteCount_post\n  __typename\n}\n\nfragment PostPreviewFooterSocial_post on Post {\n  id\n  ...MultiVote_post\n  allowResponses\n  isPublished\n  isLimitedState\n  postResponses {\n    count\n    __typename\n  }\n  __typename\n}\n\nfragment AddToCatalogBase_post on Post {\n  id\n  isPublished\n  ...SusiClickable_post\n  __typename\n}\n\nfragment AddToCatalogBookmarkButton_post on Post {\n  ...AddToCatalogBase_post\n  __typename\n  id\n}\n\nfragment BookmarkButton_post on Post {\n  visibility\n  ...SusiClickable_post\n  ...AddToCatalogBookmarkButton_post\n  __typename\n  id\n}\n\nfragment useNewsletterV3Subscription_newsletterV3 on NewsletterV3 {\n  id\n  type\n  slug\n  name\n  collection {\n    slug\n    __typename\n    id\n  }\n  user {\n    id\n    name\n    username\n    newsletterV3 {\n      id\n      __typename\n    }\n    __typename\n  }\n  __typename\n}\n\nfragment useNewsletterV3Subscription_user on User {\n  id\n  username\n  newsletterV3 {\n    ...useNewsletterV3Subscription_newsletterV3\n    __typename\n    id\n  }\n  __typename\n}\n\nfragment useAuthorFollowSubscribeButton_user on User {\n  id\n  name\n  ...useNewsletterV3Subscription_user\n  __typename\n}\n\nfragment useAuthorFollowSubscribeButton_newsletterV3 on NewsletterV3 {\n  id\n  name\n  ...useNewsletterV3Subscription_newsletterV3\n  __typename\n}\n\nfragment AuthorFollowSubscribeButton_user on User {\n  id\n  name\n  imageId\n  ...SusiModal_user\n  ...useAuthorFollowSubscribeButton_user\n  newsletterV3 {\n    id\n    ...useAuthorFollowSubscribeButton_newsletterV3\n    __typename\n  }\n  __typename\n}\n\nfragment FollowMenuOptions_user on User {\n  id\n  ...AuthorFollowSubscribeButton_user\n  __typename\n}\n\nfragment SignInOptions_collection on Collection {\n  id\n  name\n  __typename\n}\n\nfragment SignUpOptions_collection on Collection {\n  id\n  name\n  __typename\n}\n\nfragment SusiModal_collection on Collection {\n  name\n  ...SignInOptions_collection\n  ...SignUpOptions_collection\n  __typename\n  id\n}\n\nfragment PublicationFollowButton_collection on Collection {\n  id\n  slug\n  name\n  ...SusiModal_collection\n  __typename\n}\n\nfragment FollowMenuOptions_collection on Collection {\n  id\n  ...PublicationFollowButton_collection\n  __typename\n}\n\nfragment ClapMutation_post on Post {\n  __typename\n  id\n  clapCount\n  ...MultiVoteCount_post\n}\n\nfragment OverflowMenuItemUndoClaps_post on Post {\n  id\n  clapCount\n  ...ClapMutation_post\n  __typename\n}\n\nfragment NegativeSignalModal_publisher on Publisher {\n  __typename\n  id\n  name\n}\n\nfragment NegativeSignalModal_post on Post {\n  id\n  creator {\n    ...NegativeSignalModal_publisher\n    viewerEdge {\n      id\n      isMuting\n      __typename\n    }\n    __typename\n    id\n  }\n  collection {\n    ...NegativeSignalModal_publisher\n    viewerEdge {\n      id\n      isMuting\n      __typename\n    }\n    __typename\n    id\n  }\n  __typename\n}\n\nfragment ExplicitSignalMenuOptions_post on Post {\n  ...NegativeSignalModal_post\n  __typename\n  id\n}\n\nfragment OverflowMenu_post on Post {\n  id\n  creator {\n    id\n    ...FollowMenuOptions_user\n    __typename\n  }\n  collection {\n    id\n    ...FollowMenuOptions_collection\n    __typename\n  }\n  ...OverflowMenuItemUndoClaps_post\n  ...AddToCatalogBase_post\n  ...ExplicitSignalMenuOptions_post\n  __typename\n}\n\nfragment OverflowMenuButton_post on Post {\n  id\n  visibility\n  ...OverflowMenu_post\n  __typename\n}\n\nfragment PostPreviewFooterMenu_post on Post {\n  id\n  ...BookmarkButton_post\n  ...OverflowMenuButton_post\n  __typename\n}\n\nfragment usePostPublishedAt_post on Post {\n  firstPublishedAt\n  latestPublishedAt\n  pinnedAt\n  __typename\n  id\n}\n\nfragment Star_post on Post {\n  id\n  __typename\n}\n\nfragment PostPreviewFooterMeta_post on Post {\n  isLocked\n  postResponses {\n    count\n    __typename\n  }\n  ...usePostPublishedAt_post\n  ...Star_post\n  __typename\n  id\n}\n\nfragment PostPreviewFooter_post on Post {\n  ...PostPreviewFooterSocial_post\n  ...PostPreviewFooterMenu_post\n  ...PostPreviewFooterMeta_post\n  ...BookmarkButton_post\n  __typename\n  id\n}\n\nfragment UserAvatar_user on User {\n  __typename\n  id\n  imageId\n  membership {\n    tier\n    __typename\n    id\n  }\n  name\n  username\n  ...userUrl_user\n}\n\nfragment PostPreviewBylineAuthorAvatar_user on User {\n  ...UserAvatar_user\n  __typename\n  id\n}\n\nfragment UserName_user on User {\n  id\n  name\n  ...isUserVerifiedBookAuthor_user\n  ...UserLink_user\n  __typename\n}\n\nfragment PostPreviewByLineAuthor_user on User {\n  ...PostPreviewBylineAuthorAvatar_user\n  ...UserName_user\n  __typename\n  id\n}\n\nfragment collectionUrl_collection on Collection {\n  id\n  domain\n  slug\n  __typename\n}\n\nfragment CollectionAvatar_collection on Collection {\n  name\n  avatar {\n    id\n    __typename\n  }\n  ...collectionUrl_collection\n  __typename\n  id\n}\n\nfragment EntityPresentationRankedModulePublishingTracker_entity on RankedModulePublishingEntity {\n  __typename\n  ... on Collection {\n    id\n    __typename\n  }\n  ... on User {\n    id\n    __typename\n  }\n}\n\nfragment CollectionTooltip_collection on Collection {\n  id\n  name\n  slug\n  description\n  subscriberCount\n  customStyleSheet {\n    header {\n      backgroundImage {\n        id\n        __typename\n      }\n      __typename\n    }\n    __typename\n    id\n  }\n  ...CollectionAvatar_collection\n  ...PublicationFollowButton_collection\n  ...EntityPresentationRankedModulePublishingTracker_entity\n  __typename\n}\n\nfragment CollectionLinkWithPopover_collection on Collection {\n  name\n  ...collectionUrl_collection\n  ...CollectionTooltip_collection\n  __typename\n  id\n}\n\nfragment PostPreviewByLineCollection_collection on Collection {\n  ...CollectionAvatar_collection\n  ...CollectionTooltip_collection\n  ...CollectionLinkWithPopover_collection\n  __typename\n  id\n}\n\nfragment PostPreviewByLine_post on Post {\n  creator {\n    ...PostPreviewByLineAuthor_user\n    __typename\n    id\n  }\n  collection {\n    ...PostPreviewByLineCollection_collection\n    __typename\n    id\n  }\n  __typename\n  id\n}\n\nfragment PostPreviewInformation_post on Post {\n  readingTime\n  isLocked\n  ...Star_post\n  ...usePostPublishedAt_post\n  __typename\n  id\n}\n\nfragment GridPostPreviewContent_post on Post {\n  id\n  title\n  extendedPreviewContent {\n    subtitle\n    __typename\n  }\n  ...GridPostPreviewImage_post\n  ...PostPreviewFooter_post\n  ...PostPreviewByLine_post\n  ...PostPreviewInformation_post\n  __typename\n}\n\nfragment PostScrollTracker_post on Post {\n  id\n  collection {\n    id\n    __typename\n  }\n  sequence {\n    sequenceId\n    __typename\n  }\n  __typename\n}\n\nfragment usePostUrl_post on Post {\n  id\n  creator {\n    ...userUrl_user\n    __typename\n    id\n  }\n  collection {\n    id\n    domain\n    slug\n    __typename\n  }\n  isSeries\n  mediumUrl\n  sequence {\n    slug\n    __typename\n  }\n  uniqueSlug\n  __typename\n}\n\nfragment PostPreviewContainer_post on Post {\n  id\n  extendedPreviewContent {\n    isFullContent\n    __typename\n  }\n  visibility\n  pinnedAt\n  ...PostScrollTracker_post\n  ...usePostUrl_post\n  __typename\n}\n\nfragment getCatalogSlugId_Catalog on Catalog {\n  id\n  name\n  __typename\n}\n\nfragment GridPostPreview_post on Post {\n  id\n  ...GridPostPreviewContent_post\n  ...PostPreviewContainer_post\n  __typename\n}\n\nfragment catalogUrl_catalog on Catalog {\n  id\n  predefined\n  ...getCatalogSlugId_Catalog\n  creator {\n    ...userUrl_user\n    __typename\n    id\n  }\n  __typename\n}\n\nfragment TopicCuratedList_tag on Tag {\n  id\n  __typename\n}\n",
       "variableKeys": [
         "tagSlug"
-      ],
-      "variables": {
-        "tagSlug": "programming"
-      }
+      ]
     },
     {
       "operationName": "TopicLatestStorieQuery",
       "query": "query TopicLatestStorieQuery($tagSlug: String!) {\n  tagFromSlug(tagSlug: $tagSlug) {\n    posts(timeRange: {kind: ALL_TIME}, sortOrder: NEWEST, first: 20) {\n      ...TagPosts_tagPostConnection\n      __typename\n    }\n    ...TopicLatestStories_tag\n    __typename\n  }\n}\n\nfragment StreamPostPreviewImage_imageMetadata on ImageMetadata {\n  id\n  focusPercentX\n  focusPercentY\n  alt\n  __typename\n}\n\nfragment StreamPostPreviewImage_post on Post {\n  title\n  previewImage {\n    ...StreamPostPreviewImage_imageMetadata\n    __typename\n    id\n  }\n  __typename\n  id\n}\n\nfragment SignInOptions_user on User {\n  id\n  name\n  imageId\n  __typename\n}\n\nfragment SignUpOptions_user on User {\n  id\n  name\n  imageId\n  __typename\n}\n\nfragment SusiModal_user on User {\n  ...SignInOptions_user\n  ...SignUpOptions_user\n  __typename\n  id\n}\n\nfragment SusiClickable_user on User {\n  ...SusiModal_user\n  __typename\n  id\n}\n\nfragment SusiModal_post on Post {\n  id\n  creator {\n    id\n    __typename\n  }\n  __typename\n}\n\nfragment SusiClickable_post on Post {\n  id\n  mediumUrl\n  ...SusiModal_post\n  __typename\n}\n\nfragment MultiVoteCount_post on Post {\n  id\n  __typename\n}\n\nfragment MultiVote_post on Post {\n  id\n  creator {\n    id\n    ...SusiClickable_user\n    __typename\n  }\n  isPublished\n  ...SusiClickable_post\n  collection {\n    id\n    slug\n    __typename\n  }\n  isLimitedState\n  ...MultiVoteCount_post\n  __typename\n}\n\nfragment PostPreviewFooterSocial_post on Post {\n  id\n  ...MultiVote_post\n  allowResponses\n  isPublished\n  isLimitedState\n  postResponses {\n    count\n    __typename\n  }\n  __typename\n}\n\nfragment AddToCatalogBase_post on Post {\n  id\n  isPublished\n  ...SusiClickable_post\n  __typename\n}\n\nfragment AddToCatalogBookmarkButton_post on Post {\n  ...AddToCatalogBase_post\n  __typename\n  id\n}\n\nfragment BookmarkButton_post on Post {\n  visibility\n  ...SusiClickable_post\n  ...AddToCatalogBookmarkButton_post\n  __typename\n  id\n}\n\nfragment useNewsletterV3Subscription_newsletterV3 on NewsletterV3 {\n  id\n  type\n  slug\n  name\n  collection {\n    slug\n    __typename\n    id\n  }\n  user {\n    id\n    name\n    username\n    newsletterV3 {\n      id\n      __typename\n    }\n    __typename\n  }\n  __typename\n}\n\nfragment useNewsletterV3Subscription_user on User {\n  id\n  username\n  newsletterV3 {\n    ...useNewsletterV3Subscription_newsletterV3\n    __typename\n    id\n  }\n  __typename\n}\n\nfragment useAuthorFollowSubscribeButton_user on User {\n  id\n  name\n  ...useNewsletterV3Subscription_user\n  __typename\n}\n\nfragment useAuthorFollowSubscribeButton_newsletterV3 on NewsletterV3 {\n  id\n  name\n  ...useNewsletterV3Subscription_newsletterV3\n  __typename\n}\n\nfragment AuthorFollowSubscribeButton_user on User {\n  id\n  name\n  imageId\n  ...SusiModal_user\n  ...useAuthorFollowSubscribeButton_user\n  newsletterV3 {\n    id\n    ...useAuthorFollowSubscribeButton_newsletterV3\n    __typename\n  }\n  __typename\n}\n\nfragment FollowMenuOptions_user on User {\n  id\n  ...AuthorFollowSubscribeButton_user\n  __typename\n}\n\nfragment SignInOptions_collection on Collection {\n  id\n  name\n  __typename\n}\n\nfragment SignUpOptions_collection on Collection {\n  id\n  name\n  __typename\n}\n\nfragment SusiModal_collection on Collection {\n  name\n  ...SignInOptions_collection\n  ...SignUpOptions_collection\n  __typename\n  id\n}\n\nfragment PublicationFollowButton_collection on Collection {\n  id\n  slug\n  name\n  ...SusiModal_collection\n  __typename\n}\n\nfragment FollowMenuOptions_collection on Collection {\n  id\n  ...PublicationFollowButton_collection\n  __typename\n}\n\nfragment ClapMutation_post on Post {\n  __typename\n  id\n  clapCount\n  ...MultiVoteCount_post\n}\n\nfragment OverflowMenuItemUndoClaps_post on Post {\n  id\n  clapCount\n  ...ClapMutation_post\n  __typename\n}\n\nfragment NegativeSignalModal_publisher on Publisher {\n  __typename\n  id\n  name\n}\n\nfragment NegativeSignalModal_post on Post {\n  id\n  creator {\n    ...NegativeSignalModal_publisher\n    viewerEdge {\n      id\n      isMuting\n      __typename\n    }\n    __typename\n    id\n  }\n  collection {\n    ...NegativeSignalModal_publisher\n    viewerEdge {\n      id\n      isMuting\n      __typename\n    }\n    __typename\n    id\n  }\n  __typename\n}\n\nfragment ExplicitSignalMenuOptions_post on Post {\n  ...NegativeSignalModal_post\n  __typename\n  id\n}\n\nfragment OverflowMenu_post on Post {\n  id\n  creator {\n    id\n    ...FollowMenuOptions_user\n    __typename\n  }\n  collection {\n    id\n    ...FollowMenuOptions_collection\n    __typename\n  }\n  ...OverflowMenuItemUndoClaps_post\n  ...AddToCatalogBase_post\n  ...ExplicitSignalMenuOptions_post\n  __typename\n}\n\nfragment OverflowMenuButton_post on Post {\n  id\n  visibility\n  ...OverflowMenu_post\n  __typename\n}\n\nfragment PostPreviewFooterMenu_post on Post {\n  id\n  ...BookmarkButton_post\n  ...OverflowMenuButton_post\n  __typename\n}\n\nfragment usePostPublishedAt_post on Post {\n  firstPublishedAt\n  latestPublishedAt\n  pinnedAt\n  __typename\n  id\n}\n\nfragment Star_post on Post {\n  id\n  __typename\n}\n\nfragment PostPreviewFooterMeta_post on Post {\n  isLocked\n  postResponses {\n    count\n    __typename\n  }\n  ...usePostPublishedAt_post\n  ...Star_post\n  __typename\n  id\n}\n\nfragment PostPreviewFooter_post on Post {\n  ...PostPreviewFooterSocial_post\n  ...PostPreviewFooterMenu_post\n  ...PostPreviewFooterMeta_post\n  ...BookmarkButton_post\n  __typename\n  id\n}\n\nfragment userUrl_user on User {\n  __typename\n  id\n  customDomainState {\n    live {\n      domain\n      __typename\n    }\n    __typename\n  }\n  hasSubdomain\n  username\n}\n\nfragment UserAvatar_user on User {\n  __typename\n  id\n  imageId\n  membership {\n    tier\n    __typename\n    id\n  }\n  name\n  username\n  ...userUrl_user\n}\n\nfragment PostPreviewBylineAuthorAvatar_user on User {\n  ...UserAvatar_user\n  __typename\n  id\n}\n\nfragment isUserVerifiedBookAuthor_user on User {\n  verifications {\n    isBookAuthor\n    __typename\n  }\n  __typename\n  id\n}\n\nfragment UserLink_user on User {\n  ...userUrl_user\n  __typename\n  id\n}\n\nfragment UserName_user on User {\n  id\n  name\n  ...isUserVerifiedBookAuthor_user\n  ...UserLink_user\n  __typename\n}\n\nfragment PostPreviewByLineAuthor_user on User {\n  ...PostPreviewBylineAuthorAvatar_user\n  ...UserName_user\n  __typename\n  id\n}\n\nfragment collectionUrl_collection on Collection {\n  id\n  domain\n  slug\n  __typename\n}\n\nfragment CollectionAvatar_collection on Collection {\n  name\n  avatar {\n    id\n    __typename\n  }\n  ...collectionUrl_collection\n  __typename\n  id\n}\n\nfragment EntityPresentationRankedModulePublishingTracker_entity on RankedModulePublishingEntity {\n  __typename\n  ... on Collection {\n    id\n    __typename\n  }\n  ... on User {\n    id\n    __typename\n  }\n}\n\nfragment CollectionTooltip_collection on Collection {\n  id\n  name\n  slug\n  description\n  subscriberCount\n  customStyleSheet {\n    header {\n      backgroundImage {\n        id\n        __typename\n      }\n      __typename\n    }\n    __typename\n    id\n  }\n  ...CollectionAvatar_collection\n  ...PublicationFollowButton_collection\n  ...EntityPresentationRankedModulePublishingTracker_entity\n  __typename\n}\n\nfragment CollectionLinkWithPopover_collection on Collection {\n  name\n  ...collectionUrl_collection\n  ...CollectionTooltip_collection\n  __typename\n  id\n}\n\nfragment PostPreviewByLineCollection_collection on Collection {\n  ...CollectionAvatar_collection\n  ...CollectionTooltip_collection\n  ...CollectionLinkWithPopover_collection\n  __typename\n  id\n}\n\nfragment PostPreviewByLine_post on Post {\n  creator {\n    ...PostPreviewByLineAuthor_user\n    __typename\n    id\n  }\n  collection {\n    ...PostPreviewByLineCollection_collection\n    __typename\n    id\n  }\n  __typename\n  id\n}\n\nfragment PostPreviewInformation_post on Post {\n  readingTime\n  isLocked\n  ...Star_post\n  ...usePostPublishedAt_post\n  __typename\n  id\n}\n\nfragment StreamPostPreviewContent_post on Post {\n  id\n  title\n  isLocked\n  previewImage {\n    id\n    __typename\n  }\n  extendedPreviewContent {\n    subtitle\n    __typename\n  }\n  collection {\n    id\n    __typename\n  }\n  ...StreamPostPreviewImage_post\n  ...PostPreviewFooter_post\n  ...PostPreviewByLine_post\n  ...PostPreviewInformation_post\n  ...Star_post\n  ...OverflowMenuButton_post\n  __typename\n}\n\nfragment PostScrollTracker_post on Post {\n  id\n  collection {\n    id\n    __typename\n  }\n  sequence {\n    sequenceId\n    __typename\n  }\n  __typename\n}\n\nfragment usePostUrl_post on Post {\n  id\n  creator {\n    ...userUrl_user\n    __typename\n    id\n  }\n  collection {\n    id\n    domain\n    slug\n    __typename\n  }\n  isSeries\n  mediumUrl\n  sequence {\n    slug\n    __typename\n  }\n  uniqueSlug\n  __typename\n}\n\nfragment PostPreviewContainer_post on Post {\n  id\n  extendedPreviewContent {\n    isFullContent\n    __typename\n  }\n  visibility\n  pinnedAt\n  ...PostScrollTracker_post\n  ...usePostUrl_post\n  __typename\n}\n\nfragment StreamPostPreview_post on Post {\n  id\n  ...StreamPostPreviewContent_post\n  ...PostPreviewContainer_post\n  __typename\n}\n\nfragment TagPosts_tagPostConnection on TagPostConnection {\n  edges {\n    cursor\n    node {\n      id\n      ...StreamPostPreview_post\n      __typename\n    }\n    __typename\n  }\n  pageInfo {\n    hasNextPage\n    endCursor\n    __typename\n  }\n  __typename\n}\n\nfragment TopicLatestStories_tag on Tag {\n  id\n  __typename\n}\n",
       "variableKeys": [
         "tagSlug"
-      ],
-      "variables": {
-        "tagSlug": "programming"
-      }
+      ]
     },
     {
       "operationName": "TopicWhoToFollowPubishersQuery",
@@ -264,13 +224,7 @@
         "first",
         "mode",
         "tagSlug"
-      ],
-      "variables": {
-        "first": 5,
-        "after": "",
-        "mode": "ALL",
-        "tagSlug": "programming"
-      }
+      ]
     },
     {
       "operationName": "UnfollowTag",
@@ -278,11 +232,7 @@
       "variableKeys": [
         "tagSlug",
         "userId"
-      ],
-      "variables": {
-        "userId": "e347e420a0cc",
-        "tagSlug": "programming"
-      }
+      ]
     },
     {
       "operationName": "SubscribeNewsletterV3Mutation",
@@ -290,21 +240,14 @@
       "variableKeys": [
         "newsletterV3Id",
         "shouldRecordConsent"
-      ],
-      "variables": {
-        "newsletterV3Id": "2e6650d450c5",
-        "shouldRecordConsent": false
-      }
+      ]
     },
     {
       "operationName": "PostViewerEdgeQuery",
       "query": "query PostViewerEdgeQuery($postId: ID!) {\n  post(id: $postId) {\n    ... on Post {\n      id\n      viewerEdge {\n        __typename\n        id\n        clapCount\n        readingList\n        shareKey\n        creatorPartnerProgramEnrollmentStatus\n      }\n      __typename\n    }\n    __typename\n  }\n}\n",
       "variableKeys": [
         "postId"
-      ],
-      "variables": {
-        "postId": "d6222451c4e2"
-      }
+      ]
     },
     {
       "operationName": "InteractivePostBodyQuery",
@@ -313,12 +256,7 @@
         "includeHighlightResponseGroups",
         "postId",
         "showNotes"
-      ],
-      "variables": {
-        "postId": "d6222451c4e2",
-        "showNotes": true,
-        "includeHighlightResponseGroups": true
-      }
+      ]
     },
     {
       "operationName": "PostViewerEdgeContentQuery",
@@ -326,13 +264,7 @@
       "variableKeys": [
         "postId",
         "postMeteringOptions"
-      ],
-      "variables": {
-        "postId": "d6222451c4e2",
-        "postMeteringOptions": {
-          "referrer": ""
-        }
-      }
+      ]
     },
     {
       "operationName": "PostResponsesQuery",
@@ -341,59 +273,35 @@
         "paging",
         "postId",
         "sortType"
-      ],
-      "variables": {
-        "postId": "d6222451c4e2",
-        "sortType": "TOP",
-        "paging": {
-          "limit": 3
-        }
-      }
+      ]
     },
     {
       "operationName": "MoreFromMediumRecircQuery",
       "query": "query MoreFromMediumRecircQuery($postId: String!) {\n  recirc(paging: {limit: 6}, postId: $postId) {\n    ...MoreFromMedium_rexRecircResult\n    __typename\n  }\n}\n\nfragment GridPostPreviewImage_imageMetadata on ImageMetadata {\n  id\n  focusPercentX\n  focusPercentY\n  alt\n  __typename\n}\n\nfragment getGridPostPreviewImage_post on Post {\n  id\n  previewImage {\n    id\n    __typename\n  }\n  __typename\n}\n\nfragment GridPostPreviewImage_post on Post {\n  title\n  previewImage {\n    ...GridPostPreviewImage_imageMetadata\n    __typename\n    id\n  }\n  ...getGridPostPreviewImage_post\n  __typename\n  id\n}\n\nfragment SignInOptions_user on User {\n  id\n  name\n  imageId\n  __typename\n}\n\nfragment SignUpOptions_user on User {\n  id\n  name\n  imageId\n  __typename\n}\n\nfragment SusiModal_user on User {\n  ...SignInOptions_user\n  ...SignUpOptions_user\n  __typename\n  id\n}\n\nfragment SusiClickable_user on User {\n  ...SusiModal_user\n  __typename\n  id\n}\n\nfragment SusiModal_post on Post {\n  id\n  creator {\n    id\n    __typename\n  }\n  __typename\n}\n\nfragment SusiClickable_post on Post {\n  id\n  mediumUrl\n  ...SusiModal_post\n  __typename\n}\n\nfragment MultiVoteCount_post on Post {\n  id\n  __typename\n}\n\nfragment MultiVote_post on Post {\n  id\n  creator {\n    id\n    ...SusiClickable_user\n    __typename\n  }\n  isPublished\n  ...SusiClickable_post\n  collection {\n    id\n    slug\n    __typename\n  }\n  isLimitedState\n  ...MultiVoteCount_post\n  __typename\n}\n\nfragment PostPreviewFooterSocial_post on Post {\n  id\n  ...MultiVote_post\n  allowResponses\n  isPublished\n  isLimitedState\n  postResponses {\n    count\n    __typename\n  }\n  __typename\n}\n\nfragment AddToCatalogBase_post on Post {\n  id\n  isPublished\n  ...SusiClickable_post\n  __typename\n}\n\nfragment AddToCatalogBookmarkButton_post on Post {\n  ...AddToCatalogBase_post\n  __typename\n  id\n}\n\nfragment BookmarkButton_post on Post {\n  visibility\n  ...SusiClickable_post\n  ...AddToCatalogBookmarkButton_post\n  __typename\n  id\n}\n\nfragment useNewsletterV3Subscription_newsletterV3 on NewsletterV3 {\n  id\n  type\n  slug\n  name\n  collection {\n    slug\n    __typename\n    id\n  }\n  user {\n    id\n    name\n    username\n    newsletterV3 {\n      id\n      __typename\n    }\n    __typename\n  }\n  __typename\n}\n\nfragment useNewsletterV3Subscription_user on User {\n  id\n  username\n  newsletterV3 {\n    ...useNewsletterV3Subscription_newsletterV3\n    __typename\n    id\n  }\n  __typename\n}\n\nfragment useAuthorFollowSubscribeButton_user on User {\n  id\n  name\n  ...useNewsletterV3Subscription_user\n  __typename\n}\n\nfragment useAuthorFollowSubscribeButton_newsletterV3 on NewsletterV3 {\n  id\n  name\n  ...useNewsletterV3Subscription_newsletterV3\n  __typename\n}\n\nfragment AuthorFollowSubscribeButton_user on User {\n  id\n  name\n  imageId\n  ...SusiModal_user\n  ...useAuthorFollowSubscribeButton_user\n  newsletterV3 {\n    id\n    ...useAuthorFollowSubscribeButton_newsletterV3\n    __typename\n  }\n  __typename\n}\n\nfragment FollowMenuOptions_user on User {\n  id\n  ...AuthorFollowSubscribeButton_user\n  __typename\n}\n\nfragment SignInOptions_collection on Collection {\n  id\n  name\n  __typename\n}\n\nfragment SignUpOptions_collection on Collection {\n  id\n  name\n  __typename\n}\n\nfragment SusiModal_collection on Collection {\n  name\n  ...SignInOptions_collection\n  ...SignUpOptions_collection\n  __typename\n  id\n}\n\nfragment PublicationFollowButton_collection on Collection {\n  id\n  slug\n  name\n  ...SusiModal_collection\n  __typename\n}\n\nfragment FollowMenuOptions_collection on Collection {\n  id\n  ...PublicationFollowButton_collection\n  __typename\n}\n\nfragment ClapMutation_post on Post {\n  __typename\n  id\n  clapCount\n  ...MultiVoteCount_post\n}\n\nfragment OverflowMenuItemUndoClaps_post on Post {\n  id\n  clapCount\n  ...ClapMutation_post\n  __typename\n}\n\nfragment NegativeSignalModal_publisher on Publisher {\n  __typename\n  id\n  name\n}\n\nfragment NegativeSignalModal_post on Post {\n  id\n  creator {\n    ...NegativeSignalModal_publisher\n    viewerEdge {\n      id\n      isMuting\n      __typename\n    }\n    __typename\n    id\n  }\n  collection {\n    ...NegativeSignalModal_publisher\n    viewerEdge {\n      id\n      isMuting\n      __typename\n    }\n    __typename\n    id\n  }\n  __typename\n}\n\nfragment ExplicitSignalMenuOptions_post on Post {\n  ...NegativeSignalModal_post\n  __typename\n  id\n}\n\nfragment OverflowMenu_post on Post {\n  id\n  creator {\n    id\n    ...FollowMenuOptions_user\n    __typename\n  }\n  collection {\n    id\n    ...FollowMenuOptions_collection\n    __typename\n  }\n  ...OverflowMenuItemUndoClaps_post\n  ...AddToCatalogBase_post\n  ...ExplicitSignalMenuOptions_post\n  __typename\n}\n\nfragment OverflowMenuButton_post on Post {\n  id\n  visibility\n  ...OverflowMenu_post\n  __typename\n}\n\nfragment PostPreviewFooterMenu_post on Post {\n  id\n  ...BookmarkButton_post\n  ...OverflowMenuButton_post\n  __typename\n}\n\nfragment usePostPublishedAt_post on Post {\n  firstPublishedAt\n  latestPublishedAt\n  pinnedAt\n  __typename\n  id\n}\n\nfragment Star_post on Post {\n  id\n  __typename\n}\n\nfragment PostPreviewFooterMeta_post on Post {\n  isLocked\n  postResponses {\n    count\n    __typename\n  }\n  ...usePostPublishedAt_post\n  ...Star_post\n  __typename\n  id\n}\n\nfragment PostPreviewFooter_post on Post {\n  ...PostPreviewFooterSocial_post\n  ...PostPreviewFooterMenu_post\n  ...PostPreviewFooterMeta_post\n  ...BookmarkButton_post\n  __typename\n  id\n}\n\nfragment userUrl_user on User {\n  __typename\n  id\n  customDomainState {\n    live {\n      domain\n      __typename\n    }\n    __typename\n  }\n  hasSubdomain\n  username\n}\n\nfragment UserAvatar_user on User {\n  __typename\n  id\n  imageId\n  membership {\n    tier\n    __typename\n    id\n  }\n  name\n  username\n  ...userUrl_user\n}\n\nfragment PostPreviewBylineAuthorAvatar_user on User {\n  ...UserAvatar_user\n  __typename\n  id\n}\n\nfragment isUserVerifiedBookAuthor_user on User {\n  verifications {\n    isBookAuthor\n    __typename\n  }\n  __typename\n  id\n}\n\nfragment UserLink_user on User {\n  ...userUrl_user\n  __typename\n  id\n}\n\nfragment UserName_user on User {\n  id\n  name\n  ...isUserVerifiedBookAuthor_user\n  ...UserLink_user\n  __typename\n}\n\nfragment PostPreviewByLineAuthor_user on User {\n  ...PostPreviewBylineAuthorAvatar_user\n  ...UserName_user\n  __typename\n  id\n}\n\nfragment collectionUrl_collection on Collection {\n  id\n  domain\n  slug\n  __typename\n}\n\nfragment CollectionAvatar_collection on Collection {\n  name\n  avatar {\n    id\n    __typename\n  }\n  ...collectionUrl_collection\n  __typename\n  id\n}\n\nfragment EntityPresentationRankedModulePublishingTracker_entity on RankedModulePublishingEntity {\n  __typename\n  ... on Collection {\n    id\n    __typename\n  }\n  ... on User {\n    id\n    __typename\n  }\n}\n\nfragment CollectionTooltip_collection on Collection {\n  id\n  name\n  slug\n  description\n  subscriberCount\n  customStyleSheet {\n    header {\n      backgroundImage {\n        id\n        __typename\n      }\n      __typename\n    }\n    __typename\n    id\n  }\n  ...CollectionAvatar_collection\n  ...PublicationFollowButton_collection\n  ...EntityPresentationRankedModulePublishingTracker_entity\n  __typename\n}\n\nfragment CollectionLinkWithPopover_collection on Collection {\n  name\n  ...collectionUrl_collection\n  ...CollectionTooltip_collection\n  __typename\n  id\n}\n\nfragment PostPreviewByLineCollection_collection on Collection {\n  ...CollectionAvatar_collection\n  ...CollectionTooltip_collection\n  ...CollectionLinkWithPopover_collection\n  __typename\n  id\n}\n\nfragment PostPreviewByLine_post on Post {\n  creator {\n    ...PostPreviewByLineAuthor_user\n    __typename\n    id\n  }\n  collection {\n    ...PostPreviewByLineCollection_collection\n    __typename\n    id\n  }\n  __typename\n  id\n}\n\nfragment PostPreviewInformation_post on Post {\n  readingTime\n  isLocked\n  ...Star_post\n  ...usePostPublishedAt_post\n  __typename\n  id\n}\n\nfragment GridPostPreviewContent_post on Post {\n  id\n  title\n  extendedPreviewContent {\n    subtitle\n    __typename\n  }\n  ...GridPostPreviewImage_post\n  ...PostPreviewFooter_post\n  ...PostPreviewByLine_post\n  ...PostPreviewInformation_post\n  __typename\n}\n\nfragment PostScrollTracker_post on Post {\n  id\n  collection {\n    id\n    __typename\n  }\n  sequence {\n    sequenceId\n    __typename\n  }\n  __typename\n}\n\nfragment usePostUrl_post on Post {\n  id\n  creator {\n    ...userUrl_user\n    __typename\n    id\n  }\n  collection {\n    id\n    domain\n    slug\n    __typename\n  }\n  isSeries\n  mediumUrl\n  sequence {\n    slug\n    __typename\n  }\n  uniqueSlug\n  __typename\n}\n\nfragment PostPreviewContainer_post on Post {\n  id\n  extendedPreviewContent {\n    isFullContent\n    __typename\n  }\n  visibility\n  pinnedAt\n  ...PostScrollTracker_post\n  ...usePostUrl_post\n  __typename\n}\n\nfragment GridPostPreview_post on Post {\n  id\n  ...GridPostPreviewContent_post\n  ...PostPreviewContainer_post\n  __typename\n}\n\nfragment MoreFromMedium_rexRecircResult on RexRecircResult {\n  items {\n    ... on RexRecircItem {\n      feedId\n      post {\n        ...GridPostPreview_post\n        __typename\n        id\n      }\n      __typename\n    }\n    __typename\n  }\n  __typename\n}\n",
       "variableKeys": [
         "postId"
-      ],
-      "variables": {
-        "postId": "d6222451c4e2"
-      }
+      ]
     },
     {
       "operationName": "MoreFromAuthorAndMaybePubQuery",
       "query": "query MoreFromAuthorAndMaybePubQuery($input: AuthorCollectionRecircFeedInput!) {\n  authorCollectionRecircFeed(input: $input) {\n    ...MoreFromAuthorAndMaybePub_authorCollectionRecircFeedResult\n    __typename\n  }\n}\n\nfragment GridPostPreviewImage_imageMetadata on ImageMetadata {\n  id\n  focusPercentX\n  focusPercentY\n  alt\n  __typename\n}\n\nfragment getGridPostPreviewImage_post on Post {\n  id\n  previewImage {\n    id\n    __typename\n  }\n  __typename\n}\n\nfragment GridPostPreviewImage_post on Post {\n  title\n  previewImage {\n    ...GridPostPreviewImage_imageMetadata\n    __typename\n    id\n  }\n  ...getGridPostPreviewImage_post\n  __typename\n  id\n}\n\nfragment SignInOptions_user on User {\n  id\n  name\n  imageId\n  __typename\n}\n\nfragment SignUpOptions_user on User {\n  id\n  name\n  imageId\n  __typename\n}\n\nfragment SusiModal_user on User {\n  ...SignInOptions_user\n  ...SignUpOptions_user\n  __typename\n  id\n}\n\nfragment SusiClickable_user on User {\n  ...SusiModal_user\n  __typename\n  id\n}\n\nfragment SusiModal_post on Post {\n  id\n  creator {\n    id\n    __typename\n  }\n  __typename\n}\n\nfragment SusiClickable_post on Post {\n  id\n  mediumUrl\n  ...SusiModal_post\n  __typename\n}\n\nfragment MultiVoteCount_post on Post {\n  id\n  __typename\n}\n\nfragment MultiVote_post on Post {\n  id\n  creator {\n    id\n    ...SusiClickable_user\n    __typename\n  }\n  isPublished\n  ...SusiClickable_post\n  collection {\n    id\n    slug\n    __typename\n  }\n  isLimitedState\n  ...MultiVoteCount_post\n  __typename\n}\n\nfragment PostPreviewFooterSocial_post on Post {\n  id\n  ...MultiVote_post\n  allowResponses\n  isPublished\n  isLimitedState\n  postResponses {\n    count\n    __typename\n  }\n  __typename\n}\n\nfragment AddToCatalogBase_post on Post {\n  id\n  isPublished\n  ...SusiClickable_post\n  __typename\n}\n\nfragment AddToCatalogBookmarkButton_post on Post {\n  ...AddToCatalogBase_post\n  __typename\n  id\n}\n\nfragment BookmarkButton_post on Post {\n  visibility\n  ...SusiClickable_post\n  ...AddToCatalogBookmarkButton_post\n  __typename\n  id\n}\n\nfragment useNewsletterV3Subscription_newsletterV3 on NewsletterV3 {\n  id\n  type\n  slug\n  name\n  collection {\n    slug\n    __typename\n    id\n  }\n  user {\n    id\n    name\n    username\n    newsletterV3 {\n      id\n      __typename\n    }\n    __typename\n  }\n  __typename\n}\n\nfragment useNewsletterV3Subscription_user on User {\n  id\n  username\n  newsletterV3 {\n    ...useNewsletterV3Subscription_newsletterV3\n    __typename\n    id\n  }\n  __typename\n}\n\nfragment useAuthorFollowSubscribeButton_user on User {\n  id\n  name\n  ...useNewsletterV3Subscription_user\n  __typename\n}\n\nfragment useAuthorFollowSubscribeButton_newsletterV3 on NewsletterV3 {\n  id\n  name\n  ...useNewsletterV3Subscription_newsletterV3\n  __typename\n}\n\nfragment AuthorFollowSubscribeButton_user on User {\n  id\n  name\n  imageId\n  ...SusiModal_user\n  ...useAuthorFollowSubscribeButton_user\n  newsletterV3 {\n    id\n    ...useAuthorFollowSubscribeButton_newsletterV3\n    __typename\n  }\n  __typename\n}\n\nfragment FollowMenuOptions_user on User {\n  id\n  ...AuthorFollowSubscribeButton_user\n  __typename\n}\n\nfragment SignInOptions_collection on Collection {\n  id\n  name\n  __typename\n}\n\nfragment SignUpOptions_collection on Collection {\n  id\n  name\n  __typename\n}\n\nfragment SusiModal_collection on Collection {\n  name\n  ...SignInOptions_collection\n  ...SignUpOptions_collection\n  __typename\n  id\n}\n\nfragment PublicationFollowButton_collection on Collection {\n  id\n  slug\n  name\n  ...SusiModal_collection\n  __typename\n}\n\nfragment FollowMenuOptions_collection on Collection {\n  id\n  ...PublicationFollowButton_collection\n  __typename\n}\n\nfragment ClapMutation_post on Post {\n  __typename\n  id\n  clapCount\n  ...MultiVoteCount_post\n}\n\nfragment OverflowMenuItemUndoClaps_post on Post {\n  id\n  clapCount\n  ...ClapMutation_post\n  __typename\n}\n\nfragment NegativeSignalModal_publisher on Publisher {\n  __typename\n  id\n  name\n}\n\nfragment NegativeSignalModal_post on Post {\n  id\n  creator {\n    ...NegativeSignalModal_publisher\n    viewerEdge {\n      id\n      isMuting\n      __typename\n    }\n    __typename\n    id\n  }\n  collection {\n    ...NegativeSignalModal_publisher\n    viewerEdge {\n      id\n      isMuting\n      __typename\n    }\n    __typename\n    id\n  }\n  __typename\n}\n\nfragment ExplicitSignalMenuOptions_post on Post {\n  ...NegativeSignalModal_post\n  __typename\n  id\n}\n\nfragment OverflowMenu_post on Post {\n  id\n  creator {\n    id\n    ...FollowMenuOptions_user\n    __typename\n  }\n  collection {\n    id\n    ...FollowMenuOptions_collection\n    __typename\n  }\n  ...OverflowMenuItemUndoClaps_post\n  ...AddToCatalogBase_post\n  ...ExplicitSignalMenuOptions_post\n  __typename\n}\n\nfragment OverflowMenuButton_post on Post {\n  id\n  visibility\n  ...OverflowMenu_post\n  __typename\n}\n\nfragment PostPreviewFooterMenu_post on Post {\n  id\n  ...BookmarkButton_post\n  ...OverflowMenuButton_post\n  __typename\n}\n\nfragment usePostPublishedAt_post on Post {\n  firstPublishedAt\n  latestPublishedAt\n  pinnedAt\n  __typename\n  id\n}\n\nfragment Star_post on Post {\n  id\n  __typename\n}\n\nfragment PostPreviewFooterMeta_post on Post {\n  isLocked\n  postResponses {\n    count\n    __typename\n  }\n  ...usePostPublishedAt_post\n  ...Star_post\n  __typename\n  id\n}\n\nfragment PostPreviewFooter_post on Post {\n  ...PostPreviewFooterSocial_post\n  ...PostPreviewFooterMenu_post\n  ...PostPreviewFooterMeta_post\n  ...BookmarkButton_post\n  __typename\n  id\n}\n\nfragment userUrl_user on User {\n  __typename\n  id\n  customDomainState {\n    live {\n      domain\n      __typename\n    }\n    __typename\n  }\n  hasSubdomain\n  username\n}\n\nfragment UserAvatar_user on User {\n  __typename\n  id\n  imageId\n  membership {\n    tier\n    __typename\n    id\n  }\n  name\n  username\n  ...userUrl_user\n}\n\nfragment PostPreviewBylineAuthorAvatar_user on User {\n  ...UserAvatar_user\n  __typename\n  id\n}\n\nfragment isUserVerifiedBookAuthor_user on User {\n  verifications {\n    isBookAuthor\n    __typename\n  }\n  __typename\n  id\n}\n\nfragment UserLink_user on User {\n  ...userUrl_user\n  __typename\n  id\n}\n\nfragment UserName_user on User {\n  id\n  name\n  ...isUserVerifiedBookAuthor_user\n  ...UserLink_user\n  __typename\n}\n\nfragment PostPreviewByLineAuthor_user on User {\n  ...PostPreviewBylineAuthorAvatar_user\n  ...UserName_user\n  __typename\n  id\n}\n\nfragment collectionUrl_collection on Collection {\n  id\n  domain\n  slug\n  __typename\n}\n\nfragment CollectionAvatar_collection on Collection {\n  name\n  avatar {\n    id\n    __typename\n  }\n  ...collectionUrl_collection\n  __typename\n  id\n}\n\nfragment EntityPresentationRankedModulePublishingTracker_entity on RankedModulePublishingEntity {\n  __typename\n  ... on Collection {\n    id\n    __typename\n  }\n  ... on User {\n    id\n    __typename\n  }\n}\n\nfragment CollectionTooltip_collection on Collection {\n  id\n  name\n  slug\n  description\n  subscriberCount\n  customStyleSheet {\n    header {\n      backgroundImage {\n        id\n        __typename\n      }\n      __typename\n    }\n    __typename\n    id\n  }\n  ...CollectionAvatar_collection\n  ...PublicationFollowButton_collection\n  ...EntityPresentationRankedModulePublishingTracker_entity\n  __typename\n}\n\nfragment CollectionLinkWithPopover_collection on Collection {\n  name\n  ...collectionUrl_collection\n  ...CollectionTooltip_collection\n  __typename\n  id\n}\n\nfragment PostPreviewByLineCollection_collection on Collection {\n  ...CollectionAvatar_collection\n  ...CollectionTooltip_collection\n  ...CollectionLinkWithPopover_collection\n  __typename\n  id\n}\n\nfragment PostPreviewByLine_post on Post {\n  creator {\n    ...PostPreviewByLineAuthor_user\n    __typename\n    id\n  }\n  collection {\n    ...PostPreviewByLineCollection_collection\n    __typename\n    id\n  }\n  __typename\n  id\n}\n\nfragment PostPreviewInformation_post on Post {\n  readingTime\n  isLocked\n  ...Star_post\n  ...usePostPublishedAt_post\n  __typename\n  id\n}\n\nfragment GridPostPreviewContent_post on Post {\n  id\n  title\n  extendedPreviewContent {\n    subtitle\n    __typename\n  }\n  ...GridPostPreviewImage_post\n  ...PostPreviewFooter_post\n  ...PostPreviewByLine_post\n  ...PostPreviewInformation_post\n  __typename\n}\n\nfragment PostScrollTracker_post on Post {\n  id\n  collection {\n    id\n    __typename\n  }\n  sequence {\n    sequenceId\n    __typename\n  }\n  __typename\n}\n\nfragment usePostUrl_post on Post {\n  id\n  creator {\n    ...userUrl_user\n    __typename\n    id\n  }\n  collection {\n    id\n    domain\n    slug\n    __typename\n  }\n  isSeries\n  mediumUrl\n  sequence {\n    slug\n    __typename\n  }\n  uniqueSlug\n  __typename\n}\n\nfragment PostPreviewContainer_post on Post {\n  id\n  extendedPreviewContent {\n    isFullContent\n    __typename\n  }\n  visibility\n  pinnedAt\n  ...PostScrollTracker_post\n  ...usePostUrl_post\n  __typename\n}\n\nfragment GridPostPreview_post on Post {\n  id\n  ...GridPostPreviewContent_post\n  ...PostPreviewContainer_post\n  __typename\n}\n\nfragment StreamPostPreviewImage_imageMetadata on ImageMetadata {\n  id\n  focusPercentX\n  focusPercentY\n  alt\n  __typename\n}\n\nfragment StreamPostPreviewImage_post on Post {\n  title\n  previewImage {\n    ...StreamPostPreviewImage_imageMetadata\n    __typename\n    id\n  }\n  __typename\n  id\n}\n\nfragment StreamPostPreviewContent_post on Post {\n  id\n  title\n  isLocked\n  previewImage {\n    id\n    __typename\n  }\n  extendedPreviewContent {\n    subtitle\n    __typename\n  }\n  collection {\n    id\n    __typename\n  }\n  ...StreamPostPreviewImage_post\n  ...PostPreviewFooter_post\n  ...PostPreviewByLine_post\n  ...PostPreviewInformation_post\n  ...Star_post\n  ...OverflowMenuButton_post\n  __typename\n}\n\nfragment StreamPostPreview_post on Post {\n  id\n  ...StreamPostPreviewContent_post\n  ...PostPreviewContainer_post\n  __typename\n}\n\nfragment MoreFromAuthorAndMaybePub_authorCollectionRecircFeedResult on AuthorCollectionRecircFeedResult {\n  __typename\n  items {\n    post {\n      ...GridPostPreview_post\n      ...StreamPostPreview_post\n      __typename\n    }\n    feedId\n    __typename\n  }\n}\n",
       "variableKeys": [
         "input"
-      ],
-      "variables": {
-        "input": {
-          "postId": "d6222451c4e2",
-          "paging": {
-            "limit": 4
-          }
-        }
-      }
+      ]
     },
     {
       "operationName": "Paywall",
       "query": "query Paywall($postId: ID!) {\n  post(id: $postId) {\n    id\n    viewerEdge {\n      id\n      paywall {\n        type\n        ...AspirationalPaywall_paywall\n        ...ProgrammingPaywall_paywall\n        __typename\n      }\n      __typename\n    }\n    __typename\n  }\n}\n\nfragment EntityPaywall_paywall on PostPaywall {\n  creatorSpotlights {\n    name\n    title\n    company\n    miroId\n    hideOnSmallScreen\n    __typename\n  }\n  type\n  __typename\n}\n\nfragment AspirationalPaywall_paywall on PostPaywall {\n  ...EntityPaywall_paywall\n  __typename\n}\n\nfragment ProgrammingPaywall_paywall on PostPaywall {\n  ...EntityPaywall_paywall\n  __typename\n}\n",
       "variableKeys": [
         "postId"
-      ],
-      "variables": {
-        "postId": "d6222451c4e2"
-      }
+      ]
     },
     {
       "operationName": "PostGiveTipOnExternalPlatformQuery",
       "query": "query PostGiveTipOnExternalPlatformQuery($userId: ID!) {\n  user(id: $userId) {\n    __typename\n    ... on User {\n      id\n      tippingLink\n      __typename\n    }\n  }\n}\n",
       "variableKeys": [
         "userId"
-      ],
-      "variables": {
-        "userId": "d98ea047bd55"
-      }
+      ]
     },
     {
       "operationName": "ClapMutation",
@@ -402,12 +310,7 @@
         "numClaps",
         "targetPostId",
         "userId"
-      ],
-      "variables": {
-        "targetPostId": "d6222451c4e2",
-        "userId": "e347e420a0cc",
-        "numClaps": 1
-      }
+      ]
     },
     {
       "operationName": "PagedThreadedPostResponsesQuery",
@@ -416,14 +319,7 @@
         "postId",
         "postResponsesPaging",
         "sortType"
-      ],
-      "variables": {
-        "postId": "d6222451c4e2",
-        "postResponsesPaging": {
-          "limit": 10
-        },
-        "sortType": "TOP"
-      }
+      ]
     },
     {
       "operationName": "PublishPostThreadedResponse",
@@ -434,44 +330,8 @@
         "inResponseToQuoteId",
         "responseDistribution",
         "sortType"
-      ],
-      "variables": {
-        "inResponseToPostId": "d6222451c4e2",
-        "deltas": [
-          {
-            "type": 8,
-            "index": 0,
-            "section": {
-              "name": "8d3b",
-              "startIndex": 0
-            }
-          },
-          {
-            "type": 1,
-            "index": 0,
-            "paragraph": {
-              "name": "3dee",
-              "type": 3,
-              "text": "",
-              "markups": []
-            }
-          },
-          {
-            "type": 1,
-            "paragraph": {
-              "markups": [],
-              "name": "a6e2",
-              "text": "Practical capture response draft text.",
-              "type": 1
-            },
-            "verifySameName": false,
-            "index": 1
-          }
-        ],
-        "inResponseToQuoteId": null,
-        "responseDistribution": "NOT_DISTRIBUTED",
-        "sortType": "TOP"
-      }
+      ]
     }
-  ]
+  ],
+  "sanitizedForPublicPush": true
 }

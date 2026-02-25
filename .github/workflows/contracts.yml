@@ -26,6 +26,9 @@ jobs:
           CAPTURE_MAX_AGE_DAYS: "45"
         run: uv run python scripts/check_capture_integrity.py
 
+      - name: Capture Sanitization Check
+        run: uv run python scripts/check_capture_sanitization.py
+
       - name: Response Contract Path Check
         run: uv run python scripts/check_response_contract_paths.py
 
