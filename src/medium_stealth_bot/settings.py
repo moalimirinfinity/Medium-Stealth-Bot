@@ -69,28 +69,24 @@ class AppSettings(BaseSettings):
     max_actions_per_day: int = Field(
         default=50,
         ge=1,
-        le=500,
         validation_alias="MAX_ACTIONS_PER_DAY",
     )
     max_subscribe_actions_per_day: int = Field(
         default=30,
         ge=0,
-        le=500,
         validation_alias="MAX_SUBSCRIBE_ACTIONS_PER_DAY",
     )
     max_unfollow_actions_per_day: int = Field(
         default=20,
         ge=0,
-        le=500,
         validation_alias="MAX_UNFOLLOW_ACTIONS_PER_DAY",
     )
     max_clap_actions_per_day: int = Field(
         default=40,
         ge=0,
-        le=500,
         validation_alias="MAX_CLAP_ACTIONS_PER_DAY",
     )
-    max_follow_actions_per_run: int = Field(default=5, ge=0, le=200, validation_alias="MAX_FOLLOW_ACTIONS_PER_RUN")
+    max_follow_actions_per_run: int = Field(default=5, ge=0, validation_alias="MAX_FOLLOW_ACTIONS_PER_RUN")
     reconcile_scan_limit: int = Field(default=200, ge=1, le=5000, validation_alias="RECONCILE_SCAN_LIMIT")
     reconcile_page_size: int = Field(default=50, ge=1, le=500, validation_alias="RECONCILE_PAGE_SIZE")
     follow_candidate_limit: int = Field(default=30, ge=1, le=500, validation_alias="FOLLOW_CANDIDATE_LIMIT")
