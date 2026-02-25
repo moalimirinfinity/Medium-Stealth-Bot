@@ -3,7 +3,17 @@ name = "medium-stealth-bot"
 version = "0.1.0"
 description = "Local-first Medium automation scaffold with async GraphQL client and Playwright auth."
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.12"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     "curl-cffi>=0.14.0",
     "playwright>=1.58.0",
@@ -13,6 +23,12 @@ dependencies = [
     "structlog>=25.5.0",
     "typer>=0.24.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/moalimir/Medium-Stealth-Bot"
+Repository = "https://github.com/moalimir/Medium-Stealth-Bot"
+Issues = "https://github.com/moalimir/Medium-Stealth-Bot/issues"
+Security = "https://github.com/moalimir/Medium-Stealth-Bot/security/policy"
 
 [project.scripts]
 bot = "medium_stealth_bot.main:app"
