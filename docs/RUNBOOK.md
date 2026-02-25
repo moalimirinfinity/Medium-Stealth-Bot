@@ -3,6 +3,7 @@
 ## Preflight Checklist
 
 1. `uv run bot profile-validate --env-path .env.production` passes.
+   - baseline check only; confirm your chosen safety thresholds in `.env.production`.
 2. `uv run bot contracts --tag programming --no-execute-reads` passes.
 3. Optional live read check passes when newsletter inputs are configured.
 4. `OPERATOR_KILL_SWITCH=false` in active profile.

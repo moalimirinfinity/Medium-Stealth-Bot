@@ -2,7 +2,7 @@
 
 Automate Medium growth with a local-first, safety-guarded engine built for repeatable live execution.
 
-This project turns manual follower discovery, scoring, follow/reconcile cycles, and diagnostics into a structured CLI workflow with strict risk controls.
+This project turns manual follower discovery, scoring, follow/reconcile cycles, and diagnostics into a structured CLI workflow with operator-defined risk controls.
 
 ## Why This Project
 
@@ -20,8 +20,8 @@ This project turns manual follower discovery, scoring, follow/reconcile cycles, 
   - response field/path validation
   - optional live read verification
 - Safety model:
-  - challenge/session-expiry halt detection
-  - consecutive-failure halts
+  - optional challenge/session-expiry halt detection
+  - configurable consecutive-failure halts
   - operator kill switch
 - Local observability:
   - versioned run artifacts
@@ -53,6 +53,8 @@ uv run bot start
 cp .env.production.example .env.production
 uv run bot profile-validate --env-path .env.production
 ```
+
+`profile-validate` now performs baseline profile checks only. Safety thresholds and halt behavior are controlled by your `.env` values.
 
 2. Run a preflight + live cycle.
 
@@ -93,7 +95,8 @@ uv run bot artifacts validate
 
 - UTC day-boundary policy for all daily budgets.
 - `MEDIUM_USER_REF` must be a Medium `user_id` (not `@username`).
-- Live halts on:
+- Safety behavior is operator-configurable in `.env`.
+- Live can halt on:
   - challenge detections/status codes
   - session-expiry/auth failure signatures
   - consecutive failure threshold

@@ -9,6 +9,7 @@ This project is local-first. Scheduled live execution is done on the operator ma
    - fill `MEDIUM_SESSION`, `MEDIUM_CSRF`, `MEDIUM_USER_REF`.
 2. Validate profile:
    - `uv run bot profile-validate --env-path .env.production`
+   - this confirms baseline profile sanity; safety thresholds remain operator-defined in `.env.production`
 3. Confirm manual run:
    - `uv run bot start --quick-live --dry-run-first --tag programming`
 
@@ -25,6 +26,7 @@ Behavior:
 - acquires lock to prevent overlapping runs
 - skips run when `OPERATOR_KILL_SWITCH=true`
 - validates production profile
+- uses operator-configured safety thresholds from env
 - executes dry-run preflight then live cycle
 - writes logs to `.data/scheduler/`
 

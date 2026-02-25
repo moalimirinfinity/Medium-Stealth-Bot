@@ -24,7 +24,7 @@ The script performs:
    - response contract path check
    - tests
    - contract registry parity
-   - production profile template validation
+   - production profile template baseline validation
 3. version bump in:
    - `pyproject.toml`
    - `src/medium_stealth_bot/__init__.py`

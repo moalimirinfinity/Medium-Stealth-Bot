@@ -22,6 +22,7 @@ Use this when a live rollout/regression must be reverted quickly.
 ## Re-validate Before Resume
 
 1. `uv run bot profile-validate --env-path .env.production`
+   - baseline profile check
 2. `uv run bot contracts --tag programming --no-execute-reads`
 3. `uv run bot start --quick-live --dry-run-first --tag programming`
 

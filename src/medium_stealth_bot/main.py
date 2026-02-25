@@ -449,7 +449,7 @@ def profile_validate_command(
     ),
 ) -> None:
     """
-    Validate production profile guardrails before enabling scheduled live runs.
+    Validate production profile baseline settings before scheduled runs.
     """
     if not env_path.exists():
         console.print(f"Profile file not found: {env_path}", style="red")
@@ -462,7 +462,7 @@ def profile_validate_command(
         raise typer.Exit(code=1) from exc
 
     issues = validate_production_profile(settings)
-    summary = Table(title=f"Production Profile Validation ({env_path})")
+    summary = Table(title=f"Production Profile Baseline Validation ({env_path})")
     summary.add_column("Rule")
     summary.add_column("Expected")
     summary.add_column("Actual")
@@ -476,7 +476,10 @@ def profile_validate_command(
 
     summary.add_row("status", "all checks passed", "ok")
     console.print(summary)
-    console.print("Production profile validation passed.", style="green")
+    console.print(
+        "Production profile validation passed. Safety behavior is controlled by .env values.",
+        style="green",
+    )
 
 
 @app.command("auth")
