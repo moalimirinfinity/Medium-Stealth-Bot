@@ -136,7 +136,9 @@ Hard-stop triggers:
 ## 7. CLI Surface
 
 - `uv run bot setup`
-- `uv run bot start [--dry-run-first]`
+- `uv run bot start` (interactive numbered menu)
+- `uv run bot start --quick-live [--dry-run-first]`
+- `uv run bot profile-validate --env-path .env.production`
 - `uv run bot auth`
 - `uv run bot probe --tag programming`
 - `uv run bot contracts --tag programming [--execute-reads]`
@@ -159,8 +161,11 @@ Current baseline includes:
 - contract parity checks
 - strict response-path checks
 - capture freshness/integrity checks
+- capture sanitization checks
 - unit/integration-style local tests
 - CI quality workflow in `.github/workflows/contracts.yml`
+- CI secret scanning workflow in `.github/workflows/secrets.yml`
+- tag-triggered release workflow in `.github/workflows/release.yml`
 
 Optional CI live-read validation runs when required secrets/variables are configured.
 
@@ -168,13 +173,9 @@ Optional CI live-read validation runs when required secrets/variables are config
 
 ### Implemented
 
-- phases 0 through 6 from the development plan
+- phases 0 through 7 from the development plan
 - live-read strict contract checks with newsletter slug + username inputs
 - file-based migrations, idempotency keys, reconciliation persistence
 - safety guardrails, run artifacts, status diagnostics, redaction layer
-
-### Remaining for full deployment maturity
-
-- explicit release/scheduling workflow
-- production runbook and rollback procedure
-- policy for sustained live scheduling and preflight gating strategy
+- production profile validation + scheduler templates
+- release automation + security scanning + runbook/rollback/promotion docs

@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag (for manual runs), e.g. v0.2.0"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup UV
+        uses: astral-sh/setup-uv@v4
+
+      - name: Sync Dependencies
+        run: uv sync --group dev
+
+      - name: Compile
+        run: uv run python -m compileall -q src
+
+      - name: Capture Integrity
+        env:
+          CAPTURE_MAX_AGE_DAYS: "45"
+        run: uv run python scripts/check_capture_integrity.py
+
+      - name: Capture Sanitization Check
+        run: uv run python scripts/check_capture_sanitization.py
+
+      - name: Response Contract Path Check
+        run: uv run python scripts/check_response_contract_paths.py
+
+      - name: Tests
+        run: uv run pytest -q
+
+      - name: Validate Contract Registry
+        env:
+          CONTRACT_REGISTRY_VALIDATE_RESPONSE_FIELDS: "true"
+        run: uv run bot contracts --tag programming --no-execute-reads
+
+      - name: Validate Production Profile Template
+        run: uv run bot profile-validate --env-path .env.production.example
+
+      - name: Build Distribution Artifacts
+        run: uv build
+
+      - name: Generate Checksums
+        run: sha256sum dist/* > dist/SHA256SUMS.txt
+
+      - name: Resolve Release Tag
+        id: resolve_tag
+        env:
+          INPUT_TAG: ${{ inputs.tag_name || '' }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ -z "${INPUT_TAG}" ]]; then
+            echo "tag_name input is required for workflow_dispatch runs."
+            exit 1
+          fi
+          echo "value=${INPUT_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.resolve_tag.outputs.value }}
+          generate_release_notes: true
+          files: |
+            dist/*
+            dist/SHA256SUMS.txt

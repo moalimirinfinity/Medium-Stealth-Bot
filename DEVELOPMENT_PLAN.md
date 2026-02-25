@@ -35,7 +35,7 @@ Evolve this repository into a production-operable, local-first Medium automation
 | 4 | Safety Guardrails + Timing | Completed |
 | 5 | Observability + Diagnostics | Completed |
 | 6 | Tests + CI Baseline | Completed |
-| 7 | Deployment Hardening | In progress |
+| 7 | Deployment Hardening | Completed |
 
 ---
 
@@ -172,10 +172,12 @@ Evolve this repository into a production-operable, local-first Medium automation
 - CI quality workflow:
   - compile
   - capture integrity
+  - capture sanitization check
   - response-contract path checks
   - pytest
   - contract registry checks
   - optional live read checks when secrets/vars are available
+- CI secret scan workflow (`gitleaks`).
 
 ### Exit Criteria
 
@@ -184,24 +186,39 @@ Evolve this repository into a production-operable, local-first Medium automation
 
 ---
 
-## Phase 7: Deployment Hardening (Current Focus)
+## Phase 7: Deployment Hardening
 
-### Delivered so far
+### Delivered
 
 - Guided CLI onboarding and execution commands:
   - `bot setup` interactive profile wizard
-  - `bot start` live-default guided execution flow (optional `--dry-run-first` preflight)
-
-### Remaining
-
-1. Release workflow:
-   - add explicit deploy/schedule workflow separate from quality checks.
-2. Production profile:
-   - lock prod defaults for action budgets, delays, and guardrails.
-3. Runbook:
-   - document live incident response and rollback procedures.
-4. Promotion process:
-   - define rollout/soak criteria for sustained live schedule (with optional dry-run preflight gates).
+  - `bot start` interactive numbered menu with quick actions and `--quick-live` direct mode
+- Public OSS baseline:
+  - `LICENSE`, `SECURITY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`
+  - issue/PR templates + `CODEOWNERS`
+- Capture public sanitization pipeline:
+  - `scripts/sanitize_captures.py`
+  - `scripts/check_capture_sanitization.py`
+  - sanitized canonical capture corpus + regenerated `captures/manifest.json`
+- Production profile locking:
+  - `.env.production.example`
+  - `bot profile-validate --env-path <path>`
+- Local scheduling path:
+  - `scripts/run_daily_live.sh`
+  - `ops/scheduling/cron.example`
+  - `ops/scheduling/com.mediumstealthbot.daily.plist`
+  - `docs/SCHEDULING.md`
+- Release path:
+  - `scripts/release_local.sh <version>`
+  - `.github/workflows/release.yml`
+  - `docs/RELEASE.md`
+- Operations docs:
+  - `docs/RUNBOOK.md`
+  - `docs/ROLLBACK.md`
+  - `docs/PROMOTION_POLICY.md`
+- Security gate:
+  - `.github/workflows/secrets.yml`
+  - `.gitleaks.toml`
 
 ### Exit Criteria
 

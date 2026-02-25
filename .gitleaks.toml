@@ -1,0 +1,15 @@
+title = "medium-stealth-bot gitleaks config"
+
+[allowlist]
+description = "Allow synthetic placeholders used in tests and example env templates"
+paths = [
+  '''tests/test_client_modes.py''',
+  '''tests/test_redaction.py''',
+  '''.env.example''',
+  '''.env.production.example''',
+]
+regexes = [
+  '''sid=fake''',
+  '''Bearer test-token''',
+  '''sid=\.\.\.; uid=\.\.\.; xsrf=\.\.\.; cf_clearance=\.\.\.; _cfuvid=\.\.\.''',
+]

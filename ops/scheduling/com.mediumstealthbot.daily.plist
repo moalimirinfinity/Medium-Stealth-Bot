@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.mediumstealthbot.daily</string>
+
+  <key>WorkingDirectory</key>
+  <string>/ABSOLUTE/PATH/TO/Medium-Stealth-Bot</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>bash</string>
+    <string>scripts/run_daily_live.sh</string>
+    <string>--env-file</string>
+    <string>.env.production</string>
+    <string>--tag</string>
+    <string>programming</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>9</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/ABSOLUTE/PATH/TO/Medium-Stealth-Bot/.data/scheduler/launchd.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/ABSOLUTE/PATH/TO/Medium-Stealth-Bot/.data/scheduler/launchd.stderr.log</string>
+</dict>
+</plist>

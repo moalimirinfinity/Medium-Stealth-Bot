@@ -1,0 +1,5 @@
+# Run once daily at 09:00 UTC.
+# Replace /ABSOLUTE/PATH/TO/Medium-Stealth-Bot with your checkout path.
+
+CRON_TZ=UTC
+0 9 * * * cd /ABSOLUTE/PATH/TO/Medium-Stealth-Bot && /usr/bin/env bash scripts/run_daily_live.sh --env-file .env.production --tag programming >> .data/scheduler/cron.log 2>&1

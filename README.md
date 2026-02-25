@@ -59,12 +59,21 @@ This wizard can:
 - set common runtime defaults (mode, budgets, discovery depth, seed users)
 - save everything into `.env`
 
+For scheduled production-style runs:
+
+```bash
+cp .env.production.example .env.production
+uv run bot profile-validate --env-path .env.production
+```
+
 ## Core Commands
 
 ```bash
 uv run bot setup
 uv run bot start
 uv run bot start --dry-run-first
+uv run bot start --quick-live
+uv run bot profile-validate --env-path .env.production
 uv run bot probe --tag programming
 uv run bot contracts --tag programming
 uv run bot contracts --tag programming --execute-reads \
@@ -81,7 +90,9 @@ uv run bot status
 ### Command Notes
 
 - `setup`: interactive wizard for auth + common `.env` defaults.
-- `start`: guided entrypoint that executes live by default, with optional dry-run preflight.
+- `start`: interactive numbered menu (14 options) for running live/dry cycles, reconcile, probe, contracts, status, setup, and auth without typing full commands.
+- `start --quick-live`: direct mode that executes live by default, with optional `--dry-run-first`.
+- `profile-validate`: validates production guardrails from an env profile file.
 - `probe`: parallel read-only GraphQL health checks.
 - `contracts`: implementation-registry parity and optional live read checks.
 - `run`: full daily cycle (discovery, scoring, follow pipeline, cleanup), live by default.
@@ -127,6 +138,19 @@ See `.env.example` for the full set. Important variables:
 - `ENABLE_SESSION_EXPIRY_HALT`
 - `OPERATOR_KILL_SWITCH`
 
+## Responsible Usage
+
+- You are responsible for complying with Medium terms, rate limits, and applicable law.
+- Keep automation conservative and safety-first; do not bypass security or challenge flows.
+- Use dry-run/preflight and profile validation before enabling recurring live schedules.
+- Never share or commit live session material.
+
+## Public Repo Security Notes
+
+- `.env` is ignored by git; keep all live credentials there only.
+- Do not commit real values for `MEDIUM_SESSION`, `MEDIUM_CSRF`, or user identifiers.
+- Capture files in `captures/final/` are sanitized for public push; regenerate/sanitize before committing new captures.
+
 ### Logging Modes
 
 - Default (`LOG_FORMAT=pretty`) prints concise, human-friendly event lines and rich summary tables.
@@ -159,27 +183,46 @@ Local sanity:
 
 ```bash
 uv run python scripts/check_capture_integrity.py
+uv run python scripts/check_capture_sanitization.py
 uv run python scripts/check_response_contract_paths.py
 uv run --group dev pytest -q
 uv run bot contracts --tag programming --no-execute-reads
+uv run bot profile-validate --env-path .env.production.example
 ```
 
-CI workflow (`.github/workflows/contracts.yml`) runs:
+CI workflows:
 
+- `.github/workflows/contracts.yml`
 - compile check
 - capture integrity check
+- capture sanitization check
 - response-path contract check
 - tests
 - contract parity checks
 - optional live read checks when secrets/vars are configured
+- `.github/workflows/secrets.yml`
+- blocking secret scan gate
+- `.github/workflows/release.yml`
+- tag-triggered release checks + artifact build + GitHub Release
 
-## Deployment Readiness Notes
+## Deployment Workflows
 
-Code and local gates are in place; production readiness still requires:
+- Scheduler runner:
+  - `scripts/run_daily_live.sh --env-file .env.production --tag programming`
+- Cron template:
+  - `ops/scheduling/cron.example`
+- launchd template:
+  - `ops/scheduling/com.mediumstealthbot.daily.plist`
+- Local release helper:
+  - `scripts/release_local.sh <version>`
 
-1. explicit release/scheduling workflow
-2. production runbook (including rollback)
-3. promotion policy for sustained live scheduling (with optional dry-run preflight gates)
+Operational docs:
+
+- `docs/SCHEDULING.md`
+- `docs/RELEASE.md`
+- `docs/RUNBOOK.md`
+- `docs/ROLLBACK.md`
+- `docs/PROMOTION_POLICY.md`
 
 ## Repository Layout
 
@@ -187,6 +230,7 @@ Code and local gates are in place; production readiness still requires:
 src/medium_stealth_bot/
   main.py
   settings.py
+  deployment.py
   logic.py
   repository.py
   database.py
@@ -201,6 +245,8 @@ src/medium_stealth_bot/
   typed_payloads.py
   migrations/
 scripts/
+docs/
+ops/
 captures/
 tests/
 ```
@@ -210,3 +256,8 @@ tests/
 - [Project-Overview.md](Project-Overview.md)
 - [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md)
 - [captures/README.md](captures/README.md)
+- [docs/SCHEDULING.md](docs/SCHEDULING.md)
+- [docs/RELEASE.md](docs/RELEASE.md)
+- [docs/RUNBOOK.md](docs/RUNBOOK.md)
+- [docs/ROLLBACK.md](docs/ROLLBACK.md)
+- [docs/PROMOTION_POLICY.md](docs/PROMOTION_POLICY.md)
