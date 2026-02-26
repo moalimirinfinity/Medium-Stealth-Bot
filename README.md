@@ -15,6 +15,8 @@ This project turns manual follower discovery, scoring, follow/reconcile cycles, 
 
 - Interactive CLI menu (`bot start`) with guided options for live, dry-run, reconcile, contracts, and status.
 - Quick-live mode (`bot start --quick-live`) for automation and scheduler use.
+- Live session mode for multi-cycle execution (target duration + follow target).
+- Cleanup whitelist guard (`CLEANUP_UNFOLLOW_WHITELIST_MIN_FOLLOWERS`) to keep high-follower accounts.
 - Contract integrity layer:
   - operation parity checks
   - response field/path validation
@@ -74,11 +76,16 @@ uv run bot artifacts validate
 ```bash
 uv run bot setup
 uv run bot auth
+uv run bot auth-import --cookie-header "sid=...; uid=...; xsrf=..."
 uv run bot start
 uv run bot start --quick-live
 uv run bot start --quick-live --dry-run-first --tag programming
 uv run bot run --tag programming
+uv run bot run --tag programming --session --session-minutes 60 --target-follows 100
+uv run bot run --tag programming --single-cycle
 uv run bot run --dry-run --tag programming
+uv run bot cleanup --dry-run
+uv run bot cleanup --live --limit 50
 uv run bot reconcile --limit 200 --page-size 50
 uv run bot reconcile --dry-run --limit 200 --page-size 50
 uv run bot probe --tag programming
@@ -91,11 +98,47 @@ uv run bot status
 uv run bot artifacts validate
 ```
 
+## Auth Fallback (`auth-import`)
+
+If interactive auth is blocked (for example, Google sign-in says browser/app is not secure), import cookies from an already signed-in browser session:
+
+```bash
+uv run bot auth-import --cookie-header "sid=...; uid=...; xsrf=..."
+# or
+uv run bot auth-import --cookie-file /path/to/medium-cookie-header.txt
+```
+
+You can copy a Cookie header from browser DevTools Network tab for a signed-in `https://medium.com` request.
+
+## Start Menu Options (`uv run bot start`)
+
+| Option | Group | Action | What it does |
+| --- | --- | --- | --- |
+| 1 | Execution | Run live growth session (multi-cycle) | Runs repeated live cycles until session targets are hit (`LIVE_SESSION_DURATION_MINUTES`, `LIVE_SESSION_TARGET_FOLLOW_ATTEMPTS`, `LIVE_SESSION_MAX_PASSES`). |
+| 2 | Execution | Run live growth cycle (single pass) | Runs one live cycle only (discovery, scoring, follow, cleanup). |
+| 3 | Execution | Run growth cycle (dry-run) | Preview-only cycle with no live mutations. |
+| 4 | Execution | Run dry-run preflight then live growth session | Executes option 3 first, then option 1 if preflight completes. |
+| 5 | Maintenance | Cleanup-only unfollow (live) | Runs overdue non-followback unfollows immediately (with per-run limit prompt). |
+| 6 | Maintenance | Cleanup-only unfollow (dry-run) | Previews overdue cleanup unfollows without mutation. |
+| 7 | Maintenance | Reconcile follow states (live) | Calls live follow-state checks and writes reconciliation updates locally. |
+| 8 | Maintenance | Reconcile follow states (dry-run) | Runs reconciliation checks without writes. |
+| 9 | Diagnostics | Probe GraphQL reads | Executes read-only probe tasks for connectivity/contract health checks. |
+| 10 | Diagnostics | Validate operation contracts (parity only) | Validates implementation vs registry parity without live read execution. |
+| 11 | Diagnostics | Validate contracts + execute live read checks | Runs option 10 plus live read/state checks against Medium. |
+| 12 | Observability | Show latest run status | Displays health and summary from the latest run artifact. |
+| 13 | Observability | Validate latest run artifact schema | Validates latest run artifact JSON schema/shape. |
+| 14 | Config | Edit defaults | Edits menu defaults (tag, seed users, session targets, cleanup/reconcile defaults, newsletter defaults). |
+| 15 | Config | Run setup wizard | Launches setup wizard to write/update runtime defaults in `.env`. |
+| 16 | Auth | Refresh auth session | Runs interactive auth capture and updates session values in `.env`. |
+| 17 | System | Exit | Exits the interactive start menu. |
+
 ## Safety and Guardrails
 
 - UTC day-boundary policy for all daily budgets.
 - `MEDIUM_USER_REF` must be a Medium `user_id` (not `@username`).
 - Safety behavior is operator-configurable in `.env`.
+- Cleanup keeps high-follower accounts when `CLEANUP_UNFOLLOW_WHITELIST_MIN_FOLLOWERS` threshold is met.
+- Cleanup treats missing follow timestamps as overdue by default (so legacy rows are not stuck pending forever).
 - Live can halt on:
   - challenge detections/status codes
   - session-expiry/auth failure signatures
@@ -111,17 +154,26 @@ Start from `.env.example` and tune:
   - `CLIENT_MODE`
   - `DAY_BOUNDARY_POLICY`
   - `LOG_FORMAT`
+  - `PLAYWRIGHT_AUTH_BROWSER_CHANNEL`
 - budgets:
   - `MAX_ACTIONS_PER_DAY`
+  - `LIVE_SESSION_DURATION_MINUTES`
+  - `LIVE_SESSION_TARGET_FOLLOW_ATTEMPTS`
+  - `LIVE_SESSION_MAX_PASSES`
   - `MAX_FOLLOW_ACTIONS_PER_RUN`
   - `MAX_SUBSCRIBE_ACTIONS_PER_DAY`
   - `MAX_UNFOLLOW_ACTIONS_PER_DAY`
   - `MAX_CLAP_ACTIONS_PER_DAY`
+- cleanup:
+  - `UNFOLLOW_NONRECIPROCAL_AFTER_DAYS`
+  - `CLEANUP_UNFOLLOW_LIMIT`
+  - `CLEANUP_UNFOLLOW_WHITELIST_MIN_FOLLOWERS`
 - pacing:
   - `MIN_READ_WAIT_SECONDS`
   - `MIN_ACTION_GAP_SECONDS`
 - safety:
   - `RISK_HALT_CONSECUTIVE_FAILURES`
+  - `RISK_HALT_MODE`
   - `ENABLE_CHALLENGE_HALT`
   - `ENABLE_SESSION_EXPIRY_HALT`
   - `OPERATOR_KILL_SWITCH`
