@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import structlog
 import typer
@@ -10,7 +11,11 @@ from structlog import contextvars as structlog_contextvars
 
 from medium_stealth_bot import __version__
 from medium_stealth_bot.artifact_schema import validate_artifact_payload
-from medium_stealth_bot.auth import interactive_auth, upsert_env_file
+from medium_stealth_bot.auth import (
+    import_session_material_from_cookie_header,
+    interactive_auth,
+    upsert_env_file,
+)
 from medium_stealth_bot.client import MediumAsyncClient
 from medium_stealth_bot.contracts import ContractValidationReport, validate_contract_registry
 from medium_stealth_bot.database import Database
@@ -24,12 +29,66 @@ from medium_stealth_bot.safety import RiskHaltError
 from medium_stealth_bot.settings import AppSettings
 
 app = typer.Typer(
-    help="Medium Stealth Bot scaffold (dual-mode GraphQL client + Playwright auth + Pydantic settings).",
+    help="Local-first Medium automation CLI with guided workflows, safety guardrails, and run diagnostics.",
     no_args_is_help=True,
 )
-artifacts_app = typer.Typer(help="Run artifact diagnostics and schema checks.")
+artifacts_app = typer.Typer(help="Inspect and validate run artifact payloads.")
 app.add_typer(artifacts_app, name="artifacts")
 console = Console()
+
+_NOTICE_STYLES = {
+    "info": "cyan",
+    "success": "green",
+    "warning": "yellow",
+    "error": "red",
+}
+_NOTICE_PREFIX = {
+    "info": "INFO",
+    "success": "SUCCESS",
+    "warning": "WARNING",
+    "error": "ERROR",
+}
+
+
+def _print_notice(message: str, *, level: str = "info") -> None:
+    style = _NOTICE_STYLES.get(level, "cyan")
+    prefix = _NOTICE_PREFIX.get(level, "INFO")
+    console.print(f"{prefix}: {message}", style=style)
+
+
+def _format_metric_key(key: str) -> str:
+    return key.replace("_", " ").replace("-", " ").strip().title()
+
+
+def _resolve_value_header(data: dict[str, Any]) -> str:
+    if data and all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in data.values()):
+        return "Count"
+    return "Value"
+
+
+def _render_mapping_table(
+    *,
+    title: str,
+    data: dict[str, Any],
+    key_column: str = "Key",
+    value_column: str | None = None,
+) -> None:
+    if not data:
+        return
+
+    table = Table(title=title)
+    table.add_column(key_column)
+    table.add_column(value_column or _resolve_value_header(data))
+    for key, value in sorted(data.items(), key=lambda item: str(item[0])):
+        if isinstance(value, dict):
+            rendered_value = ", ".join(
+                f"{nested_key}={nested_value}"
+                for nested_key, nested_value in sorted(value.items(), key=lambda item: str(item[0]))
+            )
+            table.add_row(str(key), rendered_value or "{}")
+            continue
+        table.add_row(str(key), str(value))
+    console.print(table)
 
 
 def _mask(value: str | None, keep: int = 4) -> str:
@@ -85,6 +144,31 @@ def _build_runner(settings: AppSettings) -> tuple[Database, ActionRepository]:
     return database, repository
 
 
+def _require_session(settings: AppSettings, *, guidance: str = "uv run bot auth") -> None:
+    if settings.has_session:
+        return
+    _print_notice(f"No MEDIUM_SESSION found. Run `{guidance}` first.", level="error")
+    raise typer.Exit(code=1)
+
+
+def _risk_halt_is_hard(settings: AppSettings) -> bool:
+    return settings.risk_halt_mode == "hard"
+
+
+def _risk_halt_exit_code(settings: AppSettings) -> int:
+    return 2 if _risk_halt_is_hard(settings) else 0
+
+
+def _risk_halt_notice_level(settings: AppSettings) -> str:
+    return "error" if _risk_halt_is_hard(settings) else "warning"
+
+
+def _risk_halt_summary(settings: AppSettings) -> str:
+    if _risk_halt_is_hard(settings):
+        return "Run halted by safety guardrails."
+    return "Run paused by safety guardrails (soft mode)."
+
+
 def _render_auth(material: AuthSessionMaterial) -> None:
     table = Table(title="Auth Capture")
     table.add_column("Key")
@@ -113,37 +197,50 @@ def _render_probe(snapshot: ProbeSnapshot) -> None:
             "yes" if result.stubbed else "no",
         )
     console.print(table)
-    console.print(f"Probe duration: {snapshot.duration_ms}ms")
+    _print_notice(f"Probe duration: {snapshot.duration_ms}ms", level="info")
 
 
 def _render_daily_run(outcome: DailyRunOutcome) -> None:
+    mode_label = "dry-run" if outcome.dry_run else "live"
+
     if outcome.budget_exhausted:
-        console.print(
+        _print_notice(
             f"Daily budget exhausted (UTC day): {outcome.actions_today}/{outcome.max_actions_per_day}.",
-            style="yellow",
+            level="warning",
         )
         return
-    mode_label = "dry-run" if outcome.dry_run else "live"
-    console.print(
+    _print_notice(
         f"Daily budget check passed (UTC day): {outcome.actions_today}/{outcome.max_actions_per_day} (mode={mode_label}).",
-        style="green",
+        level="success",
     )
-    console.print(
-        "Candidates considered/eligible: "
-        f"{outcome.considered_candidates}/{outcome.eligible_candidates}"
+    summary_table = Table(title="Daily Cycle Summary")
+    summary_table.add_column("Metric")
+    summary_table.add_column("Value")
+    summary_table.add_row("Mode", mode_label)
+    if outcome.session_passes > 1 or outcome.session_stop_reason:
+        summary_table.add_row("Session Passes", str(outcome.session_passes))
+        summary_table.add_row("Session Elapsed (s)", str(round(outcome.session_elapsed_seconds, 3)))
+        summary_table.add_row("Session Stop Reason", outcome.session_stop_reason or "-")
+        summary_table.add_row("Session Target Follows", str(outcome.session_target_follow_attempts or "-"))
+        summary_table.add_row("Session Target Duration (m)", str(outcome.session_target_duration_minutes or "-"))
+    summary_table.add_row(
+        "Candidates Considered / Eligible",
+        f"{outcome.considered_candidates} / {outcome.eligible_candidates}",
     )
-    console.print(
-        "Follow attempted/verified: "
-        f"{outcome.follow_actions_attempted}/{outcome.follow_actions_verified}"
+    summary_table.add_row(
+        "Follow Attempted / Verified",
+        f"{outcome.follow_actions_attempted} / {outcome.follow_actions_verified}",
     )
-    console.print(
-        "Clap attempted/verified: "
-        f"{outcome.clap_actions_attempted}/{outcome.clap_actions_verified}"
+    summary_table.add_row(
+        "Clap Attempted / Verified",
+        f"{outcome.clap_actions_attempted} / {outcome.clap_actions_verified}",
     )
-    console.print(
-        "Cleanup attempted/verified: "
-        f"{outcome.cleanup_actions_attempted}/{outcome.cleanup_actions_verified}"
+    summary_table.add_row(
+        "Cleanup Attempted / Verified",
+        f"{outcome.cleanup_actions_attempted} / {outcome.cleanup_actions_verified}",
     )
+    console.print(summary_table)
+
     if outcome.decision_result_counts:
         result_table = Table(title="Decision Result Counts")
         result_table.add_column("Result")
@@ -151,6 +248,7 @@ def _render_daily_run(outcome: DailyRunOutcome) -> None:
         for result, count in sorted(outcome.decision_result_counts.items()):
             result_table.add_row(result, str(count))
         console.print(result_table)
+
     if outcome.action_counts_today:
         budget_table = Table(title="Per-Action Daily Budget")
         budget_table.add_column("Action")
@@ -162,20 +260,32 @@ def _render_daily_run(outcome: DailyRunOutcome) -> None:
             remaining = outcome.action_remaining_per_day.get(action_name, 0)
             budget_table.add_row(action_name, str(used), str(limit), str(remaining))
         console.print(budget_table)
+
     if outcome.kpis:
         kpi_table = Table(title="KPI Summary")
         kpi_table.add_column("KPI")
         kpi_table.add_column("Value")
         for key, value in sorted(outcome.kpis.items()):
-            kpi_table.add_row(key, str(value))
+            kpi_table.add_row(_format_metric_key(key), str(value))
         console.print(kpi_table)
+
     if outcome.client_metrics:
+        metrics = dict(outcome.client_metrics)
+        status_counts = metrics.pop("status_counts", None)
         metrics_table = Table(title="Client Metrics")
         metrics_table.add_column("Metric")
         metrics_table.add_column("Value")
-        for key, value in sorted(outcome.client_metrics.items()):
-            metrics_table.add_row(key, str(value))
+        for key, value in sorted(metrics.items()):
+            metrics_table.add_row(_format_metric_key(key), str(value))
         console.print(metrics_table)
+        if isinstance(status_counts, dict) and status_counts:
+            _render_mapping_table(
+                title="Client HTTP Status Counts",
+                data={str(key): value for key, value in status_counts.items()},
+                key_column="Status",
+                value_column="Count",
+            )
+
     if outcome.source_candidate_counts:
         source_table = Table(title="Source Candidate Counts")
         source_table.add_column("Source")
@@ -188,6 +298,7 @@ def _render_daily_run(outcome: DailyRunOutcome) -> None:
                 str(outcome.source_follow_verified_counts.get(source, 0)),
             )
         console.print(source_table)
+
     if outcome.decision_log:
         table = Table(title="Decision Log (sample)")
         table.add_column("#")
@@ -195,6 +306,7 @@ def _render_daily_run(outcome: DailyRunOutcome) -> None:
         for idx, item in enumerate(outcome.decision_log[:12], start=1):
             table.add_row(str(idx), item)
         console.print(table)
+
     if outcome.probe:
         _render_probe(outcome.probe)
 
@@ -240,13 +352,13 @@ def _render_contract_validation(report: ContractValidationReport) -> None:
     console.print(summary)
 
     if report.load_error:
-        console.print(f"Registry load error: {report.load_error}", style="red")
+        _print_notice(f"Registry load error: {report.load_error}", level="error")
         return
 
     if report.missing_in_code:
-        console.print("Missing operations in code: " + ", ".join(report.missing_in_code), style="red")
+        _print_notice("Missing operations in code: " + ", ".join(report.missing_in_code), level="error")
     if report.extra_in_code:
-        console.print("Extra operations in code: " + ", ".join(report.extra_in_code), style="yellow")
+        _print_notice("Extra operations in code: " + ", ".join(report.extra_in_code), level="warning")
 
     failed = [item for item in report.checks if not item.ok]
     if failed:
@@ -267,8 +379,13 @@ def _render_contract_validation(report: ContractValidationReport) -> None:
         console.print(table)
 
 
-def _render_risk_halt(exc: RiskHaltError) -> None:
-    console.print("Run halted by safety guardrails.", style="red")
+def _render_risk_halt(exc: RiskHaltError, *, settings: AppSettings) -> None:
+    _print_notice(_risk_halt_summary(settings), level=_risk_halt_notice_level(settings))
+    if not _risk_halt_is_hard(settings):
+        _print_notice(
+            "Soft mode keeps the command exit status successful while pausing risky actions.",
+            level="warning",
+        )
     table = Table(title="Safety Halt")
     table.add_column("Field")
     table.add_column("Value")
@@ -284,8 +401,10 @@ def _utc_now() -> datetime:
 
 
 def _derive_health(status: str, outcome: DailyRunOutcome | None) -> str:
-    if status in {"failed", "halted"}:
+    if status == "failed":
         return "failed"
+    if status == "halted":
+        return "degraded"
     if outcome is None:
         return "unknown"
     if outcome.budget_exhausted:
@@ -298,6 +417,7 @@ def _derive_health(status: str, outcome: DailyRunOutcome | None) -> str:
 def _build_run_artifact_payload(
     *,
     run_id: str,
+    command: str = "run",
     started_at: datetime,
     ended_at: datetime,
     tag_slug: str,
@@ -310,7 +430,7 @@ def _build_run_artifact_payload(
     payload: dict = {
         "schema_version": 1,
         "run_id": run_id,
-        "command": "run",
+        "command": command,
         "tag_slug": tag_slug,
         "dry_run": dry_run,
         "status": status,
@@ -335,6 +455,11 @@ def _build_run_artifact_payload(
         "budget_exhausted": outcome.budget_exhausted,
         "actions_today": outcome.actions_today,
         "max_actions_per_day": outcome.max_actions_per_day,
+        "session_passes": outcome.session_passes,
+        "session_elapsed_seconds": outcome.session_elapsed_seconds,
+        "session_stop_reason": outcome.session_stop_reason,
+        "session_target_follow_attempts": outcome.session_target_follow_attempts,
+        "session_target_duration_minutes": outcome.session_target_duration_minutes,
         "considered_candidates": outcome.considered_candidates,
         "eligible_candidates": outcome.eligible_candidates,
         "follow_actions_attempted": outcome.follow_actions_attempted,
@@ -392,6 +517,11 @@ def _render_status(artifact: dict, *, artifact_path: Path) -> None:
             "budget_exhausted",
             "actions_today",
             "max_actions_per_day",
+            "session_passes",
+            "session_elapsed_seconds",
+            "session_stop_reason",
+            "session_target_follow_attempts",
+            "session_target_duration_minutes",
             "considered_candidates",
             "eligible_candidates",
             "follow_actions_attempted",
@@ -402,7 +532,7 @@ def _render_status(artifact: dict, *, artifact_path: Path) -> None:
             "cleanup_actions_verified",
         ):
             if key in summary:
-                summary_table.add_row(key, str(summary[key]))
+                summary_table.add_row(_format_metric_key(key), str(summary[key]))
         console.print(summary_table)
 
     for title, key in (
@@ -416,12 +546,32 @@ def _render_status(artifact: dict, *, artifact_path: Path) -> None:
     ):
         data = artifact.get(key)
         if isinstance(data, dict) and data:
-            counts = Table(title=title)
-            counts.add_column("Key")
-            counts.add_column("Count")
-            for item_key, item_value in sorted(data.items()):
-                counts.add_row(str(item_key), str(item_value))
-            console.print(counts)
+            if key == "kpis":
+                _render_mapping_table(
+                    title=title,
+                    data={_format_metric_key(str(item_key)): item_value for item_key, item_value in data.items()},
+                    key_column="KPI",
+                    value_column="Value",
+                )
+                continue
+            if key == "client_metrics":
+                metrics = dict(data)
+                status_counts = metrics.pop("status_counts", None)
+                _render_mapping_table(
+                    title=title,
+                    data={_format_metric_key(str(item_key)): item_value for item_key, item_value in metrics.items()},
+                    key_column="Metric",
+                    value_column="Value",
+                )
+                if isinstance(status_counts, dict) and status_counts:
+                    _render_mapping_table(
+                        title="Client HTTP Status Counts",
+                        data={str(item_key): item_value for item_key, item_value in status_counts.items()},
+                        key_column="Status",
+                        value_column="Count",
+                    )
+                continue
+            _render_mapping_table(title=title, data=data)
 
     error = artifact.get("error")
     if isinstance(error, dict) and error:
@@ -431,7 +581,7 @@ def _render_status(artifact: dict, *, artifact_path: Path) -> None:
         for key in ("type", "message", "reason", "task_name", "detail"):
             value = error.get(key)
             if value is not None:
-                error_table.add_row(key, str(value))
+                error_table.add_row(_format_metric_key(key), str(value))
         console.print(error_table)
 
 
@@ -440,25 +590,57 @@ def version_command() -> None:
     console.print(f"medium-stealth-bot {__version__}")
 
 
+def _resolve_cookie_header(
+    *,
+    cookie_header: str | None,
+    cookie_file: Path | None,
+) -> str:
+    if cookie_header and cookie_file is not None:
+        raise RuntimeError("Specify either --cookie-header or --cookie-file, not both.")
+    if cookie_file is not None:
+        return cookie_file.read_text(encoding="utf-8").strip()
+    if cookie_header:
+        return cookie_header.strip()
+    return str(
+        typer.prompt(
+            "Paste full Cookie header from a signed-in https://medium.com request",
+            default="",
+        )
+    ).strip()
+
+
+def _import_auth_material(
+    *,
+    cookie_header: str,
+    medium_csrf: str | None = None,
+    medium_user_ref: str | None = None,
+) -> AuthSessionMaterial:
+    return import_session_material_from_cookie_header(
+        cookie_header,
+        medium_csrf=medium_csrf,
+        medium_user_ref=medium_user_ref,
+    )
+
+
 @app.command("profile-validate")
 def profile_validate_command(
     env_path: Path = typer.Option(
         Path(".env.production"),
         "--env-path",
-        help="Production env profile file to validate.",
+        help="Production environment profile file to validate.",
     ),
 ) -> None:
     """
     Validate production profile baseline settings before scheduled runs.
     """
     if not env_path.exists():
-        console.print(f"Profile file not found: {env_path}", style="red")
+        _print_notice(f"Profile file not found: {env_path}", level="error")
         raise typer.Exit(code=1)
 
     try:
         settings = _bootstrap_settings(env_path=env_path)
     except Exception as exc:  # noqa: BLE001
-        console.print(f"Failed to load profile from {env_path}: {exc}", style="red")
+        _print_notice(f"Failed to load profile from {env_path}: {exc}", level="error")
         raise typer.Exit(code=1) from exc
 
     issues = validate_production_profile(settings)
@@ -471,31 +653,120 @@ def profile_validate_command(
         for issue in issues:
             summary.add_row(issue.key, issue.expected, issue.actual)
         console.print(summary)
-        console.print("Production profile validation failed.", style="red")
+        _print_notice("Production profile validation failed.", level="error")
         raise typer.Exit(code=1)
 
     summary.add_row("status", "all checks passed", "ok")
     console.print(summary)
-    console.print(
+    _print_notice(
         "Production profile validation passed. Safety behavior is controlled by .env values.",
-        style="green",
+        level="success",
     )
 
 
 @app.command("auth")
 def auth_command(
     write_env: bool = typer.Option(True, "--write-env/--no-write-env"),
-    env_path: Path = typer.Option(Path(".env"), help="Destination .env file to update."),
+    env_path: Path = typer.Option(Path(".env"), help="Destination `.env` file to update."),
     login_url: str = typer.Option("https://medium.com/m/signin", help="Login URL to open in Playwright."),
+    fallback_import: bool = typer.Option(
+        True,
+        "--fallback-import/--no-fallback-import",
+        help="Offer cookie-header import fallback when interactive browser auth fails.",
+    ),
 ) -> None:
     """
     Open an interactive Playwright session for Medium login and capture session cookies.
     """
     settings = _bootstrap_settings()
-    material = asyncio.run(interactive_auth(settings=settings, login_url=login_url))
+    material: AuthSessionMaterial | None = None
+    try:
+        material = asyncio.run(interactive_auth(settings=settings, login_url=login_url))
+    except Exception as exc:  # noqa: BLE001
+        _print_notice(f"Interactive auth failed: {exc}", level="warning")
+        if not fallback_import:
+            raise typer.Exit(code=1) from exc
+
+        do_import = typer.confirm(
+            "Import cookies from an already signed-in browser session instead?",
+            default=True,
+        )
+        if not do_import:
+            raise typer.Exit(code=1) from exc
+
+        cookie_header = _resolve_cookie_header(cookie_header=None, cookie_file=None)
+        if not cookie_header:
+            _print_notice("Cookie header cannot be empty.", level="error")
+            raise typer.Exit(code=1) from exc
+
+        try:
+            material = _import_auth_material(cookie_header=cookie_header)
+        except Exception as import_exc:  # noqa: BLE001
+            _print_notice(f"Cookie import failed: {import_exc}", level="error")
+            raise typer.Exit(code=1) from import_exc
+        _print_notice("Cookie import fallback succeeded.", level="success")
+
+    if material is None:
+        _print_notice("Auth did not return session material.", level="error")
+        raise typer.Exit(code=1)
     if write_env:
         upsert_env_file(env_path=env_path, material=material)
-        console.print(f"Updated env file: {env_path}")
+        _print_notice(f"Updated env file: {env_path}", level="success")
+    _render_auth(material)
+
+
+@app.command("auth-import")
+def auth_import_command(
+    cookie_header: str | None = typer.Option(
+        None,
+        "--cookie-header",
+        help="Raw Cookie header string copied from a signed-in https://medium.com request.",
+    ),
+    cookie_file: Path | None = typer.Option(
+        None,
+        "--cookie-file",
+        help="Path to a text file containing the raw Cookie header string.",
+    ),
+    medium_csrf: str | None = typer.Option(
+        None,
+        "--medium-csrf",
+        help="Optional explicit MEDIUM_CSRF override.",
+    ),
+    medium_user_ref: str | None = typer.Option(
+        None,
+        "--medium-user-ref",
+        help="Optional explicit MEDIUM_USER_REF override.",
+    ),
+    write_env: bool = typer.Option(True, "--write-env/--no-write-env"),
+    env_path: Path = typer.Option(Path(".env"), help="Destination `.env` file to update."),
+) -> None:
+    """
+    Import auth session cookies from an already signed-in browser session.
+    """
+    _bootstrap_settings()
+    try:
+        resolved_header = _resolve_cookie_header(cookie_header=cookie_header, cookie_file=cookie_file)
+    except Exception as exc:  # noqa: BLE001
+        _print_notice(f"Failed to read cookie input: {exc}", level="error")
+        raise typer.Exit(code=1) from exc
+
+    if not resolved_header:
+        _print_notice("Cookie header is empty.", level="error")
+        raise typer.Exit(code=1)
+
+    try:
+        material = _import_auth_material(
+            cookie_header=resolved_header,
+            medium_csrf=medium_csrf,
+            medium_user_ref=medium_user_ref,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _print_notice(f"Cookie import failed: {exc}", level="error")
+        raise typer.Exit(code=1) from exc
+
+    if write_env:
+        upsert_env_file(env_path=env_path, material=material)
+        _print_notice(f"Updated env file: {env_path}", level="success")
     _render_auth(material)
 
 
@@ -504,7 +775,7 @@ def setup_command(
     env_path: Path = typer.Option(
         Path(".env"),
         "--env-path",
-        help="Env file to read and write interactive runtime defaults.",
+        help="Environment file to read and write interactive runtime defaults.",
     ),
     auth_if_missing: bool = typer.Option(
         True,
@@ -517,8 +788,8 @@ def setup_command(
     """
     settings = _bootstrap_settings(env_path=env_path)
 
-    console.print("Interactive setup wizard")
-    console.print(f"Target env file: {env_path}")
+    _print_notice("Interactive setup wizard", level="info")
+    _print_notice(f"Target env file: {env_path}", level="info")
 
     if auth_if_missing and not settings.has_session:
         do_auth = typer.confirm(
@@ -528,7 +799,7 @@ def setup_command(
         if do_auth:
             material = asyncio.run(interactive_auth(settings=settings))
             upsert_env_file(env_path=env_path, material=material)
-            console.print("Auth session material saved.", style="green")
+            _print_notice("Auth session material saved.", level="success")
             settings = _bootstrap_settings(env_path=env_path)
 
     client_mode = str(
@@ -538,7 +809,7 @@ def setup_command(
         )
     ).strip().lower()
     while client_mode not in {"stealth", "fast"}:
-        console.print("Invalid mode. Choose 'stealth' or 'fast'.", style="yellow")
+        _print_notice("Invalid mode. Choose 'stealth' or 'fast'.", level="warning")
         client_mode = str(typer.prompt("Client mode (stealth/fast)", default="stealth")).strip().lower()
 
     max_actions = int(typer.prompt("Max actions per day", default=settings.max_actions_per_day, type=int))
@@ -550,6 +821,27 @@ def setup_command(
     )
     max_follow_per_run = int(
         typer.prompt("Max follow actions per run", default=settings.max_follow_actions_per_run, type=int)
+    )
+    live_session_duration_minutes = int(
+        typer.prompt(
+            "Live session duration minutes",
+            default=settings.live_session_duration_minutes,
+            type=int,
+        )
+    )
+    live_session_target_follow_attempts = int(
+        typer.prompt(
+            "Live session target follow attempts",
+            default=settings.live_session_target_follow_attempts,
+            type=int,
+        )
+    )
+    live_session_max_passes = int(
+        typer.prompt(
+            "Live session max passes",
+            default=settings.live_session_max_passes,
+            type=int,
+        )
     )
     follow_candidate_limit = int(
         typer.prompt("Follow candidate limit per run", default=settings.follow_candidate_limit, type=int)
@@ -565,7 +857,7 @@ def setup_command(
         )
     )
     while discovery_depth not in {1, 2}:
-        console.print("Discovery depth must be 1 or 2.", style="yellow")
+        _print_notice("Discovery depth must be 1 or 2.", level="warning")
         discovery_depth = int(typer.prompt("Discovery followers depth (1 or 2)", default=1, type=int))
 
     seed_followers_limit = int(
@@ -592,6 +884,13 @@ def setup_command(
             type=int,
         )
     )
+    cleanup_unfollow_whitelist_min_followers = int(
+        typer.prompt(
+            "Cleanup whitelist minimum followers (keep if >= value)",
+            default=settings.cleanup_unfollow_whitelist_min_followers,
+            type=int,
+        )
+    )
 
     updates = {
         "CLIENT_MODE": client_mode,
@@ -599,6 +898,9 @@ def setup_command(
         "MAX_SUBSCRIBE_ACTIONS_PER_DAY": str(max_subscribe),
         "MAX_UNFOLLOW_ACTIONS_PER_DAY": str(max_unfollow),
         "MAX_FOLLOW_ACTIONS_PER_RUN": str(max_follow_per_run),
+        "LIVE_SESSION_DURATION_MINUTES": str(max(1, live_session_duration_minutes)),
+        "LIVE_SESSION_TARGET_FOLLOW_ATTEMPTS": str(max(1, live_session_target_follow_attempts)),
+        "LIVE_SESSION_MAX_PASSES": str(max(1, live_session_max_passes)),
         "FOLLOW_CANDIDATE_LIMIT": str(follow_candidate_limit),
         "FOLLOW_COOLDOWN_HOURS": str(follow_cooldown_hours),
         "DISCOVERY_FOLLOWERS_DEPTH": str(discovery_depth),
@@ -607,6 +909,7 @@ def setup_command(
         "DISCOVERY_SEED_USERS": seed_users_raw,
         "ENABLE_PRE_FOLLOW_CLAP": "true" if enable_pre_follow_clap else "false",
         "CLEANUP_UNFOLLOW_LIMIT": str(cleanup_unfollow_limit),
+        "CLEANUP_UNFOLLOW_WHITELIST_MIN_FOLLOWERS": str(max(0, cleanup_unfollow_whitelist_min_followers)),
     }
     _upsert_env_values(env_path=env_path, updates=updates)
 
@@ -616,10 +919,10 @@ def setup_command(
     for key, value in updates.items():
         summary.add_row(key, value if value else "(empty)")
     console.print(summary)
-    console.print(
+    _print_notice(
         "Next step: run `uv run bot start` for immediate live execution "
         "(or `uv run bot run --dry-run` for preview-only).",
-        style="green",
+        level="success",
     )
 
 
@@ -650,20 +953,32 @@ def _render_start_menu(
     has_session: bool,
     tag_slug: str,
     seed_user_refs: list[str] | None,
+    live_session_minutes: int,
+    live_session_target_follows: int,
+    live_session_max_passes: int,
     reconcile_limit: int,
     reconcile_page_size: int,
+    cleanup_unfollow_limit: int,
+    cleanup_whitelist_min_followers: int,
     newsletter_slug: str | None,
     newsletter_username: str | None,
 ) -> None:
-    status_style = "green" if has_session else "yellow"
-    status_label = "ready" if has_session else "missing (choose option 13: auth)"
-    console.print(f"Session status: {status_label}", style=status_style)
+    status_label = "ready" if has_session else "missing (use option 16 to refresh auth)"
+    _print_notice(
+        f"Session status: {status_label}",
+        level="success" if has_session else "warning",
+    )
 
     defaults = Table(title="Current Defaults")
     defaults.add_column("Key")
     defaults.add_column("Value")
     defaults.add_row("Tag", tag_slug)
     defaults.add_row("Seed Users", _seed_refs_summary(seed_user_refs))
+    defaults.add_row("Live Session Duration (m)", str(live_session_minutes))
+    defaults.add_row("Live Session Target Follows", str(live_session_target_follows))
+    defaults.add_row("Live Session Max Passes", str(live_session_max_passes))
+    defaults.add_row("Cleanup Limit", str(cleanup_unfollow_limit))
+    defaults.add_row("Cleanup Whitelist Followers >=", str(cleanup_whitelist_min_followers))
     defaults.add_row("Reconcile Limit", str(reconcile_limit))
     defaults.add_row("Reconcile Page Size", str(reconcile_page_size))
     defaults.add_row("Newsletter Slug", newsletter_slug or "-")
@@ -672,21 +987,25 @@ def _render_start_menu(
 
     menu = Table(title="Start Menu")
     menu.add_column("Option", justify="right")
+    menu.add_column("Group")
     menu.add_column("Action")
-    menu.add_row("1", "Run growth cycle (live)")
-    menu.add_row("2", "Run growth cycle (dry-run)")
-    menu.add_row("3", "Run dry-run preflight then live growth cycle")
-    menu.add_row("4", "Reconcile follow states (live)")
-    menu.add_row("5", "Reconcile follow states (dry-run)")
-    menu.add_row("6", "Probe GraphQL reads")
-    menu.add_row("7", "Validate operation contracts (parity only)")
-    menu.add_row("8", "Validate contracts + execute live read checks")
-    menu.add_row("9", "Show latest run status")
-    menu.add_row("10", "Validate latest run artifact schema")
-    menu.add_row("11", "Edit defaults")
-    menu.add_row("12", "Run setup wizard")
-    menu.add_row("13", "Refresh auth session")
-    menu.add_row("14", "Exit")
+    menu.add_row("1", "Execution", "Run live growth session (multi-cycle)")
+    menu.add_row("2", "Execution", "Run live growth cycle (single pass)")
+    menu.add_row("3", "Execution", "Run growth cycle (dry-run)")
+    menu.add_row("4", "Execution", "Run dry-run preflight then live growth session")
+    menu.add_row("5", "Maintenance", "Cleanup-only unfollow (live)")
+    menu.add_row("6", "Maintenance", "Cleanup-only unfollow (dry-run)")
+    menu.add_row("7", "Maintenance", "Reconcile follow states (live)")
+    menu.add_row("8", "Maintenance", "Reconcile follow states (dry-run)")
+    menu.add_row("9", "Diagnostics", "Probe GraphQL reads")
+    menu.add_row("10", "Diagnostics", "Validate operation contracts (parity only)")
+    menu.add_row("11", "Diagnostics", "Validate contracts + execute live read checks")
+    menu.add_row("12", "Observability", "Show latest run status")
+    menu.add_row("13", "Observability", "Validate latest run artifact schema")
+    menu.add_row("14", "Config", "Edit defaults")
+    menu.add_row("15", "Config", "Run setup wizard")
+    menu.add_row("16", "Auth", "Refresh auth session")
+    menu.add_row("17", "System", "Exit")
     console.print(menu)
 
 
@@ -694,18 +1013,29 @@ def _run_start_menu(
     *,
     initial_tag_slug: str,
     initial_seed_user_refs: list[str] | None,
+    initial_live_session_minutes: int,
+    initial_live_session_target_follows: int,
+    initial_live_session_max_passes: int,
     initial_reconcile_limit: int,
     initial_reconcile_page_size: int,
+    initial_cleanup_unfollow_limit: int,
+    initial_cleanup_whitelist_min_followers: int,
     initial_newsletter_slug: str | None,
     initial_newsletter_username: str | None,
 ) -> None:
     tag_slug = initial_tag_slug.strip() or "programming"
     seed_user_refs = _normalize_seed_user_refs(initial_seed_user_refs)
+    live_session_minutes = max(1, initial_live_session_minutes)
+    live_session_target_follows = max(1, initial_live_session_target_follows)
+    live_session_max_passes = max(1, initial_live_session_max_passes)
     reconcile_limit = max(1, initial_reconcile_limit)
     reconcile_page_size = min(500, max(1, initial_reconcile_page_size))
+    cleanup_unfollow_limit = max(1, initial_cleanup_unfollow_limit)
+    cleanup_whitelist_min_followers = max(0, initial_cleanup_whitelist_min_followers)
     newsletter_slug = (initial_newsletter_slug or "").strip()
     newsletter_username = (initial_newsletter_username or "").strip()
-    valid_choices = {str(value) for value in range(1, 15)}
+    valid_choices = {str(value) for value in range(1, 18)}
+    valid_choices_hint = "1-17"
 
     while True:
         settings = _bootstrap_settings()
@@ -713,66 +1043,133 @@ def _run_start_menu(
             has_session=settings.has_session,
             tag_slug=tag_slug,
             seed_user_refs=seed_user_refs,
+            live_session_minutes=live_session_minutes,
+            live_session_target_follows=live_session_target_follows,
+            live_session_max_passes=live_session_max_passes,
             reconcile_limit=reconcile_limit,
             reconcile_page_size=reconcile_page_size,
+            cleanup_unfollow_limit=cleanup_unfollow_limit,
+            cleanup_whitelist_min_followers=cleanup_whitelist_min_followers,
             newsletter_slug=newsletter_slug or None,
             newsletter_username=newsletter_username or None,
         )
 
         choice = str(typer.prompt("Select option", default="1")).strip().lower()
         if choice in {"q", "quit", "exit"}:
-            choice = "14"
+            choice = "17"
         if choice not in valid_choices:
-            console.print("Invalid option. Choose a number from 1 to 14.", style="yellow")
+            _print_notice(f"Invalid option. Choose {valid_choices_hint} (or q to exit).", level="warning")
             continue
 
         def _execute(action_name: str, fn) -> bool:
-            console.print(f"Running: {action_name}", style="cyan")
+            _print_notice(f"Running: {action_name}", level="info")
             try:
                 fn()
+                _print_notice(f"{action_name} completed.", level="success")
                 return True
             except typer.Exit as exc:
                 if exc.exit_code == 0:
+                    _print_notice(f"{action_name} completed.", level="success")
                     return True
-                console.print(f"{action_name} ended with exit code {exc.exit_code}.", style="yellow")
+                _print_notice(f"{action_name} ended with exit code {exc.exit_code}.", level="warning")
                 return False
             except Exception as exc:  # noqa: BLE001
-                console.print(f"{action_name} failed: {exc}", style="red")
+                _print_notice(f"{action_name} failed: {exc}", level="error")
                 return False
 
         if choice == "1":
             _execute(
-                "run live cycle",
-                lambda: run_command(tag_slug=tag_slug, live=True, seed_user_refs=seed_user_refs),
+                "run live growth session",
+                lambda: run_command(
+                    tag_slug=tag_slug,
+                    live=True,
+                    seed_user_refs=seed_user_refs,
+                    session=True,
+                    session_minutes=live_session_minutes,
+                    target_follows=live_session_target_follows,
+                    session_max_passes=live_session_max_passes,
+                ),
             )
         elif choice == "2":
+            _execute(
+                "run live single cycle",
+                lambda: run_command(
+                    tag_slug=tag_slug,
+                    live=True,
+                    seed_user_refs=seed_user_refs,
+                    session=False,
+                ),
+            )
+        elif choice == "3":
             _execute(
                 "run dry-run cycle",
                 lambda: run_command(tag_slug=tag_slug, live=False, seed_user_refs=seed_user_refs),
             )
-        elif choice == "3":
+        elif choice == "4":
             preflight_ok = _execute(
                 "dry-run preflight",
                 lambda: run_command(tag_slug=tag_slug, live=False, seed_user_refs=seed_user_refs),
             )
             if preflight_ok:
                 _execute(
-                    "run live cycle",
-                    lambda: run_command(tag_slug=tag_slug, live=True, seed_user_refs=seed_user_refs),
+                    "run live growth session",
+                    lambda: run_command(
+                        tag_slug=tag_slug,
+                        live=True,
+                        seed_user_refs=seed_user_refs,
+                        session=True,
+                        session_minutes=live_session_minutes,
+                        target_follows=live_session_target_follows,
+                        session_max_passes=live_session_max_passes,
+                    ),
                 )
-        elif choice == "4":
+        elif choice == "5":
+            run_limit = int(
+                typer.prompt(
+                    "Cleanup-only unfollow limit for this run",
+                    default=cleanup_unfollow_limit,
+                    type=int,
+                )
+            )
+            if run_limit < 1:
+                _print_notice("Cleanup limit must be >= 1. Using current default.", level="warning")
+                run_limit = cleanup_unfollow_limit
+            else:
+                cleanup_unfollow_limit = run_limit
+            _execute(
+                "cleanup-only unfollow (live)",
+                lambda: cleanup_command(live=True, limit=run_limit),
+            )
+        elif choice == "6":
+            run_limit = int(
+                typer.prompt(
+                    "Cleanup-only unfollow limit for this run",
+                    default=cleanup_unfollow_limit,
+                    type=int,
+                )
+            )
+            if run_limit < 1:
+                _print_notice("Cleanup limit must be >= 1. Using current default.", level="warning")
+                run_limit = cleanup_unfollow_limit
+            else:
+                cleanup_unfollow_limit = run_limit
+            _execute(
+                "cleanup-only unfollow (dry-run)",
+                lambda: cleanup_command(live=False, limit=run_limit),
+            )
+        elif choice == "7":
             _execute(
                 "reconcile live",
                 lambda: reconcile_command(live=True, max_users=reconcile_limit, page_size=reconcile_page_size),
             )
-        elif choice == "5":
+        elif choice == "8":
             _execute(
                 "reconcile dry-run",
                 lambda: reconcile_command(live=False, max_users=reconcile_limit, page_size=reconcile_page_size),
             )
-        elif choice == "6":
+        elif choice == "9":
             _execute("probe reads", lambda: probe_command(tag_slug=tag_slug))
-        elif choice == "7":
+        elif choice == "10":
             _execute(
                 "validate contracts",
                 lambda: contracts_command(
@@ -783,7 +1180,7 @@ def _run_start_menu(
                     newsletter_username=None,
                 ),
             )
-        elif choice == "8":
+        elif choice == "11":
             _execute(
                 "validate contracts with live reads",
                 lambda: contracts_command(
@@ -794,11 +1191,11 @@ def _run_start_menu(
                     newsletter_username=newsletter_username or None,
                 ),
             )
-        elif choice == "9":
+        elif choice == "12":
             _execute("show status", status_command)
-        elif choice == "10":
+        elif choice == "13":
             _execute("validate latest artifact", lambda: artifacts_validate_command(artifact_path=None))
-        elif choice == "11":
+        elif choice == "14":
             updated_tag = str(typer.prompt("Default tag", default=tag_slug)).strip()
             if updated_tag:
                 tag_slug = updated_tag
@@ -815,15 +1212,78 @@ def _run_start_menu(
             else:
                 seed_user_refs = _parse_seed_user_refs(seed_input)
 
+            session_minutes_value = int(
+                typer.prompt(
+                    "Default live session duration (minutes)",
+                    default=live_session_minutes,
+                    type=int,
+                )
+            )
+            if session_minutes_value < 1:
+                _print_notice("Live session duration must be >= 1. Keeping previous value.", level="warning")
+            else:
+                live_session_minutes = session_minutes_value
+
+            session_target_value = int(
+                typer.prompt(
+                    "Default live session follow target (attempts)",
+                    default=live_session_target_follows,
+                    type=int,
+                )
+            )
+            if session_target_value < 1:
+                _print_notice("Live session follow target must be >= 1. Keeping previous value.", level="warning")
+            else:
+                live_session_target_follows = session_target_value
+
+            session_pass_value = int(
+                typer.prompt(
+                    "Default live session max passes",
+                    default=live_session_max_passes,
+                    type=int,
+                )
+            )
+            if session_pass_value < 1:
+                _print_notice("Live session max passes must be >= 1. Keeping previous value.", level="warning")
+            else:
+                live_session_max_passes = session_pass_value
+
+            cleanup_limit_value = int(
+                typer.prompt(
+                    "Default cleanup-only unfollow limit",
+                    default=cleanup_unfollow_limit,
+                    type=int,
+                )
+            )
+            if cleanup_limit_value < 1:
+                _print_notice("Cleanup limit must be >= 1. Keeping previous value.", level="warning")
+            else:
+                cleanup_unfollow_limit = cleanup_limit_value
+
+            whitelist_value = int(
+                typer.prompt(
+                    "Whitelist threshold: keep users with follower_count >=",
+                    default=cleanup_whitelist_min_followers,
+                    type=int,
+                )
+            )
+            if whitelist_value < 0:
+                _print_notice("Whitelist threshold must be >= 0. Keeping previous value.", level="warning")
+            else:
+                cleanup_whitelist_min_followers = whitelist_value
+
             limit_value = int(typer.prompt("Default reconcile limit", default=reconcile_limit, type=int))
             if limit_value < 1:
-                console.print("Reconcile limit must be >= 1. Keeping previous value.", style="yellow")
+                _print_notice("Reconcile limit must be >= 1. Keeping previous value.", level="warning")
             else:
                 reconcile_limit = limit_value
 
             page_size_value = int(typer.prompt("Default reconcile page size", default=reconcile_page_size, type=int))
             if page_size_value < 1 or page_size_value > 500:
-                console.print("Reconcile page size must be between 1 and 500. Keeping previous value.", style="yellow")
+                _print_notice(
+                    "Reconcile page size must be between 1 and 500. Keeping previous value.",
+                    level="warning",
+                )
             else:
                 reconcile_page_size = page_size_value
 
@@ -843,17 +1303,21 @@ def _run_start_menu(
             ).strip()
             newsletter_username = "" if username_input == "-" else username_input
 
-            console.print("Defaults updated.", style="green")
-        elif choice == "12":
+            _print_notice("Defaults updated.", level="success")
+        elif choice == "15":
             _execute("run setup wizard", lambda: setup_command(env_path=Path(".env"), auth_if_missing=True))
             refreshed_settings = _bootstrap_settings()
-            if not seed_user_refs and refreshed_settings.discovery_seed_users:
-                seed_user_refs = refreshed_settings.discovery_seed_users
-            if not newsletter_slug and refreshed_settings.contract_registry_live_newsletter_slug:
-                newsletter_slug = refreshed_settings.contract_registry_live_newsletter_slug
-            if not newsletter_username and refreshed_settings.contract_registry_live_newsletter_username:
-                newsletter_username = refreshed_settings.contract_registry_live_newsletter_username
-        elif choice == "13":
+            seed_user_refs = seed_user_refs or refreshed_settings.discovery_seed_users
+            live_session_minutes = refreshed_settings.live_session_duration_minutes
+            live_session_target_follows = refreshed_settings.live_session_target_follow_attempts
+            live_session_max_passes = refreshed_settings.live_session_max_passes
+            cleanup_unfollow_limit = max(1, refreshed_settings.cleanup_unfollow_limit)
+            cleanup_whitelist_min_followers = max(0, refreshed_settings.cleanup_unfollow_whitelist_min_followers)
+            if not newsletter_slug:
+                newsletter_slug = refreshed_settings.contract_registry_live_newsletter_slug or ""
+            if not newsletter_username:
+                newsletter_username = refreshed_settings.contract_registry_live_newsletter_username or ""
+        elif choice == "16":
             _execute(
                 "refresh auth session",
                 lambda: auth_command(
@@ -863,13 +1327,17 @@ def _run_start_menu(
                 ),
             )
         else:
-            console.print("Exiting start menu.", style="green")
+            _print_notice("Exiting start menu.", level="success")
             return
 
 
 @app.command("start")
 def start_command(
-    tag_slug: str = typer.Option("programming", "--tag"),
+    tag_slug: str = typer.Option(
+        "programming",
+        "--tag",
+        help="Topic tag slug used for discovery/probe operations.",
+    ),
     dry_run_first: bool = typer.Option(
         False,
         "--dry-run-first/--live-only",
@@ -896,29 +1364,33 @@ def start_command(
         _run_start_menu(
             initial_tag_slug=tag_slug,
             initial_seed_user_refs=resolved_seeds,
+            initial_live_session_minutes=settings.live_session_duration_minutes,
+            initial_live_session_target_follows=settings.live_session_target_follow_attempts,
+            initial_live_session_max_passes=settings.live_session_max_passes,
             initial_reconcile_limit=settings.reconcile_scan_limit,
             initial_reconcile_page_size=settings.reconcile_page_size,
+            initial_cleanup_unfollow_limit=max(1, settings.cleanup_unfollow_limit),
+            initial_cleanup_whitelist_min_followers=settings.cleanup_unfollow_whitelist_min_followers,
             initial_newsletter_slug=settings.contract_registry_live_newsletter_slug,
             initial_newsletter_username=settings.contract_registry_live_newsletter_username,
         )
         return
 
-    if not settings.has_session:
-        raise typer.BadParameter("No MEDIUM_SESSION found. Run `uv run bot auth` or `uv run bot setup` first.")
+    _require_session(settings, guidance="uv run bot auth (or uv run bot setup)")
 
     if dry_run_first:
-        console.print("Step 1/2: running dry-run sanity check", style="cyan")
+        _print_notice("Step 1/2: running dry-run sanity check.", level="info")
         run_command(
             tag_slug=tag_slug,
             live=False,
             seed_user_refs=resolved_seeds,
         )
-        console.print("Dry-run preflight complete; continuing to live execution.", style="green")
+        _print_notice("Dry-run preflight complete; continuing to live session execution.", level="success")
     else:
-        console.print("Step 1/1: running live cycle", style="cyan")
+        _print_notice("Step 1/1: running live growth session.", level="info")
 
     if dry_run_first:
-        console.print("Step 2/2: running live cycle", style="cyan")
+        _print_notice("Step 2/2: running live growth session.", level="info")
     run_command(
         tag_slug=tag_slug,
         live=True,
@@ -928,17 +1400,21 @@ def start_command(
 
 @app.command("probe")
 def probe_command(
-    tag_slug: str = typer.Option("programming", "--tag"),
+    tag_slug: str = typer.Option(
+        "programming",
+        "--tag",
+        help="Topic tag slug used for probe requests.",
+    ),
 ) -> None:
     """
     Execute parallel read-only GraphQL probes for the given tag.
     """
     settings = _bootstrap_settings()
-    if not settings.has_session:
-        raise typer.BadParameter("No MEDIUM_SESSION found. Run `uv run bot auth` first.")
+    _require_session(settings)
 
     run_id = new_run_id("probe")
     structlog_contextvars.bind_contextvars(run_id=run_id, command="probe", tag_slug=tag_slug)
+    _print_notice(f"Starting probe run `{run_id}` for tag `{tag_slug}`.", level="info")
     try:
         _, repository = _build_runner(settings)
 
@@ -950,8 +1426,11 @@ def probe_command(
         try:
             snapshot = asyncio.run(_run())
         except RiskHaltError as exc:
-            _render_risk_halt(exc)
-            raise typer.Exit(code=2) from exc
+            _render_risk_halt(exc, settings=settings)
+            halt_exit_code = _risk_halt_exit_code(settings)
+            if halt_exit_code != 0:
+                raise typer.Exit(code=halt_exit_code) from exc
+            return
         _render_probe(snapshot)
     finally:
         structlog_contextvars.clear_contextvars()
@@ -959,7 +1438,11 @@ def probe_command(
 
 @app.command("contracts")
 def contracts_command(
-    tag_slug: str = typer.Option("programming", "--tag"),
+    tag_slug: str = typer.Option(
+        "programming",
+        "--tag",
+        help="Topic tag slug used for operation contract checks.",
+    ),
     strict: bool = typer.Option(
         True,
         "--strict/--no-strict",
@@ -985,8 +1468,16 @@ def contracts_command(
     Validate implementation operation contracts against the canonical registry.
     """
     settings = _bootstrap_settings()
+    if execute_reads:
+        _require_session(settings)
+
     run_id = new_run_id("contracts")
     structlog_contextvars.bind_contextvars(run_id=run_id, command="contracts", tag_slug=tag_slug)
+    _print_notice(
+        "Starting contracts validation "
+        f"(run_id={run_id}, strict={str(strict).lower()}, execute_reads={str(execute_reads).lower()}).",
+        level="info",
+    )
     try:
         report = validate_contract_registry(
             registry_path=settings.implementation_ops_registry_path,
@@ -1007,7 +1498,11 @@ def contracts_command(
 
 @app.command("run")
 def run_command(
-    tag_slug: str = typer.Option("programming", "--tag"),
+    tag_slug: str = typer.Option(
+        "programming",
+        "--tag",
+        help="Topic tag slug used for discovery and follow actions.",
+    ),
     live: bool = typer.Option(
         True,
         "--live/--dry-run",
@@ -1018,13 +1513,38 @@ def run_command(
         "--seed-user",
         help="Optional seed for followers discovery. Repeat option. Supports @username or user_id.",
     ),
+    session: bool = typer.Option(
+        True,
+        "--session/--single-cycle",
+        help="In live mode, run repeated growth cycles until session targets are reached. Use --single-cycle for one pass.",
+    ),
+    session_minutes: int | None = typer.Option(
+        None,
+        "--session-minutes",
+        min=1,
+        max=24 * 12,
+        help="Optional live session max duration in minutes. Defaults to LIVE_SESSION_DURATION_MINUTES.",
+    ),
+    target_follows: int | None = typer.Option(
+        None,
+        "--target-follows",
+        min=1,
+        max=5000,
+        help="Optional live session follow-attempt target. Defaults to LIVE_SESSION_TARGET_FOLLOW_ATTEMPTS.",
+    ),
+    session_max_passes: int | None = typer.Option(
+        None,
+        "--session-max-passes",
+        min=1,
+        max=500,
+        help="Optional cap on growth-cycle passes in one live session. Defaults to LIVE_SESSION_MAX_PASSES.",
+    ),
 ) -> None:
     """
-    Run one daily-cycle pass (discovery + scoring + follow pipeline + cleanup).
+    Run growth automation in either single-cycle or live session mode.
     """
     settings = _bootstrap_settings()
-    if not settings.has_session:
-        raise typer.BadParameter("No MEDIUM_SESSION found. Run `uv run bot auth` first.")
+    _require_session(settings)
 
     run_id = new_run_id("run")
     structlog_contextvars.bind_contextvars(
@@ -1040,6 +1560,9 @@ def run_command(
     exit_code = 0
     outcome: DailyRunOutcome | None = None
     artifact_path: Path | None = None
+    live_session_enabled = live and session
+    mode_label = "live-session" if live_session_enabled else "live-single" if live else "dry-run"
+    _print_notice(f"Starting run `{run_id}` (mode={mode_label}, tag={tag_slug}).", level="info")
 
     try:
         try:
@@ -1048,6 +1571,24 @@ def run_command(
             async def _run() -> DailyRunOutcome:
                 async with MediumAsyncClient(settings) as client:
                     runner = DailyRunner(settings=settings, client=client, repository=repository)
+                    if live_session_enabled:
+                        resolved_session_minutes = session_minutes or settings.live_session_duration_minutes
+                        resolved_target_follows = target_follows or settings.live_session_target_follow_attempts
+                        resolved_session_max_passes = session_max_passes or settings.live_session_max_passes
+                        _print_notice(
+                            "Live session targets: "
+                            f"duration={resolved_session_minutes}m, "
+                            f"follow_attempts={resolved_target_follows}, "
+                            f"max_passes={resolved_session_max_passes}.",
+                            level="info",
+                        )
+                        return await runner.run_live_session(
+                            tag_slug=tag_slug,
+                            seed_user_refs=seed_user_refs or None,
+                            target_follow_attempts=resolved_target_follows,
+                            max_duration_minutes=resolved_session_minutes,
+                            max_passes=resolved_session_max_passes,
+                        )
                     return await runner.run_daily_cycle(
                         tag_slug=tag_slug,
                         dry_run=not live,
@@ -1057,7 +1598,7 @@ def run_command(
             outcome = asyncio.run(_run())
         except RiskHaltError as exc:
             status = "halted"
-            exit_code = 2
+            exit_code = _risk_halt_exit_code(settings)
             error_payload = {
                 "type": "RiskHaltError",
                 "message": str(exc),
@@ -1065,7 +1606,7 @@ def run_command(
                 "task_name": exc.task_name,
                 "detail": exc.detail,
             }
-            _render_risk_halt(exc)
+            _render_risk_halt(exc, settings=settings)
         except Exception as exc:  # noqa: BLE001
             status = "failed"
             exit_code = 1
@@ -1073,11 +1614,12 @@ def run_command(
                 "type": type(exc).__name__,
                 "message": str(exc),
             }
-            console.print(f"Run failed: {exc}", style="red")
+            _print_notice(f"Run failed: {exc}", level="error")
 
         ended_at = _utc_now()
         artifact_payload = _build_run_artifact_payload(
             run_id=run_id,
+            command="run",
             started_at=started_at,
             ended_at=ended_at,
             tag_slug=tag_slug,
@@ -1106,7 +1648,121 @@ def run_command(
 
         if outcome is not None:
             _render_daily_run(outcome)
-        console.print(f"Run artifact: {artifact_path}")
+        _print_notice(f"Run artifact saved: {artifact_path}", level="success")
+
+        if exit_code != 0:
+            raise typer.Exit(code=exit_code)
+    finally:
+        structlog_contextvars.clear_contextvars()
+
+
+@app.command("cleanup")
+def cleanup_command(
+    live: bool = typer.Option(
+        False,
+        "--live/--dry-run",
+        help="Run cleanup-only unfollow in dry-run mode by default. Use --live to execute mutations.",
+    ),
+    limit: int | None = typer.Option(
+        None,
+        "--limit",
+        min=1,
+        max=5000,
+        help="Optional max cleanup unfollow attempts for this run. Defaults to CLEANUP_UNFOLLOW_LIMIT.",
+    ),
+) -> None:
+    """
+    Run cleanup-only unfollow maintenance for overdue non-followback users.
+    """
+    settings = _bootstrap_settings()
+    _require_session(settings)
+
+    run_id = new_run_id("cleanup")
+    structlog_contextvars.bind_contextvars(
+        run_id=run_id,
+        command="cleanup",
+        mode="live" if live else "dry_run",
+    )
+    log = structlog.get_logger(__name__)
+    started_at = _utc_now()
+    status = "success"
+    error_payload: dict[str, str] | None = None
+    exit_code = 0
+    outcome: DailyRunOutcome | None = None
+    artifact_path: Path | None = None
+    resolved_limit = limit if limit is not None else settings.cleanup_unfollow_limit
+    mode_label = "live" if live else "dry-run"
+    _print_notice(
+        f"Starting cleanup-only run `{run_id}` (mode={mode_label}, limit={resolved_limit}).",
+        level="info",
+    )
+
+    try:
+        try:
+            _, repository = _build_runner(settings)
+
+            async def _run() -> DailyRunOutcome:
+                async with MediumAsyncClient(settings) as client:
+                    runner = DailyRunner(settings=settings, client=client, repository=repository)
+                    return await runner.run_cleanup_only(
+                        dry_run=not live,
+                        max_unfollows=resolved_limit,
+                    )
+
+            outcome = asyncio.run(_run())
+        except RiskHaltError as exc:
+            status = "halted"
+            exit_code = _risk_halt_exit_code(settings)
+            error_payload = {
+                "type": "RiskHaltError",
+                "message": str(exc),
+                "reason": exc.reason,
+                "task_name": exc.task_name,
+                "detail": exc.detail,
+            }
+            _render_risk_halt(exc, settings=settings)
+        except Exception as exc:  # noqa: BLE001
+            status = "failed"
+            exit_code = 1
+            error_payload = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            }
+            _print_notice(f"Cleanup-only run failed: {exc}", level="error")
+
+        ended_at = _utc_now()
+        artifact_payload = _build_run_artifact_payload(
+            run_id=run_id,
+            command="cleanup",
+            started_at=started_at,
+            ended_at=ended_at,
+            tag_slug="cleanup_only",
+            dry_run=not live,
+            status=status,
+            outcome=outcome,
+            error=error_payload,
+        )
+        payload_ok, payload_issues = validate_artifact_payload(artifact_payload)
+        if not payload_ok:
+            raise RuntimeError(f"cleanup artifact payload schema validation failed: {', '.join(payload_issues)}")
+        artifact_path = write_run_artifact(
+            artifacts_dir=settings.run_artifacts_dir,
+            run_id=run_id,
+            payload=artifact_payload,
+        )
+        log.info(
+            "run_artifact_written",
+            operation="run_artifact",
+            target_id=None,
+            decision="persist",
+            result="ok",
+            artifact_path=str(artifact_path),
+            status=status,
+        )
+
+        if outcome is not None:
+            _render_daily_run(outcome)
+        _print_notice(f"Run artifact saved: {artifact_path}", level="success")
 
         if exit_code != 0:
             raise typer.Exit(code=exit_code)
@@ -1140,14 +1796,17 @@ def reconcile_command(
     Reconcile local follow state against live UserViewerEdge checks.
     """
     settings = _bootstrap_settings()
-    if not settings.has_session:
-        raise typer.BadParameter("No MEDIUM_SESSION found. Run `uv run bot auth` first.")
+    _require_session(settings)
 
     run_id = new_run_id("reconcile")
     structlog_contextvars.bind_contextvars(
         run_id=run_id,
         command="reconcile",
         mode="live" if live else "dry_run",
+    )
+    _print_notice(
+        f"Starting reconcile run `{run_id}` (mode={'live' if live else 'dry-run'}, limit={max_users}, page_size={page_size}).",
+        level="info",
     )
     try:
         _, repository = _build_runner(settings)
@@ -1164,8 +1823,11 @@ def reconcile_command(
         try:
             outcome = asyncio.run(_run())
         except RiskHaltError as exc:
-            _render_risk_halt(exc)
-            raise typer.Exit(code=2) from exc
+            _render_risk_halt(exc, settings=settings)
+            halt_exit_code = _risk_halt_exit_code(settings)
+            if halt_exit_code != 0:
+                raise typer.Exit(code=halt_exit_code) from exc
+            return
         _render_reconcile_outcome(outcome)
     finally:
         structlog_contextvars.clear_contextvars()
@@ -1179,18 +1841,18 @@ def status_command() -> None:
     settings = _bootstrap_settings()
     latest = read_latest_run_artifact(settings.run_artifacts_dir)
     if not latest:
-        console.print(
+        _print_notice(
             f"No run artifacts found in {settings.run_artifacts_dir}. Execute `uv run bot run` first.",
-            style="yellow",
+            level="warning",
         )
         return
     artifact, source = latest
     ok, issues = validate_artifact_payload(artifact)
     if not ok:
-        console.print(
+        _print_notice(
             "Latest artifact schema is invalid or unsupported. "
             f"Issues: {', '.join(issues)}",
-            style="red",
+            level="error",
         )
         raise typer.Exit(code=1)
     _render_status(artifact, artifact_path=source)
@@ -1211,7 +1873,7 @@ def artifacts_validate_command(
     if artifact_path is None:
         latest = read_latest_run_artifact(settings.run_artifacts_dir)
         if not latest:
-            console.print(f"No artifacts found in {settings.run_artifacts_dir}.", style="yellow")
+            _print_notice(f"No artifacts found in {settings.run_artifacts_dir}.", level="warning")
             raise typer.Exit(code=1)
         artifact, source = latest
     else:
@@ -1221,18 +1883,18 @@ def artifacts_validate_command(
 
             payload = json.loads(source.read_text(encoding="utf-8"))
         except Exception as exc:  # noqa: BLE001
-            console.print(f"Failed to read artifact: {exc}", style="red")
+            _print_notice(f"Failed to read artifact: {exc}", level="error")
             raise typer.Exit(code=1) from exc
         artifact = payload if isinstance(payload, dict) else {}
 
     ok, issues = validate_artifact_payload(artifact)
     if not ok:
-        console.print(
+        _print_notice(
             f"Artifact validation failed for {source}: {', '.join(issues)}",
-            style="red",
+            level="error",
         )
         raise typer.Exit(code=1)
-    console.print(f"Artifact validation passed: {source}", style="green")
+    _print_notice(f"Artifact validation passed: {source}", level="success")
 
 
 if __name__ == "__main__":

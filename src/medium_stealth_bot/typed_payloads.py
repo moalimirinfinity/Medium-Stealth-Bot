@@ -99,6 +99,8 @@ class ViewerEdge(_Model):
 
 
 class UserForViewerEdge(_Model):
+    username: str | None = None
+    social_stats: SocialStats | None = Field(default=None, alias="socialStats")
     viewer_edge: ViewerEdge | None = Field(default=None, alias="viewerEdge")
 
 
@@ -174,6 +176,13 @@ def parse_user_viewer_is_following(result: GraphQLResult) -> bool | None:
     if not payload.user or not payload.user.viewer_edge:
         return None
     return payload.user.viewer_edge.is_following
+
+
+def parse_user_viewer_follower_count(result: GraphQLResult) -> int | None:
+    payload = UserViewerEdgeData.model_validate(result.data or {})
+    if not payload.user or not payload.user.social_stats:
+        return None
+    return payload.user.social_stats.follower_count
 
 
 def parse_newsletter_is_subscribed(result: GraphQLResult) -> bool | None:

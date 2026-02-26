@@ -254,6 +254,7 @@ class ActionRepository:
 
         followed_back = counts.get("followed_back", 0)
         nonreciprocal = counts.get("unfollowed_nonreciprocal", 0)
+        kept_whitelist = counts.get("kept_whitelist", 0)
         completed = followed_back + nonreciprocal
         follow_back_rate = (followed_back / completed) if completed > 0 else 0.0
 
@@ -262,6 +263,7 @@ class ActionRepository:
             "follow_cycle_pending": counts.get("pending", 0),
             "follow_cycle_followed_back": followed_back,
             "follow_cycle_unfollowed_nonreciprocal": nonreciprocal,
+            "follow_cycle_kept_whitelist": kept_whitelist,
             "follow_back_rate": round(follow_back_rate, 4),
         }
 
@@ -335,18 +337,38 @@ class ActionRepository:
             connection.execute(query, (user_id,))
             connection.commit()
 
+    def mark_cleanup_whitelist_kept(self, user_id: str) -> None:
+        query = """
+        UPDATE follow_cycle
+        SET cleanup_status = 'kept_whitelist',
+            last_checked_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = ?
+        """
+        with self.database.connect() as connection:
+            connection.execute(query, (user_id,))
+            connection.commit()
+
     def pending_nonreciprocal_candidates(self, *, grace_days: int, limit: int) -> list[dict[str, str | None]]:
         query = """
         SELECT user_id, username, followed_at
         FROM follow_cycle
         WHERE cleanup_status = 'pending'
-          AND COALESCE(follow_deadline_at, datetime(followed_at, ?)) <= datetime('now', 'utc')
+          AND COALESCE(
+              follow_deadline_at,
+              datetime(followed_at, ?),
+              datetime('now', 'utc', ?)
+          ) <= datetime('now', 'utc')
         ORDER BY followed_at ASC
         LIMIT ?
         """
         fallback_deadline_modifier = f"+{grace_days} day"
+        unknown_followed_at_fallback_modifier = f"-{grace_days} day"
         with self.database.connect() as connection:
-            rows = connection.execute(query, (fallback_deadline_modifier, limit)).fetchall()
+            rows = connection.execute(
+                query,
+                (fallback_deadline_modifier, unknown_followed_at_fallback_modifier, limit),
+            ).fetchall()
             return [
                 {"user_id": row["user_id"], "username": row["username"], "followed_at": row["followed_at"]}
                 for row in rows

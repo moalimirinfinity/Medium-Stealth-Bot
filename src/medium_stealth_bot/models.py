@@ -75,6 +75,11 @@ class DailyRunOutcome(BaseModel):
     decision_reason_counts: dict[str, int] = Field(default_factory=dict)
     decision_result_counts: dict[str, int] = Field(default_factory=dict)
     probe: ProbeSnapshot | None = None
+    session_passes: int = 1
+    session_elapsed_seconds: float = 0.0
+    session_stop_reason: str | None = None
+    session_target_follow_attempts: int | None = None
+    session_target_duration_minutes: int | None = None
 
 
 class ReconcileOutcome(BaseModel):

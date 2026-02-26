@@ -159,6 +159,10 @@ query UserViewerEdge($userId: ID!) {
   user(id: $userId) {
     ... on User {
       id
+      username
+      socialStats {
+        followerCount
+      }
       viewerEdge {
         id
         isFollowing

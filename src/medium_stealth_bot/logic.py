@@ -32,6 +32,7 @@ from medium_stealth_bot.typed_payloads import (
     parse_recommended_publishers_users,
     parse_topic_latest_story_creators,
     parse_user_followers_users,
+    parse_user_viewer_follower_count,
     parse_user_viewer_is_following,
 )
 
@@ -259,6 +260,346 @@ class DailyRunner:
             decision_reason_counts=decision_reason_counts,
             decision_result_counts=decision_result_counts,
             probe=probe,
+        )
+
+    async def run_live_session(
+        self,
+        *,
+        tag_slug: str = "programming",
+        seed_user_refs: list[str] | None = None,
+        target_follow_attempts: int | None = None,
+        max_duration_minutes: int | None = None,
+        max_passes: int | None = None,
+    ) -> DailyRunOutcome:
+        self._assert_operator_not_stopped(task_name="run_live_session")
+
+        resolved_target_follows = max(1, target_follow_attempts or self.settings.live_session_target_follow_attempts)
+        resolved_duration_minutes = max(1, max_duration_minutes or self.settings.live_session_duration_minutes)
+        configured_max_passes = max(1, max_passes or self.settings.live_session_max_passes)
+        per_pass_follow_cap = max(1, self.settings.max_follow_actions_per_run)
+        minimum_passes_for_target = max(1, (resolved_target_follows + per_pass_follow_cap - 1) // per_pass_follow_cap)
+        resolved_max_passes = max(configured_max_passes, minimum_passes_for_target)
+        max_duration_seconds = float(resolved_duration_minutes * 60)
+
+        started_at = time.perf_counter()
+        pass_count = 0
+        no_progress_passes = 0
+        stop_reason: str | None = None
+        last_outcome: DailyRunOutcome | None = None
+
+        total_considered = 0
+        total_eligible = 0
+        total_follow_attempted = 0
+        total_follow_verified = 0
+        total_clap_attempted = 0
+        total_clap_verified = 0
+        total_cleanup_attempted = 0
+        total_cleanup_verified = 0
+        total_source_candidate_counts: dict[str, int] = {}
+        total_source_follow_verified_counts: dict[str, int] = {}
+        total_reason_counts: dict[str, int] = {}
+        total_result_counts: dict[str, int] = {}
+        decision_log_sample: list[str] = []
+
+        while pass_count < resolved_max_passes:
+            elapsed_before_pass = time.perf_counter() - started_at
+            if elapsed_before_pass >= max_duration_seconds:
+                stop_reason = "duration_reached"
+                break
+            if total_follow_attempted >= resolved_target_follows:
+                stop_reason = "follow_target_reached"
+                break
+
+            pass_count += 1
+            self.log.info(
+                "live_session_pass_start",
+                pass_index=pass_count,
+                target_follow_attempts=resolved_target_follows,
+                max_duration_minutes=resolved_duration_minutes,
+                max_passes=resolved_max_passes,
+                elapsed_seconds=round(elapsed_before_pass, 3),
+            )
+            outcome = await self.run_daily_cycle(
+                tag_slug=tag_slug,
+                dry_run=False,
+                seed_user_refs=seed_user_refs,
+            )
+            last_outcome = outcome
+
+            total_considered += outcome.considered_candidates
+            total_eligible += outcome.eligible_candidates
+            total_follow_attempted += outcome.follow_actions_attempted
+            total_follow_verified += outcome.follow_actions_verified
+            total_clap_attempted += outcome.clap_actions_attempted
+            total_clap_verified += outcome.clap_actions_verified
+            total_cleanup_attempted += outcome.cleanup_actions_attempted
+            total_cleanup_verified += outcome.cleanup_actions_verified
+            self._merge_int_counts(total_source_candidate_counts, outcome.source_candidate_counts)
+            self._merge_int_counts(total_source_follow_verified_counts, outcome.source_follow_verified_counts)
+            self._merge_int_counts(total_reason_counts, outcome.decision_reason_counts)
+            self._merge_int_counts(total_result_counts, outcome.decision_result_counts)
+            self._append_decision_log_sample(decision_log_sample, outcome.decision_log, max_size=120)
+
+            pass_activity = (
+                outcome.follow_actions_attempted
+                + outcome.clap_actions_attempted
+                + outcome.cleanup_actions_attempted
+            )
+            no_progress_passes = no_progress_passes + 1 if pass_activity == 0 else 0
+
+            elapsed_after_pass = time.perf_counter() - started_at
+            self.log.info(
+                "live_session_pass_complete",
+                pass_index=pass_count,
+                elapsed_seconds=round(elapsed_after_pass, 3),
+                follow_attempted_this_pass=outcome.follow_actions_attempted,
+                follow_attempted_total=total_follow_attempted,
+                follow_verified_total=total_follow_verified,
+                cleanup_attempted_this_pass=outcome.cleanup_actions_attempted,
+                cleanup_verified_total=total_cleanup_verified,
+                budget_exhausted=outcome.budget_exhausted,
+            )
+
+            if outcome.budget_exhausted:
+                stop_reason = "budget_exhausted"
+                break
+            if total_follow_attempted >= resolved_target_follows:
+                stop_reason = "follow_target_reached"
+                break
+            if elapsed_after_pass >= max_duration_seconds:
+                stop_reason = "duration_reached"
+                break
+            if no_progress_passes >= 2:
+                stop_reason = "no_action_progress"
+                break
+
+        if stop_reason is None:
+            stop_reason = "max_passes_reached"
+
+        elapsed_total = round(time.perf_counter() - started_at, 3)
+        if last_outcome is None:
+            actions_today = self.repository.actions_today_utc(TRACKED_DAILY_ACTION_TYPES)
+            action_counts = self.repository.action_counts_today_utc(TRACKED_DAILY_ACTION_TYPES)
+            action_limits = {
+                ACTION_SUBSCRIBE: self.settings.max_subscribe_actions_per_day,
+                ACTION_UNFOLLOW: self.settings.max_unfollow_actions_per_day,
+                ACTION_CLAP: self.settings.max_clap_actions_per_day,
+            }
+            action_remaining = {
+                action_type: max(0, action_limits[action_type] - action_counts.get(action_type, 0))
+                for action_type in TRACKED_DAILY_ACTION_TYPES
+            }
+            kpis = self._build_kpis(
+                follow_attempted=0,
+                follow_verified=0,
+                cleanup_attempted=0,
+                cleanup_verified=0,
+                eligible_candidates=0,
+                clap_attempted=0,
+                clap_verified=0,
+            )
+            kpis.update(self.repository.follow_cycle_kpis())
+            kpis.update(
+                {
+                    "session_passes": pass_count,
+                    "session_elapsed_seconds": elapsed_total,
+                    "session_target_follow_attempts": resolved_target_follows,
+                    "session_target_duration_minutes": resolved_duration_minutes,
+                }
+            )
+            return DailyRunOutcome(
+                budget_exhausted=actions_today >= self.settings.max_actions_per_day,
+                actions_today=actions_today,
+                max_actions_per_day=self.settings.max_actions_per_day,
+                action_counts_today=action_counts,
+                action_limits_per_day=action_limits,
+                action_remaining_per_day=action_remaining,
+                dry_run=False,
+                kpis=kpis,
+                client_metrics=self.client.metrics_snapshot(),
+                session_passes=pass_count,
+                session_elapsed_seconds=elapsed_total,
+                session_stop_reason=stop_reason,
+                session_target_follow_attempts=resolved_target_follows,
+                session_target_duration_minutes=resolved_duration_minutes,
+            )
+
+        kpis = self._build_kpis(
+            follow_attempted=total_follow_attempted,
+            follow_verified=total_follow_verified,
+            cleanup_attempted=total_cleanup_attempted,
+            cleanup_verified=total_cleanup_verified,
+            eligible_candidates=total_eligible,
+            clap_attempted=total_clap_attempted,
+            clap_verified=total_clap_verified,
+        )
+        kpis.update(self.repository.follow_cycle_kpis())
+        kpis.update(
+            {
+                "session_passes": pass_count,
+                "session_elapsed_seconds": elapsed_total,
+                "session_target_follow_attempts": resolved_target_follows,
+                "session_target_duration_minutes": resolved_duration_minutes,
+            }
+        )
+
+        aggregated_outcome = DailyRunOutcome(
+            budget_exhausted=last_outcome.budget_exhausted,
+            actions_today=last_outcome.actions_today,
+            max_actions_per_day=last_outcome.max_actions_per_day,
+            action_counts_today=last_outcome.action_counts_today,
+            action_limits_per_day=last_outcome.action_limits_per_day,
+            action_remaining_per_day=last_outcome.action_remaining_per_day,
+            dry_run=False,
+            considered_candidates=total_considered,
+            eligible_candidates=total_eligible,
+            follow_actions_attempted=total_follow_attempted,
+            follow_actions_verified=total_follow_verified,
+            clap_actions_attempted=total_clap_attempted,
+            clap_actions_verified=total_clap_verified,
+            cleanup_actions_attempted=total_cleanup_attempted,
+            cleanup_actions_verified=total_cleanup_verified,
+            source_candidate_counts=total_source_candidate_counts,
+            source_follow_verified_counts=total_source_follow_verified_counts,
+            kpis=kpis,
+            client_metrics=self.client.metrics_snapshot(),
+            decision_log=decision_log_sample,
+            decision_reason_counts=total_reason_counts,
+            decision_result_counts=total_result_counts,
+            probe=last_outcome.probe,
+            session_passes=pass_count,
+            session_elapsed_seconds=elapsed_total,
+            session_stop_reason=stop_reason,
+            session_target_follow_attempts=resolved_target_follows,
+            session_target_duration_minutes=resolved_duration_minutes,
+        )
+
+        self.log.info(
+            "live_session_complete",
+            passes=pass_count,
+            elapsed_seconds=elapsed_total,
+            stop_reason=stop_reason,
+            follow_attempted=total_follow_attempted,
+            follow_verified=total_follow_verified,
+            cleanup_attempted=total_cleanup_attempted,
+            cleanup_verified=total_cleanup_verified,
+            action_counts=aggregated_outcome.action_counts_today,
+            action_limits=aggregated_outcome.action_limits_per_day,
+            action_remaining=aggregated_outcome.action_remaining_per_day,
+        )
+        return aggregated_outcome
+
+    async def run_cleanup_only(
+        self,
+        *,
+        dry_run: bool = True,
+        max_unfollows: int | None = None,
+    ) -> DailyRunOutcome:
+        self._assert_operator_not_stopped(task_name="run_cleanup_only")
+
+        actions_today_start = self.repository.actions_today_utc(TRACKED_DAILY_ACTION_TYPES)
+        max_actions = self.settings.max_actions_per_day
+        action_counts = self.repository.action_counts_today_utc(TRACKED_DAILY_ACTION_TYPES)
+        action_limits = {
+            ACTION_SUBSCRIBE: self.settings.max_subscribe_actions_per_day,
+            ACTION_UNFOLLOW: self.settings.max_unfollow_actions_per_day,
+            ACTION_CLAP: self.settings.max_clap_actions_per_day,
+        }
+        action_remaining = {
+            action_type: max(0, action_limits[action_type] - action_counts.get(action_type, 0))
+            for action_type in TRACKED_DAILY_ACTION_TYPES
+        }
+        if actions_today_start >= max_actions:
+            self.log.info(
+                "budget_exhausted",
+                actions_today=actions_today_start,
+                max_actions=max_actions,
+                day_boundary_policy=self.settings.day_boundary_policy,
+            )
+            return DailyRunOutcome(
+                budget_exhausted=True,
+                actions_today=actions_today_start,
+                max_actions_per_day=max_actions,
+                action_counts_today=action_counts,
+                action_limits_per_day=action_limits,
+                action_remaining_per_day=action_remaining,
+                dry_run=dry_run,
+                probe=None,
+                client_metrics=self.client.metrics_snapshot(),
+            )
+
+        decisions: list[CandidateDecision] = []
+        remaining_budget = max(0, max_actions - actions_today_start)
+        cleanup_limit = max(0, max_unfollows) if max_unfollows is not None else self.settings.cleanup_unfollow_limit
+        cleanup_cap = min(
+            cleanup_limit,
+            remaining_budget,
+            action_remaining[ACTION_UNFOLLOW],
+        )
+
+        cleanup_attempted, cleanup_verified = await self._execute_cleanup_pipeline(
+            dry_run=dry_run,
+            max_to_run=cleanup_cap,
+            decisions=decisions,
+        )
+        action_counts[ACTION_UNFOLLOW] += cleanup_attempted
+        action_remaining[ACTION_UNFOLLOW] = max(0, action_limits[ACTION_UNFOLLOW] - action_counts[ACTION_UNFOLLOW])
+        decision_reason_counts, decision_result_counts = self._summarize_decisions(decisions)
+        self._emit_decision_logs(decisions)
+
+        actions_today_end = (
+            self.repository.actions_today_utc(TRACKED_DAILY_ACTION_TYPES)
+            if not dry_run
+            else actions_today_start
+        )
+
+        kpis = self._build_kpis(
+            follow_attempted=0,
+            follow_verified=0,
+            cleanup_attempted=cleanup_attempted,
+            cleanup_verified=cleanup_verified,
+            eligible_candidates=0,
+            clap_attempted=0,
+            clap_verified=0,
+        )
+        kpis.update(self.repository.follow_cycle_kpis())
+        client_metrics = self.client.metrics_snapshot()
+
+        self.log.info(
+            "cleanup_only_complete",
+            dry_run=dry_run,
+            cleanup_attempted=cleanup_attempted,
+            cleanup_verified=cleanup_verified,
+            actions_today=actions_today_end,
+            max_actions=max_actions,
+            action_counts=action_counts,
+            action_limits=action_limits,
+            action_remaining=action_remaining,
+            decision_reason_counts=decision_reason_counts,
+            decision_result_counts=decision_result_counts,
+            kpis=kpis,
+            client_metrics=client_metrics,
+            day_boundary_policy=self.settings.day_boundary_policy,
+        )
+        return DailyRunOutcome(
+            budget_exhausted=False,
+            actions_today=actions_today_end,
+            max_actions_per_day=max_actions,
+            action_counts_today=action_counts,
+            action_limits_per_day=action_limits,
+            action_remaining_per_day=action_remaining,
+            dry_run=dry_run,
+            cleanup_actions_attempted=cleanup_attempted,
+            cleanup_actions_verified=cleanup_verified,
+            kpis=kpis,
+            client_metrics=client_metrics,
+            decision_log=[
+                f"{item.reason} (id={item.user_id})"
+                for item in decisions[:80]
+            ],
+            decision_reason_counts=decision_reason_counts,
+            decision_result_counts=decision_result_counts,
+            probe=None,
         )
 
     async def reconcile_follow_states(
@@ -994,6 +1335,31 @@ class DailyRunner:
                 )
                 continue
 
+            whitelist_min_followers = max(0, self.settings.cleanup_unfollow_whitelist_min_followers)
+            if whitelist_min_followers > 0:
+                profile_result = await self._execute_with_retry(
+                    "cleanup_target_viewer_edge",
+                    operations.user_viewer_edge(user_id),
+                )
+                follower_count = parse_user_viewer_follower_count(profile_result)
+                if follower_count is not None and follower_count >= whitelist_min_followers:
+                    if not dry_run:
+                        self.repository.mark_cleanup_whitelist_kept(user_id)
+                        self.repository.record_action(
+                            "cleanup_whitelist_kept",
+                            user_id,
+                            f"follower_count={follower_count}",
+                        )
+                    decisions.append(
+                        CandidateDecision(
+                            user_id=user_id,
+                            username=username,
+                            eligible=False,
+                            reason=f"cleanup:kept_whitelist_follower_count={follower_count}",
+                        )
+                    )
+                    continue
+
             attempted += 1
             if dry_run:
                 decisions.append(
@@ -1189,7 +1555,7 @@ class DailyRunner:
             return "success"
         if reason.startswith("dry_run:") or reason == "cleanup:dry_run_unfollow_nonreciprocal":
             return "planned"
-        if reason.startswith("skip:") or reason == "cleanup:kept_followed_back":
+        if reason.startswith("skip:") or reason == "cleanup:kept_followed_back" or reason.startswith("cleanup:kept_whitelist"):
             return "skipped"
         if "failed" in reason or "uncertain" in reason or "unavailable" in reason:
             return "failed"
@@ -1207,6 +1573,18 @@ class DailyRunner:
                 key = source.value
                 counts[key] = counts.get(key, 0) + 1
         return counts
+
+    @staticmethod
+    def _merge_int_counts(target: dict[str, int], incoming: dict[str, int]) -> None:
+        for key, value in incoming.items():
+            target[key] = target.get(key, 0) + int(value)
+
+    @staticmethod
+    def _append_decision_log_sample(target: list[str], incoming: list[str], *, max_size: int) -> None:
+        if len(target) >= max_size:
+            return
+        remaining = max_size - len(target)
+        target.extend(incoming[:remaining])
 
     def _build_kpis(
         self,
