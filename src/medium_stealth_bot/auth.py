@@ -22,6 +22,21 @@ def _quote_env(value: str) -> str:
     return f'"{escaped}"'
 
 
+def _parse_cookie_header(cookie_header: str) -> dict[str, str]:
+    cookie_map: dict[str, str] = {}
+    for pair in cookie_header.split(";"):
+        item = pair.strip()
+        if not item or "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        normalized_key = key.strip()
+        normalized_value = value.strip()
+        if not normalized_key or not normalized_value:
+            continue
+        cookie_map[normalized_key] = normalized_value
+    return cookie_map
+
+
 def extract_session_material(cookies: list[dict[str, Any]]) -> AuthSessionMaterial:
     medium_cookies = [
         cookie
@@ -45,6 +60,40 @@ def extract_session_material(cookies: list[dict[str, Any]]) -> AuthSessionMateri
     )
 
 
+def import_session_material_from_cookie_header(
+    cookie_header: str,
+    *,
+    medium_csrf: str | None = None,
+    medium_user_ref: str | None = None,
+) -> AuthSessionMaterial:
+    cookie_map = _parse_cookie_header(cookie_header)
+    if "sid" not in cookie_map:
+        raise RuntimeError(
+            "sid cookie not found in provided Cookie header. "
+            "Copy cookies from a signed-in https://medium.com request."
+        )
+
+    resolved_csrf = medium_csrf or cookie_map.get("xsrf") or cookie_map.get("XSRF-TOKEN")
+    resolved_user_ref = medium_user_ref or cookie_map.get("uid")
+    return AuthSessionMaterial(
+        MEDIUM_SESSION=_serialize_cookie_map(cookie_map),
+        MEDIUM_CSRF=resolved_csrf,
+        MEDIUM_USER_REF=resolved_user_ref,
+        cookie_names=sorted(cookie_map.keys()),
+    )
+
+
+def _auth_launch_kwargs(settings: AppSettings, profile_dir: Path) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "user_data_dir": str(profile_dir),
+        "headless": False,
+        "viewport": {"width": 1366, "height": 900},
+    }
+    if settings.playwright_auth_browser_channel != "chromium":
+        kwargs["channel"] = settings.playwright_auth_browser_channel
+    return kwargs
+
+
 async def interactive_auth(settings: AppSettings, login_url: str = "https://medium.com/m/signin") -> AuthSessionMaterial:
     log = structlog.get_logger(__name__)
     settings.ensure_directories()
@@ -53,11 +102,25 @@ async def interactive_auth(settings: AppSettings, login_url: str = "https://medi
 
     log.info("auth_start", profile_dir=str(profile_dir), login_url=login_url)
     async with async_playwright() as playwright:
-        context = await playwright.chromium.launch_persistent_context(
-            user_data_dir=str(profile_dir),
-            headless=False,
-            viewport={"width": 1366, "height": 900},
-        )
+        launch_kwargs = _auth_launch_kwargs(settings, profile_dir)
+        try:
+            context = await playwright.chromium.launch_persistent_context(**launch_kwargs)
+        except Exception as exc:  # noqa: BLE001
+            channel = str(launch_kwargs.get("channel", "chromium"))
+            if channel == "chrome":
+                guidance = (
+                    "Google sign-in on macOS often requires real Chrome. "
+                    "Install Google Chrome, close existing Chrome windows, and try again. "
+                    "If you must use bundled Chromium, set PLAYWRIGHT_AUTH_BROWSER_CHANNEL=\"chromium\"."
+                )
+            else:
+                guidance = (
+                    "Bundled Chromium may be blocked by Google sign-in security checks. "
+                    "Set PLAYWRIGHT_AUTH_BROWSER_CHANNEL=\"chrome\" and retry."
+                )
+            raise RuntimeError(
+                f"Failed to launch auth browser (channel={channel}). {guidance}"
+            ) from exc
         try:
             page = context.pages[0] if context.pages else await context.new_page()
             await page.goto(login_url, wait_until="domcontentloaded")

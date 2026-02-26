@@ -87,6 +87,20 @@ def _humanize_event(_, __, event_dict):
                 "client_metrics",
             ),
         )
+    elif event_name == "cleanup_only_complete":
+        event_dict["event"] = "Cleanup-only complete"
+        _drop_keys(
+            event_dict,
+            (
+                "action_counts",
+                "action_limits",
+                "action_remaining",
+                "decision_reason_counts",
+                "decision_result_counts",
+                "kpis",
+                "client_metrics",
+            ),
+        )
     elif event_name == "run_artifact_written":
         event_dict["event"] = "Run artifact written"
         _drop_keys(event_dict, ("operation", "decision", "result", "target_id"))
@@ -154,7 +168,11 @@ def configure_logging(level: str = "INFO", log_format: str = "pretty") -> None:
                 structlog.processors.TimeStamper(fmt="%H:%M:%S", utc=True),
                 structlog.processors.StackInfoRenderer(),
                 structlog.processors.format_exc_info,
-                structlog.dev.ConsoleRenderer(sort_keys=False),
+                structlog.dev.ConsoleRenderer(
+                    sort_keys=False,
+                    pad_level=False,
+                    pad_event_to=0,
+                ),
             ]
         )
 

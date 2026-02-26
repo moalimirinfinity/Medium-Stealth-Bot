@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, ValidationInfo, computed_field, field_validator
+from pydantic import Field, ValidationInfo, computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_USER_AGENT = (
@@ -20,6 +20,11 @@ class AppSettings(BaseSettings):
     )
 
     medium_session: str | None = Field(default=None, validation_alias="MEDIUM_SESSION")
+    medium_session_sid: str | None = Field(default=None, validation_alias="MEDIUM_SESSION_SID")
+    medium_session_uid: str | None = Field(default=None, validation_alias="MEDIUM_SESSION_UID")
+    medium_session_xsrf: str | None = Field(default=None, validation_alias="MEDIUM_SESSION_XSRF")
+    medium_session_cf_clearance: str | None = Field(default=None, validation_alias="MEDIUM_SESSION_CF_CLEARANCE")
+    medium_session_cfuvid: str | None = Field(default=None, validation_alias="MEDIUM_SESSION_CFUVID")
     medium_csrf: str | None = Field(default=None, validation_alias="MEDIUM_CSRF")
     medium_user_ref: str | None = Field(default=None, validation_alias="MEDIUM_USER_REF")
 
@@ -86,6 +91,24 @@ class AppSettings(BaseSettings):
         ge=0,
         validation_alias="MAX_CLAP_ACTIONS_PER_DAY",
     )
+    live_session_duration_minutes: int = Field(
+        default=60,
+        ge=1,
+        le=24 * 12,
+        validation_alias="LIVE_SESSION_DURATION_MINUTES",
+    )
+    live_session_target_follow_attempts: int = Field(
+        default=100,
+        ge=1,
+        le=5000,
+        validation_alias="LIVE_SESSION_TARGET_FOLLOW_ATTEMPTS",
+    )
+    live_session_max_passes: int = Field(
+        default=12,
+        ge=1,
+        le=500,
+        validation_alias="LIVE_SESSION_MAX_PASSES",
+    )
     max_follow_actions_per_run: int = Field(default=5, ge=0, validation_alias="MAX_FOLLOW_ACTIONS_PER_RUN")
     reconcile_scan_limit: int = Field(default=200, ge=1, le=5000, validation_alias="RECONCILE_SCAN_LIMIT")
     reconcile_page_size: int = Field(default=50, ge=1, le=500, validation_alias="RECONCILE_PAGE_SIZE")
@@ -122,6 +145,12 @@ class AppSettings(BaseSettings):
         validation_alias="UNFOLLOW_NONRECIPROCAL_AFTER_DAYS",
     )
     cleanup_unfollow_limit: int = Field(default=10, ge=0, le=100, validation_alias="CLEANUP_UNFOLLOW_LIMIT")
+    cleanup_unfollow_whitelist_min_followers: int = Field(
+        default=2000,
+        ge=0,
+        le=2_000_000_000,
+        validation_alias="CLEANUP_UNFOLLOW_WHITELIST_MIN_FOLLOWERS",
+    )
     own_followers_scan_limit: int = Field(default=80, ge=1, le=500, validation_alias="OWN_FOLLOWERS_SCAN_LIMIT")
 
     enable_pre_follow_clap: bool = Field(default=True, validation_alias="ENABLE_PRE_FOLLOW_CLAP")
@@ -142,6 +171,7 @@ class AppSettings(BaseSettings):
         le=20,
         validation_alias="RISK_HALT_CONSECUTIVE_FAILURES",
     )
+    risk_halt_mode: Literal["hard", "soft"] = Field(default="hard", validation_alias="RISK_HALT_MODE")
     enable_challenge_halt: bool = Field(default=True, validation_alias="ENABLE_CHALLENGE_HALT")
     challenge_status_codes_raw: str = Field(default="403,429,503", validation_alias="CHALLENGE_STATUS_CODES")
     challenge_tokens_raw: str = Field(
@@ -176,11 +206,51 @@ class AppSettings(BaseSettings):
         validation_alias="PLAYWRIGHT_PROFILE_DIR",
     )
     playwright_headless: bool = Field(default=True, validation_alias="PLAYWRIGHT_HEADLESS")
+    playwright_auth_browser_channel: Literal["chrome", "chromium"] = Field(
+        default="chrome",
+        validation_alias="PLAYWRIGHT_AUTH_BROWSER_CHANNEL",
+    )
 
     @computed_field
     @property
     def has_session(self) -> bool:
         return bool(self.medium_session)
+
+    @model_validator(mode="after")
+    def compose_medium_session_from_parts(self) -> "AppSettings":
+        def _normalized(value: str | None) -> str | None:
+            if value is None:
+                return None
+            text = value.strip()
+            return text or None
+
+        self.medium_session = _normalized(self.medium_session)
+        self.medium_session_sid = _normalized(self.medium_session_sid)
+        self.medium_session_uid = _normalized(self.medium_session_uid)
+        self.medium_session_xsrf = _normalized(self.medium_session_xsrf)
+        self.medium_session_cf_clearance = _normalized(self.medium_session_cf_clearance)
+        self.medium_session_cfuvid = _normalized(self.medium_session_cfuvid)
+        self.medium_csrf = _normalized(self.medium_csrf)
+
+        if self.medium_session is None:
+            cookie_parts: list[str] = []
+            for key, value in (
+                ("sid", self.medium_session_sid),
+                ("uid", self.medium_session_uid),
+                ("xsrf", self.medium_session_xsrf),
+                ("cf_clearance", self.medium_session_cf_clearance),
+                ("_cfuvid", self.medium_session_cfuvid),
+            ):
+                if value:
+                    cookie_parts.append(f"{key}={value}")
+            if cookie_parts:
+                self.medium_session = "; ".join(cookie_parts)
+
+        if self.medium_csrf is None and self.medium_session_xsrf is not None:
+            self.medium_csrf = self.medium_session_xsrf
+        if self.medium_user_ref is None and self.medium_session_uid is not None:
+            self.medium_user_ref = self.validate_medium_user_ref(self.medium_session_uid)
+        return self
 
     @field_validator("medium_user_ref")
     @classmethod
