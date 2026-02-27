@@ -177,7 +177,7 @@ class GraphSyncService:
         if not actor_user_id:
             return []
 
-        per_page_limit = max(1, min(500, self.settings.own_followers_scan_limit))
+        per_page_limit = max(1, min(operations.USER_FOLLOWERS_MAX_LIMIT, self.settings.own_followers_scan_limit))
         cursor: str | None = None
         seen_cursors: set[str] = set()
         collected: dict[str, dict[str, object]] = {}
@@ -246,7 +246,7 @@ class GraphSyncService:
         if not actor_user_id:
             return []
 
-        per_page_limit = max(1, min(500, self.settings.own_followers_scan_limit))
+        per_page_limit = max(1, min(operations.USER_FOLLOWERS_MAX_LIMIT, self.settings.own_followers_scan_limit))
         cursor: str | None = None
         seen_cursors: set[str] = set()
         collected: dict[str, dict[str, object]] = {}
@@ -457,6 +457,13 @@ class GraphSyncService:
     def _assert_result_ok(result: GraphQLResult, *, task_name: str) -> None:
         if result.status_code == 200 and not result.has_errors:
             return
+        error_messages = [item.message.strip() for item in result.errors if item.message.strip()]
+        detail = ""
+        if error_messages:
+            preview = "; ".join(error_messages[:2])
+            if len(error_messages) > 2:
+                preview = f"{preview} (+{len(error_messages) - 2} more)"
+            detail = f" message={preview!r}"
         raise RuntimeError(
-            f"{task_name} failed: status={result.status_code} errors={len(result.errors)}"
+            f"{task_name} failed: status={result.status_code} errors={len(result.errors)}{detail}"
         )
