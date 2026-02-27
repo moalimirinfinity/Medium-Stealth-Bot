@@ -222,6 +222,11 @@ def _render_daily_run(outcome: DailyRunOutcome) -> None:
         summary_table.add_row("Session Elapsed (s)", str(round(outcome.session_elapsed_seconds, 3)))
         summary_table.add_row("Session Stop Reason", outcome.session_stop_reason or "-")
         summary_table.add_row("Session Target Follows", str(outcome.session_target_follow_attempts or "-"))
+        session_min_follows = outcome.kpis.get("session_target_follow_attempts_min")
+        summary_table.add_row(
+            "Session Min Follows",
+            str(int(session_min_follows)) if isinstance(session_min_follows, (int, float)) else "-",
+        )
         summary_table.add_row("Session Target Duration (m)", str(outcome.session_target_duration_minutes or "-"))
     summary_table.add_row(
         "Candidates Considered / Eligible",
@@ -836,6 +841,13 @@ def setup_command(
             type=int,
         )
     )
+    live_session_min_follow_attempts = int(
+        typer.prompt(
+            "Live session minimum follow attempts (soft floor)",
+            default=settings.live_session_min_follow_attempts,
+            type=int,
+        )
+    )
     live_session_max_passes = int(
         typer.prompt(
             "Live session max passes",
@@ -877,6 +889,52 @@ def setup_command(
         "Enable pre-follow clap?",
         default=settings.enable_pre_follow_clap,
     )
+    max_mutations_per_10_minutes = int(
+        typer.prompt(
+            "Max mutations per 10 minutes",
+            default=settings.max_mutations_per_10_minutes,
+            type=int,
+        )
+    )
+    min_verify_gap_seconds = int(
+        typer.prompt(
+            "Min verify/read gap seconds",
+            default=settings.min_verify_gap_seconds,
+            type=int,
+        )
+    )
+    max_verify_gap_seconds = int(
+        typer.prompt(
+            "Max verify/read gap seconds",
+            default=settings.max_verify_gap_seconds,
+            type=int,
+        )
+    )
+    pass_cooldown_min_seconds = int(
+        typer.prompt(
+            "Pass cooldown min seconds",
+            default=settings.pass_cooldown_min_seconds,
+            type=int,
+        )
+    )
+    pass_cooldown_max_seconds = int(
+        typer.prompt(
+            "Pass cooldown max seconds",
+            default=settings.pass_cooldown_max_seconds,
+            type=int,
+        )
+    )
+    pacing_soft_degrade_cooldown_seconds = int(
+        typer.prompt(
+            "Soft-degrade cooldown seconds",
+            default=settings.pacing_soft_degrade_cooldown_seconds,
+            type=int,
+        )
+    )
+    enable_pacing_auto_clamp = typer.confirm(
+        "Enable pacing auto-clamp?",
+        default=settings.enable_pacing_auto_clamp,
+    )
     cleanup_unfollow_limit = int(
         typer.prompt(
             "Cleanup unfollow limit per run",
@@ -900,6 +958,9 @@ def setup_command(
         "MAX_FOLLOW_ACTIONS_PER_RUN": str(max_follow_per_run),
         "LIVE_SESSION_DURATION_MINUTES": str(max(1, live_session_duration_minutes)),
         "LIVE_SESSION_TARGET_FOLLOW_ATTEMPTS": str(max(1, live_session_target_follow_attempts)),
+        "LIVE_SESSION_MIN_FOLLOW_ATTEMPTS": str(
+            min(max(1, live_session_min_follow_attempts), max(1, live_session_target_follow_attempts))
+        ),
         "LIVE_SESSION_MAX_PASSES": str(max(1, live_session_max_passes)),
         "FOLLOW_CANDIDATE_LIMIT": str(follow_candidate_limit),
         "FOLLOW_COOLDOWN_HOURS": str(follow_cooldown_hours),
@@ -908,6 +969,13 @@ def setup_command(
         "DISCOVERY_SECOND_HOP_SEED_LIMIT": str(second_hop_seed_limit),
         "DISCOVERY_SEED_USERS": seed_users_raw,
         "ENABLE_PRE_FOLLOW_CLAP": "true" if enable_pre_follow_clap else "false",
+        "MAX_MUTATIONS_PER_10_MINUTES": str(max(1, max_mutations_per_10_minutes)),
+        "MIN_VERIFY_GAP_SECONDS": str(max(0, min_verify_gap_seconds)),
+        "MAX_VERIFY_GAP_SECONDS": str(max(max(0, min_verify_gap_seconds), max(0, max_verify_gap_seconds))),
+        "PASS_COOLDOWN_MIN_SECONDS": str(max(0, pass_cooldown_min_seconds)),
+        "PASS_COOLDOWN_MAX_SECONDS": str(max(max(0, pass_cooldown_min_seconds), max(0, pass_cooldown_max_seconds))),
+        "PACING_SOFT_DEGRADE_COOLDOWN_SECONDS": str(max(0, pacing_soft_degrade_cooldown_seconds)),
+        "ENABLE_PACING_AUTO_CLAMP": "true" if enable_pacing_auto_clamp else "false",
         "CLEANUP_UNFOLLOW_LIMIT": str(cleanup_unfollow_limit),
         "CLEANUP_UNFOLLOW_WHITELIST_MIN_FOLLOWERS": str(max(0, cleanup_unfollow_whitelist_min_followers)),
     }
@@ -955,7 +1023,15 @@ def _render_start_menu(
     seed_user_refs: list[str] | None,
     live_session_minutes: int,
     live_session_target_follows: int,
+    live_session_min_follows: int,
     live_session_max_passes: int,
+    max_mutations_per_10_minutes: int,
+    min_verify_gap_seconds: int,
+    max_verify_gap_seconds: int,
+    pass_cooldown_min_seconds: int,
+    pass_cooldown_max_seconds: int,
+    pacing_soft_degrade_cooldown_seconds: int,
+    enable_pacing_auto_clamp: bool,
     reconcile_limit: int,
     reconcile_page_size: int,
     cleanup_unfollow_limit: int,
@@ -976,7 +1052,13 @@ def _render_start_menu(
     defaults.add_row("Seed Users", _seed_refs_summary(seed_user_refs))
     defaults.add_row("Live Session Duration (m)", str(live_session_minutes))
     defaults.add_row("Live Session Target Follows", str(live_session_target_follows))
+    defaults.add_row("Live Session Min Follows", str(live_session_min_follows))
     defaults.add_row("Live Session Max Passes", str(live_session_max_passes))
+    defaults.add_row("Max Mutations / 10m", str(max_mutations_per_10_minutes))
+    defaults.add_row("Verify Gap (s)", f"{min_verify_gap_seconds}-{max_verify_gap_seconds}")
+    defaults.add_row("Pass Cooldown (s)", f"{pass_cooldown_min_seconds}-{pass_cooldown_max_seconds}")
+    defaults.add_row("Soft-Degrade Cooldown (s)", str(pacing_soft_degrade_cooldown_seconds))
+    defaults.add_row("Pacing Auto-Clamp", "true" if enable_pacing_auto_clamp else "false")
     defaults.add_row("Cleanup Limit", str(cleanup_unfollow_limit))
     defaults.add_row("Cleanup Whitelist Followers >=", str(cleanup_whitelist_min_followers))
     defaults.add_row("Reconcile Limit", str(reconcile_limit))
@@ -1015,7 +1097,15 @@ def _run_start_menu(
     initial_seed_user_refs: list[str] | None,
     initial_live_session_minutes: int,
     initial_live_session_target_follows: int,
+    initial_live_session_min_follows: int,
     initial_live_session_max_passes: int,
+    initial_max_mutations_per_10_minutes: int,
+    initial_min_verify_gap_seconds: int,
+    initial_max_verify_gap_seconds: int,
+    initial_pass_cooldown_min_seconds: int,
+    initial_pass_cooldown_max_seconds: int,
+    initial_pacing_soft_degrade_cooldown_seconds: int,
+    initial_enable_pacing_auto_clamp: bool,
     initial_reconcile_limit: int,
     initial_reconcile_page_size: int,
     initial_cleanup_unfollow_limit: int,
@@ -1027,7 +1117,15 @@ def _run_start_menu(
     seed_user_refs = _normalize_seed_user_refs(initial_seed_user_refs)
     live_session_minutes = max(1, initial_live_session_minutes)
     live_session_target_follows = max(1, initial_live_session_target_follows)
+    live_session_min_follows = max(1, initial_live_session_min_follows)
     live_session_max_passes = max(1, initial_live_session_max_passes)
+    max_mutations_per_10_minutes = max(1, initial_max_mutations_per_10_minutes)
+    min_verify_gap_seconds = max(0, initial_min_verify_gap_seconds)
+    max_verify_gap_seconds = max(min_verify_gap_seconds, initial_max_verify_gap_seconds)
+    pass_cooldown_min_seconds = max(0, initial_pass_cooldown_min_seconds)
+    pass_cooldown_max_seconds = max(pass_cooldown_min_seconds, initial_pass_cooldown_max_seconds)
+    pacing_soft_degrade_cooldown_seconds = max(0, initial_pacing_soft_degrade_cooldown_seconds)
+    enable_pacing_auto_clamp = initial_enable_pacing_auto_clamp
     reconcile_limit = max(1, initial_reconcile_limit)
     reconcile_page_size = min(500, max(1, initial_reconcile_page_size))
     cleanup_unfollow_limit = max(1, initial_cleanup_unfollow_limit)
@@ -1039,13 +1137,23 @@ def _run_start_menu(
 
     while True:
         settings = _bootstrap_settings()
+        if live_session_min_follows > live_session_target_follows:
+            live_session_min_follows = live_session_target_follows
         _render_start_menu(
             has_session=settings.has_session,
             tag_slug=tag_slug,
             seed_user_refs=seed_user_refs,
             live_session_minutes=live_session_minutes,
             live_session_target_follows=live_session_target_follows,
+            live_session_min_follows=live_session_min_follows,
             live_session_max_passes=live_session_max_passes,
+            max_mutations_per_10_minutes=max_mutations_per_10_minutes,
+            min_verify_gap_seconds=min_verify_gap_seconds,
+            max_verify_gap_seconds=max_verify_gap_seconds,
+            pass_cooldown_min_seconds=pass_cooldown_min_seconds,
+            pass_cooldown_max_seconds=pass_cooldown_max_seconds,
+            pacing_soft_degrade_cooldown_seconds=pacing_soft_degrade_cooldown_seconds,
+            enable_pacing_auto_clamp=enable_pacing_auto_clamp,
             reconcile_limit=reconcile_limit,
             reconcile_page_size=reconcile_page_size,
             cleanup_unfollow_limit=cleanup_unfollow_limit,
@@ -1236,6 +1344,18 @@ def _run_start_menu(
             else:
                 live_session_target_follows = session_target_value
 
+            session_min_value = int(
+                typer.prompt(
+                    "Default live session minimum follows (soft floor)",
+                    default=live_session_min_follows,
+                    type=int,
+                )
+            )
+            if session_min_value < 1:
+                _print_notice("Live session minimum follows must be >= 1. Keeping previous value.", level="warning")
+            else:
+                live_session_min_follows = session_min_value
+
             session_pass_value = int(
                 typer.prompt(
                     "Default live session max passes",
@@ -1247,6 +1367,89 @@ def _run_start_menu(
                 _print_notice("Live session max passes must be >= 1. Keeping previous value.", level="warning")
             else:
                 live_session_max_passes = session_pass_value
+
+            mutation_cap_value = int(
+                typer.prompt(
+                    "Default max mutations per 10 minutes",
+                    default=max_mutations_per_10_minutes,
+                    type=int,
+                )
+            )
+            if mutation_cap_value < 1:
+                _print_notice("Mutation cap must be >= 1. Keeping previous value.", level="warning")
+            else:
+                max_mutations_per_10_minutes = mutation_cap_value
+
+            verify_min_value = int(
+                typer.prompt(
+                    "Default min verify/read gap seconds",
+                    default=min_verify_gap_seconds,
+                    type=int,
+                )
+            )
+            if verify_min_value < 0:
+                _print_notice("Verify gap minimum must be >= 0. Keeping previous value.", level="warning")
+            else:
+                min_verify_gap_seconds = verify_min_value
+
+            verify_max_value = int(
+                typer.prompt(
+                    "Default max verify/read gap seconds",
+                    default=max_verify_gap_seconds,
+                    type=int,
+                )
+            )
+            if verify_max_value < min_verify_gap_seconds:
+                _print_notice(
+                    "Verify gap maximum must be >= minimum. Keeping previous value.",
+                    level="warning",
+                )
+            else:
+                max_verify_gap_seconds = verify_max_value
+
+            pass_cooldown_min_value = int(
+                typer.prompt(
+                    "Default pass cooldown min seconds",
+                    default=pass_cooldown_min_seconds,
+                    type=int,
+                )
+            )
+            if pass_cooldown_min_value < 0:
+                _print_notice("Pass cooldown minimum must be >= 0. Keeping previous value.", level="warning")
+            else:
+                pass_cooldown_min_seconds = pass_cooldown_min_value
+
+            pass_cooldown_max_value = int(
+                typer.prompt(
+                    "Default pass cooldown max seconds",
+                    default=pass_cooldown_max_seconds,
+                    type=int,
+                )
+            )
+            if pass_cooldown_max_value < pass_cooldown_min_seconds:
+                _print_notice(
+                    "Pass cooldown maximum must be >= minimum. Keeping previous value.",
+                    level="warning",
+                )
+            else:
+                pass_cooldown_max_seconds = pass_cooldown_max_value
+
+            soft_degrade_value = int(
+                typer.prompt(
+                    "Default soft-degrade cooldown seconds",
+                    default=pacing_soft_degrade_cooldown_seconds,
+                    type=int,
+                )
+            )
+            if soft_degrade_value < 0:
+                _print_notice("Soft-degrade cooldown must be >= 0. Keeping previous value.", level="warning")
+            else:
+                pacing_soft_degrade_cooldown_seconds = soft_degrade_value
+
+            enable_pacing_auto_clamp = typer.confirm(
+                "Enable pacing auto-clamp by default?",
+                default=enable_pacing_auto_clamp,
+            )
 
             cleanup_limit_value = int(
                 typer.prompt(
@@ -1310,7 +1513,15 @@ def _run_start_menu(
             seed_user_refs = seed_user_refs or refreshed_settings.discovery_seed_users
             live_session_minutes = refreshed_settings.live_session_duration_minutes
             live_session_target_follows = refreshed_settings.live_session_target_follow_attempts
+            live_session_min_follows = refreshed_settings.live_session_min_follow_attempts
             live_session_max_passes = refreshed_settings.live_session_max_passes
+            max_mutations_per_10_minutes = refreshed_settings.max_mutations_per_10_minutes
+            min_verify_gap_seconds = refreshed_settings.min_verify_gap_seconds
+            max_verify_gap_seconds = refreshed_settings.max_verify_gap_seconds
+            pass_cooldown_min_seconds = refreshed_settings.pass_cooldown_min_seconds
+            pass_cooldown_max_seconds = refreshed_settings.pass_cooldown_max_seconds
+            pacing_soft_degrade_cooldown_seconds = refreshed_settings.pacing_soft_degrade_cooldown_seconds
+            enable_pacing_auto_clamp = refreshed_settings.enable_pacing_auto_clamp
             cleanup_unfollow_limit = max(1, refreshed_settings.cleanup_unfollow_limit)
             cleanup_whitelist_min_followers = max(0, refreshed_settings.cleanup_unfollow_whitelist_min_followers)
             if not newsletter_slug:
@@ -1366,7 +1577,15 @@ def start_command(
             initial_seed_user_refs=resolved_seeds,
             initial_live_session_minutes=settings.live_session_duration_minutes,
             initial_live_session_target_follows=settings.live_session_target_follow_attempts,
+            initial_live_session_min_follows=settings.live_session_min_follow_attempts,
             initial_live_session_max_passes=settings.live_session_max_passes,
+            initial_max_mutations_per_10_minutes=settings.max_mutations_per_10_minutes,
+            initial_min_verify_gap_seconds=settings.min_verify_gap_seconds,
+            initial_max_verify_gap_seconds=settings.max_verify_gap_seconds,
+            initial_pass_cooldown_min_seconds=settings.pass_cooldown_min_seconds,
+            initial_pass_cooldown_max_seconds=settings.pass_cooldown_max_seconds,
+            initial_pacing_soft_degrade_cooldown_seconds=settings.pacing_soft_degrade_cooldown_seconds,
+            initial_enable_pacing_auto_clamp=settings.enable_pacing_auto_clamp,
             initial_reconcile_limit=settings.reconcile_scan_limit,
             initial_reconcile_page_size=settings.reconcile_page_size,
             initial_cleanup_unfollow_limit=max(1, settings.cleanup_unfollow_limit),
@@ -1407,7 +1626,7 @@ def probe_command(
     ),
 ) -> None:
     """
-    Execute parallel read-only GraphQL probes for the given tag.
+    Execute paced read-only GraphQL probes for the given tag.
     """
     settings = _bootstrap_settings()
     _require_session(settings)
@@ -1574,10 +1793,15 @@ def run_command(
                     if live_session_enabled:
                         resolved_session_minutes = session_minutes or settings.live_session_duration_minutes
                         resolved_target_follows = target_follows or settings.live_session_target_follow_attempts
+                        resolved_min_follows = min(
+                            settings.live_session_min_follow_attempts,
+                            resolved_target_follows,
+                        )
                         resolved_session_max_passes = session_max_passes or settings.live_session_max_passes
                         _print_notice(
                             "Live session targets: "
                             f"duration={resolved_session_minutes}m, "
+                            f"follow_attempts_min={resolved_min_follows}, "
                             f"follow_attempts={resolved_target_follows}, "
                             f"max_passes={resolved_session_max_passes}.",
                             level="info",
