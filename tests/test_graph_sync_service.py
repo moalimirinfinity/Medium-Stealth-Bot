@@ -133,3 +133,58 @@ def test_graph_sync_assert_result_ok_includes_error_message() -> None:
 
     with pytest.raises(RuntimeError, match="paging.limit"):
         GraphSyncService._assert_result_ok(result, task_name="graph_sync_followers_graphql")
+
+
+def test_graph_sync_following_scrape_empty_uses_cached_ids(tmp_path: Path, monkeypatch) -> None:
+    repository = _build_repository(tmp_path)
+    seed_run = repository.begin_graph_sync_run(mode="manual", source_path="seed")
+    repository.replace_own_following_snapshot(
+        [{"user_id": "cached-a", "username": "cached_user"}],
+        run_id=seed_run,
+    )
+    repository.complete_graph_sync_run(seed_run, status="success")
+
+    settings = AppSettings(
+        _env_file=None,
+        MEDIUM_SESSION="sid=fake",
+        GRAPH_SYNC_ENABLE_GRAPHQL_FOLLOWING=False,
+        GRAPH_SYNC_ENABLE_SCRAPE_FALLBACK=True,
+    )
+    service = GraphSyncService(settings=settings, client=object(), repository=repository)
+
+    async def fake_scrape_empty() -> list[dict[str, object]]:
+        return []
+
+    monkeypatch.setattr(service, "_fetch_following_rows_scrape", fake_scrape_empty)
+
+    rows, source = asyncio.run(service._fetch_following_rows())
+
+    assert source == "scrape_cached"
+    assert rows == [{"user_id": "cached-a"}]
+
+
+def test_graph_sync_following_scrape_retries_then_uses_rows(tmp_path: Path, monkeypatch) -> None:
+    repository = _build_repository(tmp_path)
+    settings = AppSettings(
+        _env_file=None,
+        MEDIUM_SESSION="sid=fake",
+        GRAPH_SYNC_ENABLE_GRAPHQL_FOLLOWING=False,
+        GRAPH_SYNC_ENABLE_SCRAPE_FALLBACK=True,
+    )
+    service = GraphSyncService(settings=settings, client=object(), repository=repository)
+
+    calls = {"count": 0}
+
+    async def fake_scrape_flaky() -> list[dict[str, object]]:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return []
+        return [{"user_id": "fresh-a", "username": "fresh_user"}]
+
+    monkeypatch.setattr(service, "_fetch_following_rows_scrape", fake_scrape_flaky)
+
+    rows, source = asyncio.run(service._fetch_following_rows())
+
+    assert calls["count"] == 2
+    assert source == "scrape"
+    assert rows == [{"user_id": "fresh-a", "username": "fresh_user"}]
