@@ -221,7 +221,25 @@ class GraphSyncService:
                     )
         if not self.settings.graph_sync_enable_scrape_fallback:
             raise RuntimeError("no_following_source_available")
-        rows = await self._fetch_following_rows_scrape()
+        max_attempts = 2
+        rows: list[dict[str, object]] = []
+        for attempt in range(1, max_attempts + 1):
+            rows = await self._fetch_following_rows_scrape()
+            if rows:
+                return rows, "scrape"
+            self.log.warning(
+                "graph_sync_following_scrape_empty",
+                attempt=attempt,
+                max_attempts=max_attempts,
+            )
+
+        cached_ids = sorted(self.repository.cached_own_following_ids())
+        if cached_ids:
+            self.log.warning(
+                "graph_sync_following_scrape_empty_using_cached_snapshot",
+                cached_count=len(cached_ids),
+            )
+            return [{"user_id": user_id} for user_id in cached_ids], "scrape_cached"
         return rows, "scrape"
 
     def _supported_graphql_following_operation_name(self) -> str | None:
