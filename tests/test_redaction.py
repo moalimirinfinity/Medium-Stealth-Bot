@@ -18,3 +18,9 @@ def test_redact_payload_masks_cookie_value_patterns() -> None:
     sanitized = redact_payload(payload)
     assert "abc123" not in sanitized["message"]
     assert "xyz" not in sanitized["message"]
+
+
+def test_redact_payload_preserves_numeric_session_named_metrics() -> None:
+    payload = {"kpis": {"timing_session_warmup_seconds_total": 1.25}}
+    sanitized = redact_payload(payload)
+    assert sanitized["kpis"]["timing_session_warmup_seconds_total"] == 1.25
