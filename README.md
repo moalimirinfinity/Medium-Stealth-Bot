@@ -86,6 +86,8 @@ uv run bot run --tag programming --single-cycle
 uv run bot run --dry-run --tag programming
 uv run bot cleanup --dry-run
 uv run bot cleanup --live --limit 50
+uv run bot sync --live
+uv run bot sync --dry-run
 uv run bot reconcile --limit 200 --page-size 50
 uv run bot reconcile --dry-run --limit 200 --page-size 50
 uv run bot probe --tag programming
@@ -131,6 +133,7 @@ You can copy a Cookie header from browser DevTools Network tab for a signed-in `
 | 15 | Config | Run setup wizard | Launches setup wizard to write/update runtime defaults in `.env`. |
 | 16 | Auth | Refresh auth session | Runs interactive auth capture and updates session values in `.env`. |
 | 17 | System | Exit | Exits the interactive start menu. |
+| 18 | Maintenance | Sync social graph cache | Refreshes local followers/following cache and imports unknown-timestamp following rows into cleanup tracking. |
 
 ## Safety and Guardrails
 
@@ -141,6 +144,8 @@ You can copy a Cookie header from browser DevTools Network tab for a signed-in `
 - Pacing soft-degrade can temporarily suspend mutations while keeping read paths active.
 - Cleanup keeps high-follower accounts when `CLEANUP_UNFOLLOW_WHITELIST_MIN_FOLLOWERS` threshold is met.
 - Cleanup treats missing follow timestamps as overdue by default (so legacy rows are not stuck pending forever).
+- Cleanup unfollow pacing uses a dedicated short gap range (`CLEANUP_UNFOLLOW_MIN_GAP_SECONDS` to `CLEANUP_UNFOLLOW_MAX_GAP_SECONDS`).
+- Options 2-8 can auto-sync cached social graph state before action execution using freshness-window controls.
 - Live can halt on:
   - challenge detections/status codes
   - session-expiry/auth failure signatures
@@ -171,6 +176,15 @@ Start from `.env.example` and tune:
   - `UNFOLLOW_NONRECIPROCAL_AFTER_DAYS`
   - `CLEANUP_UNFOLLOW_LIMIT`
   - `CLEANUP_UNFOLLOW_WHITELIST_MIN_FOLLOWERS`
+  - `CLEANUP_UNFOLLOW_MIN_GAP_SECONDS`
+  - `CLEANUP_UNFOLLOW_MAX_GAP_SECONDS`
+- graph sync:
+  - `GRAPH_SYNC_AUTO_ENABLED`
+  - `GRAPH_SYNC_FRESHNESS_WINDOW_MINUTES`
+  - `GRAPH_SYNC_FULL_PAGINATION`
+  - `GRAPH_SYNC_ENABLE_GRAPHQL_FOLLOWING`
+  - `GRAPH_SYNC_ENABLE_SCRAPE_FALLBACK`
+  - `GRAPH_SYNC_SCRAPE_PAGE_TIMEOUT_SECONDS`
 - pacing:
   - `MIN_READ_WAIT_SECONDS`
   - `MIN_VERIFY_GAP_SECONDS`
