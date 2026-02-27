@@ -117,13 +117,22 @@ class HumanTimingController:
         self._verify_gap_seconds_total += delay
         return delay
 
-    async def sleep_action_gap(self) -> float:
+    async def sleep_action_gap(
+        self,
+        *,
+        min_gap_seconds: float | None = None,
+        max_gap_seconds: float | None = None,
+    ) -> float:
         now = self._now()
+        min_gap = float(self.settings.min_action_gap_seconds if min_gap_seconds is None else max(0.0, min_gap_seconds))
+        max_gap = float(self.settings.max_action_gap_seconds if max_gap_seconds is None else max(0.0, max_gap_seconds))
+        if max_gap < min_gap:
+            max_gap = min_gap
         required_gap = 0.0
         if self._last_action_started_at is not None:
             sampled_gap = self._sample_delay(
-                low=float(self.settings.min_action_gap_seconds),
-                high=float(self.settings.max_action_gap_seconds),
+                low=min_gap,
+                high=max_gap,
             )
             elapsed = max(0.0, now - self._last_action_started_at)
             required_gap = max(0.0, sampled_gap - elapsed)
