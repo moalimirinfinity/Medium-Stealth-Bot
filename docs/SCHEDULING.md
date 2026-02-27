@@ -74,3 +74,14 @@ Disable:
 1. `.data/scheduler/` receives timestamped run logs.
 2. Each run produces a run artifact in `.data/runs/`.
 3. `uv run bot status` reports healthy/degraded with expected mode.
+
+## Troubleshooting Quick Checks
+
+1. Scheduler not running:
+   - confirm lock file is not stale: `.data/scheduler/run_daily_live.lock`
+   - confirm `OPERATOR_KILL_SWITCH=false`
+2. Runs execute but maintenance data is stale:
+   - run `uv run bot sync --live --force` manually
+3. Runs fail preflight:
+   - rerun `uv run bot profile-validate --env-path .env.production`
+   - rerun `uv run bot contracts --tag programming --no-execute-reads`

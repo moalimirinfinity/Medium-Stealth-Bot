@@ -46,3 +46,8 @@
    - `user_unfollow`
 2. Count `user_follow` only when `UserViewerEdge.user.viewerEdge.isFollowing == true`.
 3. Never treat newsletter unsubscribe as full user unfollow.
+
+## Runtime Alignment
+
+- Reconcile and cleanup workflows should always read canonical `user_follow` state from verification operations or trusted cache+verification flow.
+- Reporting should keep newsletter and user-follow metrics separate to avoid false growth/unfollow signals.

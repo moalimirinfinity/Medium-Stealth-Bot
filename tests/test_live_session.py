@@ -135,6 +135,44 @@ def test_live_session_no_action_progress_runs_until_max_passes(tmp_path: Path, m
     assert outcome.session_stop_reason == "max_passes_reached"
 
 
+def test_live_session_respects_configured_max_passes_cap(tmp_path: Path, monkeypatch) -> None:
+    settings = AppSettings(
+        _env_file=None,
+        MEDIUM_SESSION="sid=fake",
+        MEDIUM_USER_REF="actor-user-id",
+        LIVE_SESSION_DURATION_MINUTES=60,
+        LIVE_SESSION_TARGET_FOLLOW_ATTEMPTS=100,
+        LIVE_SESSION_MIN_FOLLOW_ATTEMPTS=1,
+        LIVE_SESSION_MAX_PASSES=2,
+        MAX_FOLLOW_ACTIONS_PER_RUN=10,
+        PASS_COOLDOWN_MIN_SECONDS=0,
+        PASS_COOLDOWN_MAX_SECONDS=0,
+        PACING_SOFT_DEGRADE_COOLDOWN_SECONDS=0,
+    )
+    database = Database(tmp_path / "live-session-pass-cap.db")
+    database.initialize()
+    repository = ActionRepository(database)
+    runner = DailyRunner(settings=settings, client=StubClient(), repository=repository)
+
+    actions_today = 0
+
+    async def fake_run_daily_cycle(*, tag_slug: str, dry_run: bool, seed_user_refs):
+        nonlocal actions_today
+        assert dry_run is False
+        assert tag_slug == "programming"
+        follows = max(0, int(runner._session_follow_cap_override or 0))
+        actions_today += follows
+        return _cycle_outcome(actions_today=actions_today, follow_attempted=follows, follow_verified=follows)
+
+    monkeypatch.setattr(runner, "run_daily_cycle", fake_run_daily_cycle)
+    outcome = asyncio.run(runner.run_live_session(tag_slug="programming", seed_user_refs=None))
+
+    assert outcome.session_passes == 2
+    assert outcome.session_stop_reason == "max_passes_reached"
+    assert outcome.follow_actions_attempted == 20
+    assert outcome.follow_actions_attempted < 100
+
+
 def test_live_session_hard_cap_is_never_exceeded(tmp_path: Path, monkeypatch) -> None:
     settings = AppSettings(
         _env_file=None,

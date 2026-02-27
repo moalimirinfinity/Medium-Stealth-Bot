@@ -55,3 +55,14 @@ If any halt/failure trend appears after promotion:
 1. set `OPERATOR_KILL_SWITCH=true`
 2. pause scheduler
 3. return to Gate A after remediation
+
+## Evidence Template
+
+Use this per gate to keep promotion reviews consistent:
+
+- Gate:
+- Date (UTC):
+- Command/Run mode:
+- Artifact path(s):
+- Status summary:
+- Notes/Anomalies:

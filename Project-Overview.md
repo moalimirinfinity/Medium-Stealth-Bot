@@ -168,6 +168,18 @@ Hard-stop triggers:
 - `uv run bot artifacts validate [--path <artifact>]`
 - `uv run bot status`
 
+### Start Menu Grouping
+
+When you run `uv run bot start`, options are grouped and ordered as:
+
+- `1-4`: execution
+- `5-9`: maintenance
+- `10-12`: diagnostics
+- `13-14`: observability
+- `15-16`: config
+- `17`: auth
+- `18`: system/exit
+
 ## 8. Operational Contracts
 
 1. UTC day boundary is mandatory for budget accounting.

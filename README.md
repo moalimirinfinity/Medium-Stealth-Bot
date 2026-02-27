@@ -152,6 +152,18 @@ You can copy a Cookie header from browser DevTools Network tab for a signed-in `
 | 17 | Auth | Refresh auth session | Runs interactive auth capture and updates session values in `.env`. |
 | 18 | System | Exit | Exits the interactive start menu. |
 
+### Start Menu Group Index
+
+| Group | Options | Purpose |
+| --- | --- | --- |
+| Execution | `1-4` | Run live/dry cycles and preflight+live session flow. |
+| Maintenance | `5-9` | Cleanup, reconcile, and full social-graph sync. |
+| Diagnostics | `10-12` | Probe reads and validate contracts (with optional live read checks). |
+| Observability | `13-14` | Inspect latest run state and artifact schema. |
+| Config | `15-16` | Edit defaults and run setup wizard. |
+| Auth | `17` | Refresh session credentials. |
+| System | `18` | Exit menu. |
+
 ## Safety and Guardrails
 
 - UTC day-boundary policy for all daily budgets.

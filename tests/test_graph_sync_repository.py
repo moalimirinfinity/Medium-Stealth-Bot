@@ -114,3 +114,71 @@ def test_imported_following_rows_become_pending_follow_cycle(tmp_path: Path) -> 
         assert new_row["followed_at"] == ""
         assert new_row["follow_source"] == "imported_following_cache"
         assert new_row["cleanup_status"] == "pending"
+
+
+def test_upsert_users_from_social_caches_merges_followers_and_following(tmp_path: Path) -> None:
+    database = Database(tmp_path / "graph-sync-users.db")
+    database.initialize()
+    repository = ActionRepository(database)
+
+    run_id = repository.begin_graph_sync_run(mode="manual")
+    repository.replace_own_followers_snapshot(
+        [
+            {
+                "user_id": "u1",
+                "username": "user1",
+                "name": "User One",
+                "follower_count": 11,
+                "following_count": 3,
+            },
+            {
+                "user_id": "u2",
+                "username": "user2",
+                "name": "User Two",
+                "follower_count": 20,
+                "following_count": 4,
+            },
+        ],
+        run_id=run_id,
+    )
+    repository.replace_own_following_snapshot(
+        [
+            {
+                "user_id": "u2",
+                "username": "user2-updated",
+                "name": "User Two Updated",
+                "follower_count": 21,
+                "following_count": 5,
+            },
+            {
+                "user_id": "u3",
+                "username": "user3",
+                "name": "User Three",
+                "follower_count": 7,
+                "following_count": 8,
+            },
+        ],
+        run_id=run_id,
+    )
+
+    upserted = repository.upsert_users_from_social_caches()
+    assert upserted >= 3
+
+    with database.connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT user_id, username, name, follower_count, following_count
+            FROM users
+            ORDER BY user_id
+            """
+        ).fetchall()
+        assert [row["user_id"] for row in rows] == ["u1", "u2", "u3"]
+        assert rows[0]["username"] == "user1"
+        assert rows[0]["name"] == "User One"
+        assert rows[0]["follower_count"] == 11
+        assert rows[0]["following_count"] == 3
+        # u2 exists in both caches; data should be present and non-empty.
+        assert rows[1]["username"] in {"user2", "user2-updated"}
+        assert rows[1]["name"] in {"User Two", "User Two Updated"}
+        assert isinstance(rows[1]["follower_count"], int)
+        assert isinstance(rows[1]["following_count"], int)

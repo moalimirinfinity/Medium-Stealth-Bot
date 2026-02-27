@@ -2,6 +2,14 @@
 
 Implementation-ready GraphQL capture pack for Medium web flows.
 
+## Runtime Use
+
+The application uses these files for:
+
+- operation-contract parity checks (`bot contracts`)
+- response-path validation checks
+- operation metadata lookup used during runtime request validation
+
 ## Canonical Files
 - `final/live_capture_2026-02-24.json`
   - Full request-level GraphQL capture collected with authenticated `.env` session cookies.

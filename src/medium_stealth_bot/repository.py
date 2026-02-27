@@ -126,20 +126,46 @@ class ActionRepository:
         user_id: str,
         *,
         username: str | None = None,
+        name: str | None = None,
+        follower_count: int | None = None,
+        following_count: int | None = None,
         newsletter_id: str | None = None,
         bio: str | None = None,
     ) -> None:
         query = """
-        INSERT INTO users (user_id, username, newsletter_id, bio, last_scraped_at)
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        INSERT INTO users (
+            user_id,
+            username,
+            name,
+            follower_count,
+            following_count,
+            newsletter_id,
+            bio,
+            last_scraped_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(user_id) DO UPDATE SET
             username = COALESCE(excluded.username, users.username),
+            name = COALESCE(excluded.name, users.name),
+            follower_count = COALESCE(excluded.follower_count, users.follower_count),
+            following_count = COALESCE(excluded.following_count, users.following_count),
             newsletter_id = COALESCE(excluded.newsletter_id, users.newsletter_id),
             bio = COALESCE(excluded.bio, users.bio),
             last_scraped_at = CURRENT_TIMESTAMP
         """
         with self.database.connect() as connection:
-            connection.execute(query, (user_id, username, newsletter_id, bio))
+            connection.execute(
+                query,
+                (
+                    user_id,
+                    username,
+                    name,
+                    follower_count,
+                    following_count,
+                    newsletter_id,
+                    bio,
+                ),
+            )
             connection.commit()
 
     def begin_graph_sync_run(
@@ -338,6 +364,47 @@ class ActionRepository:
             rows=rows,
             run_id=run_id,
         )
+
+    def upsert_users_from_social_caches(self) -> int:
+        query = """
+        INSERT INTO users (
+            user_id,
+            username,
+            name,
+            follower_count,
+            following_count,
+            last_scraped_at
+        )
+        SELECT
+            merged.user_id,
+            merged.username,
+            merged.name,
+            merged.follower_count,
+            merged.following_count,
+            CURRENT_TIMESTAMP
+        FROM (
+            SELECT user_id, username, name, follower_count, following_count
+            FROM own_followers_cache
+            UNION ALL
+            SELECT user_id, username, name, follower_count, following_count
+            FROM own_following_cache
+        ) AS merged
+        WHERE merged.user_id IS NOT NULL
+          AND TRIM(merged.user_id) != ''
+        ON CONFLICT(user_id) DO UPDATE SET
+            username = COALESCE(excluded.username, users.username),
+            name = COALESCE(excluded.name, users.name),
+            follower_count = COALESCE(excluded.follower_count, users.follower_count),
+            following_count = COALESCE(excluded.following_count, users.following_count),
+            last_scraped_at = CURRENT_TIMESTAMP
+        """
+        with self.database.connect() as connection:
+            connection.execute(query)
+            row = connection.execute("SELECT changes() AS count").fetchone()
+            connection.commit()
+            if row is None:
+                return 0
+            return int(row["count"])
 
     def cached_own_follower_ids(self) -> set[str]:
         query = "SELECT user_id FROM own_followers_cache"
@@ -582,6 +649,18 @@ class ActionRepository:
         query = """
         UPDATE follow_cycle
         SET cleanup_status = 'kept_whitelist',
+            last_checked_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = ?
+        """
+        with self.database.connect() as connection:
+            connection.execute(query, (user_id,))
+            connection.commit()
+
+    def mark_cleanup_skipped(self, user_id: str) -> None:
+        query = """
+        UPDATE follow_cycle
+        SET cleanup_status = 'skipped',
             last_checked_at = CURRENT_TIMESTAMP,
             updated_at = CURRENT_TIMESTAMP
         WHERE user_id = ?

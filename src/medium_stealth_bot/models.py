@@ -100,6 +100,7 @@ class GraphSyncOutcome(BaseModel):
     skip_reason: str | None = None
     followers_count: int = 0
     following_count: int = 0
+    users_upserted_count: int = 0
     imported_pending_count: int = 0
     source_path: str | None = None
     used_following_source: str | None = None

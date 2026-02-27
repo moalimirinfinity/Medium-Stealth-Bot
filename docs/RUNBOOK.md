@@ -1,5 +1,15 @@
 # Live Operations Runbook
 
+## Menu Quick Map (`uv run bot start`)
+
+Use these maintenance options from the interactive menu:
+
+- `5`: cleanup-only unfollow (live)
+- `6`: cleanup-only unfollow (dry-run)
+- `7`: reconcile follow states (live)
+- `8`: reconcile follow states (dry-run)
+- `9`: sync social graph cache
+
 ## Preflight Checklist
 
 1. `uv run bot profile-validate --env-path .env.production` passes.
@@ -27,6 +37,13 @@
 2. Confirm daily logs under `.data/scheduler/`.
 3. Review latest run daily via:
    - `uv run bot status`
+
+## Daily Operator Loop
+
+1. Preflight validate profile + contracts.
+2. Run `start --quick-live --dry-run-first` or scheduled runner.
+3. Check `bot status` + artifact validation.
+4. Run maintenance (`sync/reconcile/cleanup`) when needed.
 
 ## Maintenance SOP
 

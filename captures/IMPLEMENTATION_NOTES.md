@@ -72,6 +72,12 @@ Single request shape:
 4. Persist both `user_id` and `newsletter_v3_id` in storage.
 5. Validate outgoing operations against the registry contract before request execution.
 
+## Operational Implications
+
+- Reconcile accuracy depends on `UserViewerEdge` reliability.
+- Cleanup accuracy depends on separating subscription-state signals from true graph follow-state signals.
+- Graph sync and cache refresh should not infer user-follow state without explicit verify reads.
+
 ## Classification Taxonomy
 - `read`: no intended state change.
 - `mutation`: state-changing operation.

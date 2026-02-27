@@ -1,0 +1,3 @@
+ALTER TABLE users ADD COLUMN name TEXT;
+ALTER TABLE users ADD COLUMN follower_count INTEGER;
+ALTER TABLE users ADD COLUMN following_count INTEGER;

@@ -2,6 +2,12 @@
 
 Release flow is tag-driven and separate from normal quality checks.
 
+## Prerequisites
+
+1. Worktree is clean.
+2. Local tests and contract checks pass.
+3. Target version follows semantic versioning (`MAJOR.MINOR.PATCH`).
+
 ## Local One-Command Release
 
 ```bash
@@ -46,6 +52,12 @@ Workflow outputs:
 - builds `sdist` and `wheel` with `uv build`
 - generates `dist/SHA256SUMS.txt`
 - creates GitHub Release with generated notes and attached artifacts
+
+## Post-Release Checks
+
+1. Confirm release tag appears in repository tags and GitHub Releases.
+2. Confirm assets include wheel/sdist and checksums.
+3. Re-run quick smoke checks locally on the released tag if needed.
 
 ## Rollback of a Bad Release
 

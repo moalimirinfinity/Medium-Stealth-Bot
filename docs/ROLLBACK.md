@@ -19,6 +19,14 @@ Use this when a live rollout/regression must be reverted quickly.
 3. Sync dependencies:
    - `uv sync --group dev`
 
+Quick sequence:
+
+```bash
+git tag --sort=-v:refname
+git checkout <previous-tag>
+uv sync --group dev
+```
+
 ## Re-validate Before Resume
 
 1. `uv run bot profile-validate --env-path .env.production`

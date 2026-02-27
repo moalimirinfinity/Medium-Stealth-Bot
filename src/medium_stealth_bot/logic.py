@@ -302,8 +302,7 @@ class DailyRunner:
         resolved_duration_minutes = max(1, max_duration_minutes or self.settings.live_session_duration_minutes)
         configured_max_passes = max(1, max_passes or self.settings.live_session_max_passes)
         baseline_follow_cap = max(1, self.settings.max_follow_actions_per_run)
-        minimum_passes_for_target = max(1, (resolved_target_follows + baseline_follow_cap - 1) // baseline_follow_cap)
-        resolved_max_passes = max(configured_max_passes, minimum_passes_for_target)
+        resolved_max_passes = configured_max_passes
         max_duration_seconds = float(resolved_duration_minutes * 60)
 
         started_at = time.perf_counter()
@@ -721,67 +720,55 @@ class DailyRunner:
         not_following_count = 0
         unknown_count = 0
         decision_log: list[str] = []
-        seen_ids: set[str] = set()
+        rows = self._collect_reconciliation_worklist(max_users=max_users, page_size=page_size)
 
-        while scanned < max_users:
-            remaining = max_users - scanned
-            page_limit = min(page_size, remaining)
-            rows = self.repository.reconciliation_candidates_page(limit=page_limit, offset=0)
-            if not rows:
-                break
+        for row in rows:
+            self._assert_operator_not_stopped(task_name="reconcile_follow_states")
+            user_id = row.get("user_id")
+            if not isinstance(user_id, str) or not user_id:
+                continue
+            scanned += 1
+            username = row.get("username")
 
-            progress = False
-            for row in rows:
-                user_id = row.get("user_id")
-                if not isinstance(user_id, str) or not user_id or user_id in seen_ids:
-                    continue
-                seen_ids.add(user_id)
-                progress = True
-                scanned += 1
-                username = row.get("username")
+            result = await self._execute_with_retry(
+                "reconcile_user_viewer_edge",
+                operations.user_viewer_edge(user_id),
+            )
+            is_following = parse_user_viewer_is_following(result)
+            if is_following is True:
+                following_count += 1
+                decision_log.append(f"reconcile:following id={user_id}")
+                if not dry_run:
+                    self.repository.upsert_relationship_state(
+                        user_id,
+                        newsletter_state=NewsletterState.UNKNOWN,
+                        user_follow_state=UserFollowState.FOLLOWING,
+                        confidence=RelationshipConfidence.OBSERVED,
+                        source_operation="UserViewerEdge",
+                        verified_now=True,
+                    )
+                    self.repository.mark_candidate_reconciled(user_id, UserFollowState.FOLLOWING)
+                    updated += 1
+                continue
 
-                result = await self._execute_with_retry(
-                    "reconcile_user_viewer_edge",
-                    operations.user_viewer_edge(user_id),
-                )
-                is_following = parse_user_viewer_is_following(result)
-                if is_following is True:
-                    following_count += 1
-                    decision_log.append(f"reconcile:following id={user_id}")
-                    if not dry_run:
-                        self.repository.upsert_relationship_state(
-                            user_id,
-                            newsletter_state=NewsletterState.UNKNOWN,
-                            user_follow_state=UserFollowState.FOLLOWING,
-                            confidence=RelationshipConfidence.OBSERVED,
-                            source_operation="UserViewerEdge",
-                            verified_now=True,
-                        )
-                        self.repository.mark_candidate_reconciled(user_id, UserFollowState.FOLLOWING)
-                        updated += 1
-                    continue
+            if is_following is False:
+                not_following_count += 1
+                decision_log.append(f"reconcile:not_following id={user_id}")
+                if not dry_run:
+                    self.repository.upsert_relationship_state(
+                        user_id,
+                        newsletter_state=NewsletterState.UNKNOWN,
+                        user_follow_state=UserFollowState.NOT_FOLLOWING,
+                        confidence=RelationshipConfidence.OBSERVED,
+                        source_operation="UserViewerEdge",
+                        verified_now=True,
+                    )
+                    self.repository.mark_candidate_reconciled(user_id, UserFollowState.NOT_FOLLOWING)
+                    updated += 1
+                continue
 
-                if is_following is False:
-                    not_following_count += 1
-                    decision_log.append(f"reconcile:not_following id={user_id}")
-                    if not dry_run:
-                        self.repository.upsert_relationship_state(
-                            user_id,
-                            newsletter_state=NewsletterState.UNKNOWN,
-                            user_follow_state=UserFollowState.NOT_FOLLOWING,
-                            confidence=RelationshipConfidence.OBSERVED,
-                            source_operation="UserViewerEdge",
-                            verified_now=True,
-                        )
-                        self.repository.mark_candidate_reconciled(user_id, UserFollowState.NOT_FOLLOWING)
-                        updated += 1
-                    continue
-
-                unknown_count += 1
-                decision_log.append(f"reconcile:unknown id={user_id}")
-
-            if not progress:
-                break
+            unknown_count += 1
+            decision_log.append(f"reconcile:unknown id={user_id}")
 
         self.log.info(
             "reconcile_complete",
@@ -801,6 +788,39 @@ class DailyRunner:
             unknown_count=unknown_count,
             decision_log=decision_log,
         )
+
+    def _collect_reconciliation_worklist(
+        self,
+        *,
+        max_users: int,
+        page_size: int,
+    ) -> list[dict[str, str | None]]:
+        collected: list[dict[str, str | None]] = []
+        seen_ids: set[str] = set()
+        offset = 0
+        effective_page_size = max(1, page_size)
+
+        while len(collected) < max_users:
+            remaining = max_users - len(collected)
+            page_limit = min(effective_page_size, remaining)
+            rows = self.repository.reconciliation_candidates_page(limit=page_limit, offset=offset)
+            if not rows:
+                break
+
+            for row in rows:
+                user_id = row.get("user_id")
+                if not isinstance(user_id, str) or not user_id or user_id in seen_ids:
+                    continue
+                seen_ids.add(user_id)
+                collected.append(row)
+                if len(collected) >= max_users:
+                    break
+
+            offset += len(rows)
+            if len(rows) < page_limit:
+                break
+
+        return collected
 
     async def _execute_safe(self, task_name: str, operation) -> GraphQLResult:
         try:
@@ -1250,6 +1270,9 @@ class DailyRunner:
             self.repository.upsert_user_profile(
                 candidate.user_id,
                 username=candidate.username,
+                name=candidate.name,
+                follower_count=candidate.follower_count,
+                following_count=candidate.following_count,
                 newsletter_id=candidate.newsletter_v3_id,
                 bio=candidate.bio,
             )
@@ -1419,14 +1442,53 @@ class DailyRunner:
             return 0, 0
 
         self.repository.upsert_imported_follow_cycle_pending_from_following_cache()
-        due = self.repository.pending_nonreciprocal_candidates(
+        due_pool = self.repository.pending_nonreciprocal_candidates(
             grace_days=self.settings.unfollow_nonreciprocal_after_days,
-            limit=max_to_run,
+            limit=max(max_to_run, max_to_run * 5),
         )
-        if not due:
+        if not due_pool:
             return 0, 0
         if not self.settings.medium_user_ref:
             self.log.warning("cleanup_skipped_missing_medium_user_ref")
+            return 0, 0
+
+        own_following_ids = self.repository.cached_own_following_ids()
+        if not own_following_ids:
+            self.log.warning("cleanup_skipped_missing_following_cache")
+            return 0, 0
+
+        due: list[dict[str, str | None]] = []
+        for row in due_pool:
+            user_id = row["user_id"]
+            username = row.get("username")
+            if user_id in own_following_ids:
+                due.append(row)
+                if len(due) >= max_to_run:
+                    break
+                continue
+
+            decisions.append(
+                CandidateDecision(
+                    user_id=user_id,
+                    username=username,
+                    eligible=False,
+                    reason="cleanup:skip_not_in_following_cache",
+                )
+            )
+            if dry_run:
+                continue
+            self.repository.mark_cleanup_skipped(user_id)
+            self.repository.upsert_relationship_state(
+                user_id,
+                newsletter_state=NewsletterState.UNKNOWN,
+                user_follow_state=UserFollowState.NOT_FOLLOWING,
+                confidence=RelationshipConfidence.INFERRED,
+                source_operation="OwnFollowingCache",
+                verified_now=False,
+            )
+            self.repository.mark_candidate_reconciled(user_id, UserFollowState.NOT_FOLLOWING)
+
+        if not due:
             return 0, 0
 
         follower_ids = self.repository.cached_own_follower_ids()
@@ -1434,8 +1496,10 @@ class DailyRunner:
             follower_ids = await self._fetch_own_follower_ids(self.settings.own_followers_scan_limit)
         attempted = 0
         verified = 0
-        cleanup_min_gap_seconds = float(self.settings.cleanup_unfollow_min_gap_seconds)
-        cleanup_max_gap_seconds = float(self.settings.cleanup_unfollow_max_gap_seconds)
+        configured_min_gap = float(self.settings.cleanup_unfollow_min_gap_seconds)
+        configured_max_gap = float(self.settings.cleanup_unfollow_max_gap_seconds)
+        cleanup_min_gap_seconds = min(4.0, max(1.0, configured_min_gap))
+        cleanup_max_gap_seconds = min(4.0, max(cleanup_min_gap_seconds, configured_max_gap))
 
         for row in due:
             self._assert_operator_not_stopped(task_name="cleanup_pipeline")
@@ -1781,7 +1845,12 @@ class DailyRunner:
             return "success"
         if reason.startswith("dry_run:") or reason == "cleanup:dry_run_unfollow_nonreciprocal":
             return "planned"
-        if reason.startswith("skip:") or reason == "cleanup:kept_followed_back" or reason.startswith("cleanup:kept_whitelist"):
+        if (
+            reason.startswith("skip:")
+            or reason.startswith("cleanup:skip_")
+            or reason == "cleanup:kept_followed_back"
+            or reason.startswith("cleanup:kept_whitelist")
+        ):
             return "skipped"
         if "failed" in reason or "uncertain" in reason or "unavailable" in reason:
             return "failed"

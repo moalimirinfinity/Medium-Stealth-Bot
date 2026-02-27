@@ -17,7 +17,7 @@ def test_database_migrations_are_idempotent(tmp_path: Path) -> None:
 
         rows = connection.execute("SELECT version, checksum FROM schema_migrations ORDER BY version").fetchall()
         versions = [int(row[0]) for row in rows]
-        assert versions == [1, 2, 3, 4, 5]
+        assert versions == [1, 2, 3, 4, 5, 6]
 
         columns = {
             row[1]
@@ -25,5 +25,13 @@ def test_database_migrations_are_idempotent(tmp_path: Path) -> None:
         }
         assert "action_key" in columns
         assert "occurred_day_utc" in columns
+
+        user_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(users)").fetchall()
+        }
+        assert "name" in user_columns
+        assert "follower_count" in user_columns
+        assert "following_count" in user_columns
     finally:
         connection.close()

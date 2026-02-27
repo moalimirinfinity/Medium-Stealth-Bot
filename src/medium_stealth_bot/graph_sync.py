@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -12,7 +13,7 @@ from playwright.async_api import BrowserContext, Page, Response, async_playwrigh
 from medium_stealth_bot import operations
 from medium_stealth_bot.client import MediumAsyncClient, parse_cookie_header
 from medium_stealth_bot.contract_registry import load_operation_contract_registry
-from medium_stealth_bot.models import GraphQLOperation, GraphSyncOutcome, GraphQLResult
+from medium_stealth_bot.models import GraphQLError, GraphQLOperation, GraphSyncOutcome, GraphQLResult
 from medium_stealth_bot.repository import ActionRepository
 from medium_stealth_bot.settings import AppSettings
 from medium_stealth_bot.typed_payloads import UserNode, parse_user_followers_next_from, parse_user_followers_users
@@ -74,7 +75,7 @@ class GraphSyncService:
                 skip_reason="auto_sync_disabled",
             )
 
-        if not force and self._is_recent_success():
+        if mode == "auto" and not force and self._is_recent_success():
             return GraphSyncOutcome(
                 dry_run=dry_run,
                 mode=mode,
@@ -88,6 +89,7 @@ class GraphSyncService:
         )
         followers_count = 0
         following_count = 0
+        users_upserted_count = 0
         imported_pending_count = 0
         following_source = "unknown"
         error_message: str | None = None
@@ -99,6 +101,7 @@ class GraphSyncService:
 
             following_rows, following_source = await self._fetch_following_rows()
             following_count = self.repository.replace_own_following_snapshot(following_rows, run_id=run_id)
+            users_upserted_count = self.repository.upsert_users_from_social_caches()
 
             imported_pending_count = self.repository.upsert_imported_follow_cycle_pending_from_following_cache()
         except Exception as exc:  # noqa: BLE001
@@ -128,6 +131,7 @@ class GraphSyncService:
             run_id=run_id,
             followers_count=followers_count,
             following_count=following_count,
+            users_upserted_count=users_upserted_count,
             imported_pending_count=imported_pending_count,
             following_source=following_source,
             duration_ms=duration_ms,
@@ -139,6 +143,7 @@ class GraphSyncService:
             skipped=False,
             followers_count=followers_count,
             following_count=following_count,
+            users_upserted_count=users_upserted_count,
             imported_pending_count=imported_pending_count,
             source_path=str(self.settings.implementation_ops_registry_path),
             used_following_source=following_source,
@@ -183,12 +188,14 @@ class GraphSyncService:
         collected: dict[str, dict[str, object]] = {}
 
         while True:
-            result = await self.client.execute(
-                operations.user_followers(
-                    user_id=actor_user_id,
-                    limit=per_page_limit,
-                    paging_from=cursor,
-                )
+            operation = operations.user_followers(
+                user_id=actor_user_id,
+                limit=per_page_limit,
+                paging_from=cursor,
+            )
+            result = await self._execute_graphql_with_retry(
+                operation=operation,
+                task_name="graph_sync_followers_graphql",
             )
             self._assert_result_ok(result, task_name="graph_sync_followers_graphql")
             for node in parse_user_followers_users(result):
@@ -203,21 +210,29 @@ class GraphSyncService:
                 break
             seen_cursors.add(next_cursor)
             cursor = next_cursor
+            await asyncio.sleep(self._graph_sync_pagination_delay_seconds())
 
         return list(collected.values())
 
     async def _fetch_following_rows(self) -> tuple[list[dict[str, object]], str]:
         if self.settings.graph_sync_enable_graphql_following:
-            operation_name = self._supported_graphql_following_operation_name()
-            if operation_name:
+            for operation_name in self._following_operation_candidates():
                 try:
-                    rows = await self._fetch_following_rows_graphql(operation_name=operation_name)
-                    return rows, "graphql"
+                    rows, complete = await self._fetch_following_rows_graphql(operation_name=operation_name)
+                    if rows and not complete:
+                        rows = self._merge_rows_with_cached_ids(rows, self.repository.cached_own_following_ids())
+                    if rows:
+                        return rows, "graphql"
+                    self.log.warning(
+                        "graph_sync_following_graphql_empty",
+                        operation_name=operation_name,
+                    )
                 except Exception as exc:  # noqa: BLE001
                     self.log.warning(
                         "graph_sync_following_graphql_fallback",
                         operation_name=operation_name,
-                        error=str(exc),
+                        error_type=type(exc).__name__,
+                        error=self._summarize_exception(exc),
                     )
         if not self.settings.graph_sync_enable_scrape_fallback:
             raise RuntimeError("no_following_source_available")
@@ -226,6 +241,9 @@ class GraphSyncService:
         for attempt in range(1, max_attempts + 1):
             rows = await self._fetch_following_rows_scrape()
             if rows:
+                cached_ids = self.repository.cached_own_following_ids()
+                if cached_ids and len(rows) < len(cached_ids):
+                    rows = self._merge_rows_with_cached_ids(rows, cached_ids)
                 return rows, "scrape"
             self.log.warning(
                 "graph_sync_following_scrape_empty",
@@ -242,63 +260,188 @@ class GraphSyncService:
             return [{"user_id": user_id} for user_id in cached_ids], "scrape_cached"
         return rows, "scrape"
 
-    def _supported_graphql_following_operation_name(self) -> str | None:
+    def _following_operation_candidates(self) -> list[str]:
+        # Prefer operation names present in the local registry, but always keep
+        # stable defaults so following sync can run even when the registry lags.
+        candidates = ["UserFollowing", "UserFollowingQuery"]
         path = Path(self.settings.implementation_ops_registry_path)
         if not path.is_absolute():
             path = (Path(__file__).resolve().parents[2] / path).resolve()
         if not path.exists():
-            return None
+            return candidates
         try:
             registry = load_operation_contract_registry(path=path, strict=self.settings.contract_registry_strict)
         except Exception:
-            return None
-        candidates = ("UserFollowing", "UserFollowingQuery")
+            return candidates
+
+        ordered: list[str] = []
         available = registry.registry.operation_map()
         for name in candidates:
             if name in available:
-                return name
-        return None
+                ordered.append(name)
+        for name in candidates:
+            if name not in ordered:
+                ordered.append(name)
+        return ordered
 
-    async def _fetch_following_rows_graphql(self, *, operation_name: str) -> list[dict[str, object]]:
+    async def _fetch_following_rows_graphql(self, *, operation_name: str) -> tuple[list[dict[str, object]], bool]:
         actor_user_id = self.settings.medium_user_ref
         if not actor_user_id:
-            return []
+            return [], True
 
         per_page_limit = max(1, min(operations.USER_FOLLOWERS_MAX_LIMIT, self.settings.own_followers_scan_limit))
         cursor: str | None = None
         seen_cursors: set[str] = set()
         collected: dict[str, dict[str, object]] = {}
-
-        while True:
-            operation = GraphQLOperation(
-                operationName=operation_name,
-                query=_FOLLOWING_QUERY,
-                variables={
-                    "id": actor_user_id,
-                    "username": None,
-                    "paging": {
-                        "limit": per_page_limit,
-                        "from": cursor or "",
-                    },
-                },
+        complete = True
+        registry = getattr(self.client, "_contract_registry", None)
+        restore_strict: bool | None = None
+        if (
+            registry is not None
+            and bool(getattr(registry, "strict", True))
+            and operation_name not in registry.registry.operation_map()
+        ):
+            restore_strict = True
+            registry.strict = False
+            self.log.warning(
+                "graph_sync_unregistered_operation_non_strict",
+                operation_name=operation_name,
             )
-            result = await self.client.execute(operation)
-            self._assert_result_ok(result, task_name="graph_sync_following_graphql")
+        try:
+            while True:
+                operation = GraphQLOperation(
+                    operationName=operation_name,
+                    query=_FOLLOWING_QUERY,
+                    variables={
+                        "id": actor_user_id,
+                        "username": None,
+                        "paging": {
+                            "limit": per_page_limit,
+                            "from": cursor or "",
+                        },
+                    },
+                )
+                try:
+                    result = await self._execute_graphql_with_retry(
+                        operation=operation,
+                        task_name="graph_sync_following_graphql",
+                    )
+                    self._assert_result_ok(result, task_name="graph_sync_following_graphql")
+                except Exception as exc:
+                    if collected:
+                        complete = False
+                        self.log.warning(
+                            "graph_sync_following_graphql_partial_return",
+                            operation_name=operation_name,
+                            collected_count=len(collected),
+                            error_type=type(exc).__name__,
+                            error=self._summarize_exception(exc),
+                        )
+                        break
+                    raise
 
-            users, next_cursor = self._parse_following_users_and_next(result)
-            for payload in users:
-                row = self._row_from_payload_dict(payload)
-                if row is not None:
-                    collected[row["user_id"]] = row
+                users, next_cursor = self._parse_following_users_and_next(result)
+                for payload in users:
+                    row = self._row_from_payload_dict(payload)
+                    if row is not None:
+                        collected[row["user_id"]] = row
 
-            if not self.settings.graph_sync_full_pagination:
-                break
-            if not next_cursor or next_cursor in seen_cursors:
-                break
-            seen_cursors.add(next_cursor)
-            cursor = next_cursor
+                if not self.settings.graph_sync_full_pagination:
+                    break
+                if not next_cursor or next_cursor in seen_cursors:
+                    break
+                seen_cursors.add(next_cursor)
+                cursor = next_cursor
+                await asyncio.sleep(self._graph_sync_pagination_delay_seconds())
+        finally:
+            if restore_strict and registry is not None:
+                registry.strict = True
 
-        return list(collected.values())
+        return list(collected.values()), complete
+
+    async def _execute_graphql_with_retry(
+        self,
+        *,
+        operation: GraphQLOperation,
+        task_name: str,
+        max_attempts: int = 5,
+    ) -> GraphQLResult:
+        retryable_statuses = {0, 408, 425, 429, 500, 502, 503, 504}
+        attempt = 1
+        while True:
+            try:
+                result = await self.client.execute(operation)
+            except Exception as exc:  # noqa: BLE001
+                error_text = self._summarize_exception(exc, max_length=400)
+                result = GraphQLResult(
+                    operationName=operation.operation_name,
+                    statusCode=0,
+                    data=None,
+                    errors=[GraphQLError(message=error_text)],
+                    raw={
+                        "exception_type": type(exc).__name__,
+                        "exception": error_text,
+                    },
+                )
+            if result.status_code == 200 and not result.has_errors:
+                return result
+
+            retryable = result.status_code in retryable_statuses
+            if not retryable or attempt >= max_attempts:
+                return result
+
+            delay_seconds = min(16.0, float(2 ** (attempt - 1)))
+            self.log.warning(
+                "graph_sync_retry_scheduled",
+                task_name=task_name,
+                operation_name=operation.operation_name,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                status_code=result.status_code,
+                error_count=len(result.errors),
+                delay_seconds=delay_seconds,
+            )
+            await asyncio.sleep(delay_seconds)
+            attempt += 1
+
+    @staticmethod
+    def _graph_sync_pagination_delay_seconds() -> float:
+        # Keep page fetches conservative to reduce 429 bursts on larger follow graphs.
+        return random.uniform(0.8, 1.4)
+
+    def _merge_rows_with_cached_ids(
+        self,
+        rows: list[dict[str, object]],
+        cached_ids: set[str],
+    ) -> list[dict[str, object]]:
+        merged: dict[str, dict[str, object]] = {}
+        for row in rows:
+            user_id = str(row.get("user_id") or "").strip()
+            if not user_id:
+                continue
+            merged[user_id] = row
+        for user_id in sorted(cached_ids):
+            if user_id not in merged:
+                merged[user_id] = {"user_id": user_id}
+        if cached_ids and len(merged) > len(rows):
+            self.log.warning(
+                "graph_sync_following_graphql_merged_with_cache",
+                graphql_count=len(rows),
+                cached_count=len(cached_ids),
+                merged_count=len(merged),
+            )
+        return list(merged.values())
+
+    @staticmethod
+    def _summarize_exception(exc: Exception, *, max_length: int = 240) -> str:
+        normalized = " ".join(str(exc).split())
+        if "Call log:" in normalized:
+            normalized = normalized.split("Call log:", 1)[0].strip()
+        if not normalized:
+            return type(exc).__name__
+        if len(normalized) > max_length:
+            return f"{normalized[: max_length - 3]}..."
+        return normalized
 
     @staticmethod
     def _parse_following_users_and_next(result: GraphQLResult) -> tuple[list[dict[str, Any]], str | None]:
