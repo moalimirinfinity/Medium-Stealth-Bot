@@ -1,8 +1,11 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from medium_stealth_bot.database import Database
 from medium_stealth_bot.graph_sync import GraphSyncService
+from medium_stealth_bot.models import GraphQLError, GraphQLResult
 from medium_stealth_bot.repository import ActionRepository
 from medium_stealth_bot.settings import AppSettings
 
@@ -78,3 +81,55 @@ def test_graph_sync_service_force_bypasses_freshness(tmp_path: Path, monkeypatch
     assert outcome.used_following_source == "graphql"
     assert repository.cached_own_follower_ids() == {"f1"}
     assert repository.cached_own_following_ids() == {"g1"}
+
+
+def test_graph_sync_following_graphql_clamps_page_limit(tmp_path: Path) -> None:
+    repository = _build_repository(tmp_path)
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.limits: list[int] = []
+
+        async def execute(self, operation):
+            self.limits.append(int(operation.variables["paging"]["limit"]))
+            return GraphQLResult(
+                operationName=operation.operation_name,
+                statusCode=200,
+                data={
+                    "userResult": {
+                        "followingUserConnection": {
+                            "users": [{"id": "u1", "username": "user1"}],
+                            "pagingInfo": {"next": None},
+                        }
+                    }
+                },
+                errors=[],
+                raw={},
+            )
+
+    fake_client = FakeClient()
+    settings = AppSettings(
+        _env_file=None,
+        MEDIUM_SESSION="sid=fake",
+        MEDIUM_USER_REF="actor-id",
+        OWN_FOLLOWERS_SCAN_LIMIT=200,
+    )
+    service = GraphSyncService(settings=settings, client=fake_client, repository=repository)
+
+    rows = asyncio.run(service._fetch_following_rows_graphql(operation_name="UserFollowing"))
+
+    assert len(rows) == 1
+    assert fake_client.limits == [25]
+
+
+def test_graph_sync_assert_result_ok_includes_error_message() -> None:
+    result = GraphQLResult(
+        operationName="UserFollowers",
+        statusCode=200,
+        data=None,
+        errors=[GraphQLError(message='Variable "paging.limit" invalid')],
+        raw={},
+    )
+
+    with pytest.raises(RuntimeError, match="paging.limit"):
+        GraphSyncService._assert_result_ok(result, task_name="graph_sync_followers_graphql")
