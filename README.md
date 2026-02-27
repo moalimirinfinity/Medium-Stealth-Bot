@@ -114,7 +114,7 @@ You can copy a Cookie header from browser DevTools Network tab for a signed-in `
 
 | Option | Group | Action | What it does |
 | --- | --- | --- | --- |
-| 1 | Execution | Run live growth session (multi-cycle) | Runs repeated live cycles until session targets are hit (`LIVE_SESSION_DURATION_MINUTES`, `LIVE_SESSION_TARGET_FOLLOW_ATTEMPTS`, `LIVE_SESSION_MAX_PASSES`). |
+| 1 | Execution | Run live growth session (multi-cycle) | Runs repeated live cycles until session pacing targets are hit (`LIVE_SESSION_DURATION_MINUTES`, `LIVE_SESSION_TARGET_FOLLOW_ATTEMPTS`, `LIVE_SESSION_MIN_FOLLOW_ATTEMPTS`, `LIVE_SESSION_MAX_PASSES`). |
 | 2 | Execution | Run live growth cycle (single pass) | Runs one live cycle only (discovery, scoring, follow, cleanup). |
 | 3 | Execution | Run growth cycle (dry-run) | Preview-only cycle with no live mutations. |
 | 4 | Execution | Run dry-run preflight then live growth session | Executes option 3 first, then option 1 if preflight completes. |
@@ -127,7 +127,7 @@ You can copy a Cookie header from browser DevTools Network tab for a signed-in `
 | 11 | Diagnostics | Validate contracts + execute live read checks | Runs option 10 plus live read/state checks against Medium. |
 | 12 | Observability | Show latest run status | Displays health and summary from the latest run artifact. |
 | 13 | Observability | Validate latest run artifact schema | Validates latest run artifact JSON schema/shape. |
-| 14 | Config | Edit defaults | Edits menu defaults (tag, seed users, session targets, cleanup/reconcile defaults, newsletter defaults). |
+| 14 | Config | Edit defaults | Edits menu defaults (tag, seed users, session targets, pacing defaults, cleanup/reconcile defaults, newsletter defaults). |
 | 15 | Config | Run setup wizard | Launches setup wizard to write/update runtime defaults in `.env`. |
 | 16 | Auth | Refresh auth session | Runs interactive auth capture and updates session values in `.env`. |
 | 17 | System | Exit | Exits the interactive start menu. |
@@ -137,6 +137,8 @@ You can copy a Cookie header from browser DevTools Network tab for a signed-in `
 - UTC day-boundary policy for all daily budgets.
 - `MEDIUM_USER_REF` must be a Medium `user_id` (not `@username`).
 - Safety behavior is operator-configurable in `.env`.
+- Live session pacing supports a hard follow cap + soft follow floor envelope.
+- Pacing soft-degrade can temporarily suspend mutations while keeping read paths active.
 - Cleanup keeps high-follower accounts when `CLEANUP_UNFOLLOW_WHITELIST_MIN_FOLLOWERS` threshold is met.
 - Cleanup treats missing follow timestamps as overdue by default (so legacy rows are not stuck pending forever).
 - Live can halt on:
@@ -159,6 +161,7 @@ Start from `.env.example` and tune:
   - `MAX_ACTIONS_PER_DAY`
   - `LIVE_SESSION_DURATION_MINUTES`
   - `LIVE_SESSION_TARGET_FOLLOW_ATTEMPTS`
+  - `LIVE_SESSION_MIN_FOLLOW_ATTEMPTS`
   - `LIVE_SESSION_MAX_PASSES`
   - `MAX_FOLLOW_ACTIONS_PER_RUN`
   - `MAX_SUBSCRIBE_ACTIONS_PER_DAY`
@@ -170,7 +173,15 @@ Start from `.env.example` and tune:
   - `CLEANUP_UNFOLLOW_WHITELIST_MIN_FOLLOWERS`
 - pacing:
   - `MIN_READ_WAIT_SECONDS`
+  - `MIN_VERIFY_GAP_SECONDS`
+  - `MAX_VERIFY_GAP_SECONDS`
   - `MIN_ACTION_GAP_SECONDS`
+  - `MAX_ACTION_GAP_SECONDS`
+  - `MAX_MUTATIONS_PER_10_MINUTES`
+  - `PASS_COOLDOWN_MIN_SECONDS`
+  - `PASS_COOLDOWN_MAX_SECONDS`
+  - `PACING_SOFT_DEGRADE_COOLDOWN_SECONDS`
+  - `ENABLE_PACING_AUTO_CLAMP`
 - safety:
   - `RISK_HALT_CONSECUTIVE_FAILURES`
   - `RISK_HALT_MODE`
