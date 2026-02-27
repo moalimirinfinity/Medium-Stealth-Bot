@@ -1,4 +1,5 @@
 import asyncio
+import math
 import random
 import re
 import time
@@ -56,47 +57,32 @@ class DailyRunner:
         self.log = structlog.get_logger(__name__)
         self.risk_guard = RiskGuard(settings=settings, log=self.log)
         self.timing = HumanTimingController(settings=settings)
+        self._in_live_session = False
+        self._session_follow_cap_override: int | None = None
+        self._session_mutations_enabled_override: bool | None = None
+        self._mutations_suspended_until_monotonic = 0.0
+        self._normalize_pacing_configuration()
 
     async def probe(self, tag_slug: str = "programming") -> ProbeSnapshot:
         self._assert_operator_not_stopped(task_name="probe")
         await self._maybe_sleep_session_warmup()
         started = datetime.now(timezone.utc)
         start_time = time.perf_counter()
-
-        task_map: dict[str, asyncio.Task[GraphQLResult]] = {
-            "base_cache": asyncio.create_task(self._execute_with_retry("base_cache", operations.use_base_cache_control())),
-            "topic_latest_stories": asyncio.create_task(
-                self._execute_with_retry("topic_latest_stories", operations.topic_latest_stories(tag_slug))
-            ),
-            "topic_who_to_follow": asyncio.create_task(
-                self._execute_with_retry(
-                    "topic_who_to_follow",
-                    operations.topic_who_to_follow_publishers(tag_slug=tag_slug, first=5),
-                )
-            ),
-            "who_to_follow_module": asyncio.create_task(
-                self._execute_with_retry("who_to_follow_module", operations.who_to_follow_module())
-            ),
-        }
-
+        read_operations: list[tuple[str, object]] = [
+            ("base_cache", operations.use_base_cache_control()),
+            ("topic_latest_stories", operations.topic_latest_stories(tag_slug)),
+            ("topic_who_to_follow", operations.topic_who_to_follow_publishers(tag_slug=tag_slug, first=5)),
+            ("who_to_follow_module", operations.who_to_follow_module()),
+        ]
         # MEDIUM_USER_REF contract is user_id-only, so this check is safe when set.
         if self.settings.medium_user_ref:
-            task_map["user_viewer_edge"] = asyncio.create_task(
-                self._execute_with_retry("user_viewer_edge", operations.user_viewer_edge(self.settings.medium_user_ref))
-            )
-
-        try:
-            resolved = await asyncio.gather(*task_map.values())
-        except Exception:
-            for task in task_map.values():
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*task_map.values(), return_exceptions=True)
-            raise
-        results = dict(zip(task_map.keys(), resolved, strict=True))
+            read_operations.append(("user_viewer_edge", operations.user_viewer_edge(self.settings.medium_user_ref)))
+        results: dict[str, GraphQLResult] = {}
+        for task_name, operation in read_operations:
+            results[task_name] = await self._execute_with_retry(task_name, operation)
 
         duration_ms = int((time.perf_counter() - start_time) * 1000)
-        self.log.info("probe_complete", tag_slug=tag_slug, duration_ms=duration_ms, task_count=len(task_map))
+        self.log.info("probe_complete", tag_slug=tag_slug, duration_ms=duration_ms, task_count=len(read_operations))
         return ProbeSnapshot(
             tag_slug=tag_slug,
             started_at=started,
@@ -112,6 +98,10 @@ class DailyRunner:
         seed_user_refs: list[str] | None = None,
     ) -> DailyRunOutcome:
         self._assert_operator_not_stopped(task_name="run_daily_cycle")
+        if not self._in_live_session:
+            self.timing.reset_session_state()
+            self.timing.reset_metrics()
+        self.timing.set_simulation_mode(dry_run)
         actions_today_start = self.repository.actions_today_utc(TRACKED_DAILY_ACTION_TYPES)
         max_actions = self.settings.max_actions_per_day
         action_counts = self.repository.action_counts_today_utc(TRACKED_DAILY_ACTION_TYPES)
@@ -159,12 +149,18 @@ class DailyRunner:
         source_candidate_counts = self._source_counts(candidates)
 
         remaining_budget = max(0, max_actions - actions_today_start)
+        follow_limit_for_cycle = self._resolved_follow_limit_for_cycle()
+        mutations_enabled = self._mutations_enabled_for_cycle(dry_run=dry_run)
+        if not mutations_enabled and not dry_run:
+            self.log.info("pacing_mutations_suspended_for_cycle")
         follow_slots = min(
-            self.settings.max_follow_actions_per_run,
+            follow_limit_for_cycle,
             remaining_budget,
             len(eligible),
             action_remaining[ACTION_SUBSCRIBE],
         )
+        if not mutations_enabled and not dry_run:
+            follow_slots = 0
         follow_attempted, follow_verified, clap_attempted, clap_verified, source_follow_verified_counts = (
             await self._execute_follow_pipeline(
                 eligible_candidates=eligible,
@@ -181,6 +177,8 @@ class DailyRunner:
         remaining_budget = max(0, remaining_budget - follow_attempted - clap_attempted)
 
         cleanup_cap = min(self.settings.cleanup_unfollow_limit, remaining_budget, action_remaining[ACTION_UNFOLLOW])
+        if not mutations_enabled and not dry_run:
+            cleanup_cap = 0
         cleanup_attempted, cleanup_verified = await self._execute_cleanup_pipeline(
             dry_run=dry_run,
             max_to_run=cleanup_cap,
@@ -207,6 +205,8 @@ class DailyRunner:
             clap_verified=clap_verified,
         )
         kpis.update(self.repository.follow_cycle_kpis())
+        kpis.update(self.timing.metrics_snapshot())
+        kpis["pacing_mutations_enabled"] = 1 if mutations_enabled else 0
         client_metrics = self.client.metrics_snapshot()
 
         self.log.info(
@@ -227,6 +227,8 @@ class DailyRunner:
             action_remaining=action_remaining,
             source_candidate_counts=source_candidate_counts,
             source_follow_verified_counts=source_follow_verified_counts,
+            follow_limit_for_cycle=follow_limit_for_cycle,
+            mutations_enabled=mutations_enabled,
             decision_reason_counts=decision_reason_counts,
             decision_result_counts=decision_result_counts,
             kpis=kpis,
@@ -274,16 +276,17 @@ class DailyRunner:
         self._assert_operator_not_stopped(task_name="run_live_session")
 
         resolved_target_follows = max(1, target_follow_attempts or self.settings.live_session_target_follow_attempts)
+        resolved_min_follows = max(1, self.settings.live_session_min_follow_attempts)
+        resolved_min_follows = min(resolved_min_follows, resolved_target_follows)
         resolved_duration_minutes = max(1, max_duration_minutes or self.settings.live_session_duration_minutes)
         configured_max_passes = max(1, max_passes or self.settings.live_session_max_passes)
-        per_pass_follow_cap = max(1, self.settings.max_follow_actions_per_run)
-        minimum_passes_for_target = max(1, (resolved_target_follows + per_pass_follow_cap - 1) // per_pass_follow_cap)
+        baseline_follow_cap = max(1, self.settings.max_follow_actions_per_run)
+        minimum_passes_for_target = max(1, (resolved_target_follows + baseline_follow_cap - 1) // baseline_follow_cap)
         resolved_max_passes = max(configured_max_passes, minimum_passes_for_target)
         max_duration_seconds = float(resolved_duration_minutes * 60)
 
         started_at = time.perf_counter()
         pass_count = 0
-        no_progress_passes = 0
         stop_reason: str | None = None
         last_outcome: DailyRunOutcome | None = None
 
@@ -300,81 +303,136 @@ class DailyRunner:
         total_reason_counts: dict[str, int] = {}
         total_result_counts: dict[str, int] = {}
         decision_log_sample: list[str] = []
+        pacing_degrade_events = 0
+        suspended_seconds_total = 0.0
+        prior_mutation_window_hits = self.timing.mutation_window_limit_hits
 
-        while pass_count < resolved_max_passes:
-            elapsed_before_pass = time.perf_counter() - started_at
-            if elapsed_before_pass >= max_duration_seconds:
-                stop_reason = "duration_reached"
-                break
-            if total_follow_attempted >= resolved_target_follows:
-                stop_reason = "follow_target_reached"
-                break
+        self.timing.reset_session_state()
+        self.timing.reset_metrics()
+        self.timing.set_simulation_mode(False)
+        self._mutations_suspended_until_monotonic = 0.0
+        self._in_live_session = True
+        try:
+            while pass_count < resolved_max_passes:
+                elapsed_before_pass = time.perf_counter() - started_at
+                if elapsed_before_pass >= max_duration_seconds:
+                    stop_reason = "duration_reached"
+                    break
+                if total_follow_attempted >= resolved_target_follows:
+                    stop_reason = "follow_target_reached"
+                    break
 
-            pass_count += 1
-            self.log.info(
-                "live_session_pass_start",
-                pass_index=pass_count,
-                target_follow_attempts=resolved_target_follows,
-                max_duration_minutes=resolved_duration_minutes,
-                max_passes=resolved_max_passes,
-                elapsed_seconds=round(elapsed_before_pass, 3),
-            )
-            outcome = await self.run_daily_cycle(
-                tag_slug=tag_slug,
-                dry_run=False,
-                seed_user_refs=seed_user_refs,
-            )
-            last_outcome = outcome
+                pass_count += 1
+                remaining_hard_target = max(0, resolved_target_follows - total_follow_attempted)
+                passes_remaining_including_current = max(1, resolved_max_passes - pass_count + 1)
+                remaining_soft_floor = max(0, resolved_min_follows - total_follow_attempted)
+                adaptive_floor_cap = (
+                    max(1, math.ceil(remaining_soft_floor / passes_remaining_including_current))
+                    if remaining_soft_floor > 0
+                    else 1
+                )
+                follow_cap_this_pass = min(
+                    remaining_hard_target,
+                    max(baseline_follow_cap, adaptive_floor_cap),
+                )
+                now_monotonic = time.monotonic()
+                mutations_enabled = now_monotonic >= self._mutations_suspended_until_monotonic
+                if not mutations_enabled:
+                    follow_cap_this_pass = 0
+                self._session_follow_cap_override = follow_cap_this_pass
+                self._session_mutations_enabled_override = mutations_enabled
+                self.log.info(
+                    "live_session_pass_start",
+                    pass_index=pass_count,
+                    target_follow_attempts=resolved_target_follows,
+                    target_follow_attempts_min=resolved_min_follows,
+                    max_duration_minutes=resolved_duration_minutes,
+                    max_passes=resolved_max_passes,
+                    elapsed_seconds=round(elapsed_before_pass, 3),
+                    follow_cap_this_pass=follow_cap_this_pass,
+                    mutations_enabled=mutations_enabled,
+                )
+                outcome = await self.run_daily_cycle(
+                    tag_slug=tag_slug,
+                    dry_run=False,
+                    seed_user_refs=seed_user_refs,
+                )
+                last_outcome = outcome
 
-            total_considered += outcome.considered_candidates
-            total_eligible += outcome.eligible_candidates
-            total_follow_attempted += outcome.follow_actions_attempted
-            total_follow_verified += outcome.follow_actions_verified
-            total_clap_attempted += outcome.clap_actions_attempted
-            total_clap_verified += outcome.clap_actions_verified
-            total_cleanup_attempted += outcome.cleanup_actions_attempted
-            total_cleanup_verified += outcome.cleanup_actions_verified
-            self._merge_int_counts(total_source_candidate_counts, outcome.source_candidate_counts)
-            self._merge_int_counts(total_source_follow_verified_counts, outcome.source_follow_verified_counts)
-            self._merge_int_counts(total_reason_counts, outcome.decision_reason_counts)
-            self._merge_int_counts(total_result_counts, outcome.decision_result_counts)
-            self._append_decision_log_sample(decision_log_sample, outcome.decision_log, max_size=120)
+                total_considered += outcome.considered_candidates
+                total_eligible += outcome.eligible_candidates
+                total_follow_attempted += outcome.follow_actions_attempted
+                total_follow_verified += outcome.follow_actions_verified
+                total_clap_attempted += outcome.clap_actions_attempted
+                total_clap_verified += outcome.clap_actions_verified
+                total_cleanup_attempted += outcome.cleanup_actions_attempted
+                total_cleanup_verified += outcome.cleanup_actions_verified
+                self._merge_int_counts(total_source_candidate_counts, outcome.source_candidate_counts)
+                self._merge_int_counts(total_source_follow_verified_counts, outcome.source_follow_verified_counts)
+                self._merge_int_counts(total_reason_counts, outcome.decision_reason_counts)
+                self._merge_int_counts(total_result_counts, outcome.decision_result_counts)
+                self._append_decision_log_sample(decision_log_sample, outcome.decision_log, max_size=120)
 
-            pass_activity = (
-                outcome.follow_actions_attempted
-                + outcome.clap_actions_attempted
-                + outcome.cleanup_actions_attempted
-            )
-            no_progress_passes = no_progress_passes + 1 if pass_activity == 0 else 0
+                elapsed_after_pass = time.perf_counter() - started_at
+                expected_upper = max(
+                    1,
+                    math.ceil((min(elapsed_after_pass, max_duration_seconds) / max_duration_seconds) * resolved_target_follows),
+                )
+                mutation_window_hits_now = self.timing.mutation_window_limit_hits
+                mutation_window_hit_delta = max(0, mutation_window_hits_now - prior_mutation_window_hits)
+                prior_mutation_window_hits = mutation_window_hits_now
+                should_soft_degrade = mutation_window_hit_delta > 0 or total_follow_attempted > expected_upper
+                if should_soft_degrade and self.settings.pacing_soft_degrade_cooldown_seconds > 0:
+                    now_for_degrade = time.monotonic()
+                    candidate_suspend_until = now_for_degrade + float(self.settings.pacing_soft_degrade_cooldown_seconds)
+                    if candidate_suspend_until > self._mutations_suspended_until_monotonic:
+                        added = candidate_suspend_until - max(now_for_degrade, self._mutations_suspended_until_monotonic)
+                        suspended_seconds_total += max(0.0, added)
+                        self._mutations_suspended_until_monotonic = candidate_suspend_until
+                    pacing_degrade_events += 1
+                    self.log.warning(
+                        "live_session_soft_degrade_activated",
+                        pass_index=pass_count,
+                        follow_attempted_total=total_follow_attempted,
+                        expected_upper=expected_upper,
+                        mutation_window_hit_delta=mutation_window_hit_delta,
+                        suspend_until_seconds=round(
+                            max(0.0, self._mutations_suspended_until_monotonic - now_for_degrade),
+                            3,
+                        ),
+                    )
 
-            elapsed_after_pass = time.perf_counter() - started_at
-            self.log.info(
-                "live_session_pass_complete",
-                pass_index=pass_count,
-                elapsed_seconds=round(elapsed_after_pass, 3),
-                follow_attempted_this_pass=outcome.follow_actions_attempted,
-                follow_attempted_total=total_follow_attempted,
-                follow_verified_total=total_follow_verified,
-                cleanup_attempted_this_pass=outcome.cleanup_actions_attempted,
-                cleanup_verified_total=total_cleanup_verified,
-                budget_exhausted=outcome.budget_exhausted,
-            )
+                self.log.info(
+                    "live_session_pass_complete",
+                    pass_index=pass_count,
+                    elapsed_seconds=round(elapsed_after_pass, 3),
+                    follow_attempted_this_pass=outcome.follow_actions_attempted,
+                    follow_attempted_total=total_follow_attempted,
+                    follow_verified_total=total_follow_verified,
+                    cleanup_attempted_this_pass=outcome.cleanup_actions_attempted,
+                    cleanup_verified_total=total_cleanup_verified,
+                    budget_exhausted=outcome.budget_exhausted,
+                )
 
-            if outcome.budget_exhausted:
-                stop_reason = "budget_exhausted"
-                break
-            if total_follow_attempted >= resolved_target_follows:
-                stop_reason = "follow_target_reached"
-                break
-            if elapsed_after_pass >= max_duration_seconds:
-                stop_reason = "duration_reached"
-                break
-            if no_progress_passes >= 2:
-                stop_reason = "no_action_progress"
-                break
+                if outcome.budget_exhausted:
+                    stop_reason = "budget_exhausted"
+                    break
+                if total_follow_attempted >= resolved_target_follows:
+                    stop_reason = "follow_target_reached"
+                    break
+                if elapsed_after_pass >= max_duration_seconds:
+                    stop_reason = "duration_reached"
+                    break
+                if pass_count < resolved_max_passes:
+                    await self._sleep_pass_cooldown()
 
-        if stop_reason is None:
-            stop_reason = "max_passes_reached"
+            if stop_reason is None:
+                stop_reason = "max_passes_reached"
+        finally:
+            self._in_live_session = False
+            self._session_follow_cap_override = None
+            self._session_mutations_enabled_override = None
+            self._mutations_suspended_until_monotonic = 0.0
 
         elapsed_total = round(time.perf_counter() - started_at, 3)
         if last_outcome is None:
@@ -404,9 +462,15 @@ class DailyRunner:
                     "session_passes": pass_count,
                     "session_elapsed_seconds": elapsed_total,
                     "session_target_follow_attempts": resolved_target_follows,
+                    "session_target_follow_attempts_min": resolved_min_follows,
                     "session_target_duration_minutes": resolved_duration_minutes,
+                    "session_soft_floor_met": 0,
+                    "session_soft_floor_remaining": resolved_min_follows,
+                    "session_pacing_degrade_events": pacing_degrade_events,
+                    "session_mutation_suspended_seconds_total": round(suspended_seconds_total, 3),
                 }
             )
+            kpis.update(self.timing.metrics_snapshot())
             return DailyRunOutcome(
                 budget_exhausted=actions_today >= self.settings.max_actions_per_day,
                 actions_today=actions_today,
@@ -439,9 +503,15 @@ class DailyRunner:
                 "session_passes": pass_count,
                 "session_elapsed_seconds": elapsed_total,
                 "session_target_follow_attempts": resolved_target_follows,
+                "session_target_follow_attempts_min": resolved_min_follows,
                 "session_target_duration_minutes": resolved_duration_minutes,
+                "session_soft_floor_met": 1 if total_follow_attempted >= resolved_min_follows else 0,
+                "session_soft_floor_remaining": max(0, resolved_min_follows - total_follow_attempted),
+                "session_pacing_degrade_events": pacing_degrade_events,
+                "session_mutation_suspended_seconds_total": round(suspended_seconds_total, 3),
             }
         )
+        kpis.update(self.timing.metrics_snapshot())
 
         aggregated_outcome = DailyRunOutcome(
             budget_exhausted=last_outcome.budget_exhausted,
@@ -481,8 +551,10 @@ class DailyRunner:
             stop_reason=stop_reason,
             follow_attempted=total_follow_attempted,
             follow_verified=total_follow_verified,
+            follow_target_min=resolved_min_follows,
             cleanup_attempted=total_cleanup_attempted,
             cleanup_verified=total_cleanup_verified,
+            session_pacing_degrade_events=pacing_degrade_events,
             action_counts=aggregated_outcome.action_counts_today,
             action_limits=aggregated_outcome.action_limits_per_day,
             action_remaining=aggregated_outcome.action_remaining_per_day,
@@ -496,6 +568,9 @@ class DailyRunner:
         max_unfollows: int | None = None,
     ) -> DailyRunOutcome:
         self._assert_operator_not_stopped(task_name="run_cleanup_only")
+        self.timing.reset_session_state()
+        self.timing.reset_metrics()
+        self.timing.set_simulation_mode(dry_run)
 
         actions_today_start = self.repository.actions_today_utc(TRACKED_DAILY_ACTION_TYPES)
         max_actions = self.settings.max_actions_per_day
@@ -536,6 +611,9 @@ class DailyRunner:
             remaining_budget,
             action_remaining[ACTION_UNFOLLOW],
         )
+        mutations_enabled = self._mutations_enabled_for_cycle(dry_run=dry_run)
+        if not mutations_enabled and not dry_run:
+            cleanup_cap = 0
 
         cleanup_attempted, cleanup_verified = await self._execute_cleanup_pipeline(
             dry_run=dry_run,
@@ -563,6 +641,8 @@ class DailyRunner:
             clap_verified=0,
         )
         kpis.update(self.repository.follow_cycle_kpis())
+        kpis.update(self.timing.metrics_snapshot())
+        kpis["pacing_mutations_enabled"] = 1 if mutations_enabled else 0
         client_metrics = self.client.metrics_snapshot()
 
         self.log.info(
@@ -575,6 +655,7 @@ class DailyRunner:
             action_counts=action_counts,
             action_limits=action_limits,
             action_remaining=action_remaining,
+            mutations_enabled=mutations_enabled,
             decision_reason_counts=decision_reason_counts,
             decision_result_counts=decision_result_counts,
             kpis=kpis,
@@ -610,6 +691,9 @@ class DailyRunner:
         page_size: int,
     ) -> ReconcileOutcome:
         self._assert_operator_not_stopped(task_name="reconcile_follow_states")
+        self.timing.reset_session_state()
+        self.timing.reset_metrics()
+        self.timing.set_simulation_mode(dry_run)
         scanned = 0
         updated = 0
         following_count = 0
@@ -714,6 +798,8 @@ class DailyRunner:
         target_id = self._operation_target_id(operation)
         attempt = 0
         while True:
+            if not self._is_mutation_task(task_name):
+                await self._sleep_verify_gap(task_name=task_name, target_id=target_id)
             result = await self._execute_safe(task_name, operation)
             retryable = self._is_retryable_result(result)
             final_attempt = attempt >= max_retries or not retryable
@@ -752,6 +838,12 @@ class DailyRunner:
             )
             await asyncio.sleep(delay)
             attempt += 1
+
+    @staticmethod
+    def _is_mutation_task(task_name: str) -> bool:
+        lowered = task_name.lower()
+        mutation_tokens = ("mutation", "subscribe", "unfollow", "clap")
+        return any(token in lowered for token in mutation_tokens)
 
     def _retry_budget_for_task(self, task_name: str) -> int:
         lowered = task_name.lower()
@@ -1124,6 +1216,8 @@ class DailyRunner:
                 if self.settings.enable_pre_follow_clap and clap_budget_remaining > 0:
                     clap_budget_remaining -= 1
                     clap_attempted += 1
+                    await self._sleep_action_gap(action_type=ACTION_CLAP, target_user_id=candidate.user_id)
+                await self._sleep_action_gap(action_type=ACTION_SUBSCRIBE, target_user_id=candidate.user_id)
                 self._append_decision(
                     decisions,
                     candidate,
@@ -1362,6 +1456,7 @@ class DailyRunner:
 
             attempted += 1
             if dry_run:
+                await self._sleep_action_gap(action_type=ACTION_UNFOLLOW, target_user_id=user_id)
                 decisions.append(
                     CandidateDecision(
                         user_id=user_id,
@@ -1463,6 +1558,62 @@ class DailyRunner:
         normalized = bio.lower()
         return [keyword for keyword in self.settings.bio_keywords if keyword in normalized]
 
+    def _resolved_follow_limit_for_cycle(self) -> int:
+        raw_limit = (
+            self.settings.max_follow_actions_per_run
+            if self._session_follow_cap_override is None
+            else self._session_follow_cap_override
+        )
+        return max(0, int(raw_limit))
+
+    def _mutations_enabled_for_cycle(self, *, dry_run: bool) -> bool:
+        if dry_run:
+            return True
+        if self._session_mutations_enabled_override is None:
+            return True
+        return self._session_mutations_enabled_override
+
+    def _normalize_pacing_configuration(self) -> None:
+        if not self.settings.enable_pacing_auto_clamp:
+            return
+        adjustments: dict[str, dict[str, int]] = {}
+
+        def _clamp_int(name: str, current: int, maximum: int) -> int:
+            if current <= maximum:
+                return current
+            adjustments[name] = {"from": current, "to": maximum}
+            return maximum
+
+        min_follows = self.settings.live_session_min_follow_attempts
+        target_follows = self.settings.live_session_target_follow_attempts
+        if min_follows > target_follows:
+            adjustments["LIVE_SESSION_MIN_FOLLOW_ATTEMPTS"] = {"from": min_follows, "to": target_follows}
+            self.settings.live_session_min_follow_attempts = target_follows
+
+        follow_per_run = self.settings.max_follow_actions_per_run
+        self.settings.max_follow_actions_per_run = _clamp_int(
+            "MAX_FOLLOW_ACTIONS_PER_RUN",
+            follow_per_run,
+            self.settings.live_session_target_follow_attempts,
+        )
+
+        session_duration = max(1, self.settings.live_session_duration_minutes)
+        follow_hard_cap = max(1, self.settings.live_session_target_follow_attempts)
+        follows_per_10 = max(1, math.ceil(follow_hard_cap / max(1.0, session_duration / 10.0)))
+        derived_mutation_cap = max(1, follows_per_10 * 2 + 4)
+        self.settings.max_mutations_per_10_minutes = _clamp_int(
+            "MAX_MUTATIONS_PER_10_MINUTES",
+            self.settings.max_mutations_per_10_minutes,
+            derived_mutation_cap,
+        )
+        if adjustments:
+            self.log.warning(
+                "pacing_config_autoclamp_applied",
+                adjustments=adjustments,
+                duration_minutes=self.settings.live_session_duration_minutes,
+                target_follow_attempts=self.settings.live_session_target_follow_attempts,
+            )
+
     async def _sleep_action_gap(self, *, action_type: str, target_user_id: str) -> None:
         delay = await self.timing.sleep_action_gap()
         if delay <= 0:
@@ -1474,6 +1625,7 @@ class DailyRunner:
             delay_seconds=round(delay, 3),
             min_gap_seconds=self.settings.min_action_gap_seconds,
             max_gap_seconds=self.settings.max_action_gap_seconds,
+            max_mutations_per_10_minutes=self.settings.max_mutations_per_10_minutes,
         )
 
     async def _sleep_read_delay(self, *, target_user_id: str) -> None:
@@ -1486,6 +1638,30 @@ class DailyRunner:
             delay_seconds=round(delay, 3),
             min_read_wait_seconds=self.settings.min_read_wait_seconds,
             max_read_wait_seconds=self.settings.max_read_wait_seconds,
+        )
+
+    async def _sleep_verify_gap(self, *, task_name: str, target_id: str | None) -> None:
+        delay = await self.timing.sleep_verify_gap()
+        if delay <= 0:
+            return
+        self.log.info(
+            "verify_gap_sleep",
+            operation=task_name,
+            target_id=target_id,
+            delay_seconds=round(delay, 3),
+            min_verify_gap_seconds=self.settings.min_verify_gap_seconds,
+            max_verify_gap_seconds=self.settings.max_verify_gap_seconds,
+        )
+
+    async def _sleep_pass_cooldown(self) -> None:
+        delay = await self.timing.sleep_pass_cooldown()
+        if delay <= 0:
+            return
+        self.log.info(
+            "pass_cooldown_sleep",
+            delay_seconds=round(delay, 3),
+            min_pass_cooldown_seconds=self.settings.pass_cooldown_min_seconds,
+            max_pass_cooldown_seconds=self.settings.pass_cooldown_max_seconds,
         )
 
     async def _maybe_sleep_session_warmup(self) -> None:
