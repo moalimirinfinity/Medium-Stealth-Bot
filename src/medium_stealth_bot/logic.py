@@ -9,11 +9,13 @@ import structlog
 
 from medium_stealth_bot import operations
 from medium_stealth_bot.client import MediumAsyncClient
+from medium_stealth_bot.graph_sync import GraphSyncService
 from medium_stealth_bot.models import (
     CandidateDecision,
     CandidateSource,
     CandidateUser,
     DailyRunOutcome,
+    GraphSyncOutcome,
     GraphQLError,
     GraphQLResult,
     NewsletterState,
@@ -88,6 +90,25 @@ class DailyRunner:
             started_at=started,
             duration_ms=duration_ms,
             results=results,
+        )
+
+    async def sync_social_graph(
+        self,
+        *,
+        dry_run: bool,
+        mode: str = "auto",
+        force: bool = False,
+    ) -> GraphSyncOutcome:
+        self._assert_operator_not_stopped(task_name="sync_social_graph")
+        service = GraphSyncService(
+            settings=self.settings,
+            client=self.client,
+            repository=self.repository,
+        )
+        return await service.sync(
+            dry_run=dry_run,
+            mode=mode,
+            force=force,
         )
 
     async def run_daily_cycle(
@@ -1397,6 +1418,7 @@ class DailyRunner:
         if max_to_run <= 0:
             return 0, 0
 
+        self.repository.upsert_imported_follow_cycle_pending_from_following_cache()
         due = self.repository.pending_nonreciprocal_candidates(
             grace_days=self.settings.unfollow_nonreciprocal_after_days,
             limit=max_to_run,
@@ -1407,9 +1429,13 @@ class DailyRunner:
             self.log.warning("cleanup_skipped_missing_medium_user_ref")
             return 0, 0
 
-        follower_ids = await self._fetch_own_follower_ids(self.settings.own_followers_scan_limit)
+        follower_ids = self.repository.cached_own_follower_ids()
+        if not follower_ids:
+            follower_ids = await self._fetch_own_follower_ids(self.settings.own_followers_scan_limit)
         attempted = 0
         verified = 0
+        cleanup_min_gap_seconds = float(self.settings.cleanup_unfollow_min_gap_seconds)
+        cleanup_max_gap_seconds = float(self.settings.cleanup_unfollow_max_gap_seconds)
 
         for row in due:
             self._assert_operator_not_stopped(task_name="cleanup_pipeline")
@@ -1456,7 +1482,12 @@ class DailyRunner:
 
             attempted += 1
             if dry_run:
-                await self._sleep_action_gap(action_type=ACTION_UNFOLLOW, target_user_id=user_id)
+                await self._sleep_action_gap(
+                    action_type=ACTION_UNFOLLOW,
+                    target_user_id=user_id,
+                    min_gap_seconds=cleanup_min_gap_seconds,
+                    max_gap_seconds=cleanup_max_gap_seconds,
+                )
                 decisions.append(
                     CandidateDecision(
                         user_id=user_id,
@@ -1467,7 +1498,12 @@ class DailyRunner:
                 )
                 continue
 
-            await self._sleep_action_gap(action_type=ACTION_UNFOLLOW, target_user_id=user_id)
+            await self._sleep_action_gap(
+                action_type=ACTION_UNFOLLOW,
+                target_user_id=user_id,
+                min_gap_seconds=cleanup_min_gap_seconds,
+                max_gap_seconds=cleanup_max_gap_seconds,
+            )
             mutation = await self._execute_with_retry("cleanup_unfollow", operations.unfollow_user(user_id))
             mutation_ok = mutation.status_code == 200 and not mutation.has_errors
             unfollow_action_key = self._daily_action_key(ACTION_UNFOLLOW, user_id)
@@ -1614,8 +1650,22 @@ class DailyRunner:
                 target_follow_attempts=self.settings.live_session_target_follow_attempts,
             )
 
-    async def _sleep_action_gap(self, *, action_type: str, target_user_id: str) -> None:
-        delay = await self.timing.sleep_action_gap()
+    async def _sleep_action_gap(
+        self,
+        *,
+        action_type: str,
+        target_user_id: str,
+        min_gap_seconds: float | None = None,
+        max_gap_seconds: float | None = None,
+    ) -> None:
+        effective_min_gap = float(self.settings.min_action_gap_seconds) if min_gap_seconds is None else max(0.0, min_gap_seconds)
+        effective_max_gap = float(self.settings.max_action_gap_seconds) if max_gap_seconds is None else max(0.0, max_gap_seconds)
+        if effective_max_gap < effective_min_gap:
+            effective_max_gap = effective_min_gap
+        delay = await self.timing.sleep_action_gap(
+            min_gap_seconds=effective_min_gap,
+            max_gap_seconds=effective_max_gap,
+        )
         if delay <= 0:
             return
         self.log.info(
@@ -1623,8 +1673,8 @@ class DailyRunner:
             action_type=action_type,
             target_user_id=target_user_id,
             delay_seconds=round(delay, 3),
-            min_gap_seconds=self.settings.min_action_gap_seconds,
-            max_gap_seconds=self.settings.max_action_gap_seconds,
+            min_gap_seconds=round(effective_min_gap, 3),
+            max_gap_seconds=round(effective_max_gap, 3),
             max_mutations_per_10_minutes=self.settings.max_mutations_per_10_minutes,
         )
 
