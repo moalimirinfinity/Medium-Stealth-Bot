@@ -104,6 +104,37 @@ def test_timing_controller_enforces_min_gap(monkeypatch) -> None:
     assert len(sleep_calls) == 1
 
 
+def test_timing_controller_accepts_custom_action_gap_range(monkeypatch) -> None:
+    settings = AppSettings(
+        _env_file=None,
+        MIN_ACTION_GAP_SECONDS=30,
+        MAX_ACTION_GAP_SECONDS=90,
+    )
+    controller = HumanTimingController(settings=settings)
+
+    sleep_calls: list[float] = []
+    sampled_ranges: list[tuple[float, float]] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    def fake_sample_delay(*args, low: float, high: float, mean: float | None = None) -> float:
+        sampled_ranges.append((low, high))
+        return 2.0
+
+    monkeypatch.setattr("medium_stealth_bot.timing.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("medium_stealth_bot.timing.HumanTimingController._sample_delay", fake_sample_delay)
+
+    first = asyncio.run(controller.sleep_action_gap(min_gap_seconds=1, max_gap_seconds=5))
+    controller._last_action_started_at = time.monotonic() - 0.1
+    second = asyncio.run(controller.sleep_action_gap(min_gap_seconds=1, max_gap_seconds=5))
+
+    assert first == 0.0
+    assert 1.7 <= second <= 2.0
+    assert sampled_ranges == [(1.0, 5.0)]
+    assert len(sleep_calls) == 1
+
+
 def test_timing_controller_enforces_verify_gap(monkeypatch) -> None:
     settings = AppSettings(
         _env_file=None,
