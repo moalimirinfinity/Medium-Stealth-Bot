@@ -1,5 +1,7 @@
 from medium_stealth_bot.models import GraphQLOperation
 
+USER_FOLLOWERS_MAX_LIMIT = 25
+
 USE_BASE_CACHE_CONTROL_QUERY = """
 query UseBaseCacheControlQuery {
   viewer {
@@ -283,13 +285,14 @@ def user_followers(
     limit: int = 8,
     paging_from: str | None = None,
 ) -> GraphQLOperation:
+    resolved_limit = max(1, min(USER_FOLLOWERS_MAX_LIMIT, int(limit)))
     return GraphQLOperation(
         operationName="UserFollowers",
         query=USER_FOLLOWERS_QUERY,
         variables={
             "id": user_id,
             "username": username,
-            "paging": {"limit": limit, "from": paging_from or ""},
+            "paging": {"limit": resolved_limit, "from": paging_from or ""},
         },
     )
 
