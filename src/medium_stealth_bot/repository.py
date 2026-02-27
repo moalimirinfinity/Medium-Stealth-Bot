@@ -142,6 +142,247 @@ class ActionRepository:
             connection.execute(query, (user_id, username, newsletter_id, bio))
             connection.commit()
 
+    def begin_graph_sync_run(
+        self,
+        *,
+        mode: str,
+        source_path: str | None = None,
+    ) -> int:
+        query = """
+        INSERT INTO graph_sync_runs (mode, source_path, status, started_at)
+        VALUES (?, ?, 'running', CURRENT_TIMESTAMP)
+        """
+        with self.database.connect() as connection:
+            cursor = connection.execute(query, (mode, source_path))
+            connection.commit()
+            return int(cursor.lastrowid)
+
+    def complete_graph_sync_run(
+        self,
+        run_id: int,
+        *,
+        status: str,
+        followers_count: int = 0,
+        following_count: int = 0,
+        imported_pending_count: int = 0,
+        error_message: str | None = None,
+    ) -> None:
+        query = """
+        UPDATE graph_sync_runs
+        SET status = ?,
+            ended_at = CURRENT_TIMESTAMP,
+            followers_count = ?,
+            following_count = ?,
+            imported_pending_count = ?,
+            error_message = ?
+        WHERE id = ?
+        """
+        with self.database.connect() as connection:
+            connection.execute(
+                query,
+                (
+                    status,
+                    max(0, followers_count),
+                    max(0, following_count),
+                    max(0, imported_pending_count),
+                    error_message,
+                    run_id,
+                ),
+            )
+            if status == "success":
+                connection.execute(
+                    """
+                    UPDATE graph_sync_state
+                    SET last_success_at = CURRENT_TIMESTAMP,
+                        last_run_id = ?,
+                        last_mode = (
+                            SELECT mode
+                            FROM graph_sync_runs
+                            WHERE id = ?
+                        ),
+                        last_followers_count = ?,
+                        last_following_count = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = 1
+                    """,
+                    (
+                        run_id,
+                        run_id,
+                        max(0, followers_count),
+                        max(0, following_count),
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE graph_sync_state
+                    SET last_run_id = ?,
+                        last_mode = (
+                            SELECT mode
+                            FROM graph_sync_runs
+                            WHERE id = ?
+                        ),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = 1
+                    """,
+                    (run_id, run_id),
+                )
+            connection.commit()
+
+    def latest_graph_sync_success_at(self) -> str | None:
+        query = "SELECT last_success_at FROM graph_sync_state WHERE id = 1"
+        with self.database.connect() as connection:
+            row = connection.execute(query).fetchone()
+            if row is None:
+                return None
+            value = row["last_success_at"]
+            return str(value) if value else None
+
+    def _replace_social_snapshot(
+        self,
+        *,
+        table_name: str,
+        rows: list[dict[str, object]],
+        run_id: int,
+    ) -> int:
+        if table_name not in {"own_followers_cache", "own_following_cache"}:
+            raise ValueError(f"Unsupported social cache table: {table_name}")
+
+        upsert_query = f"""
+        INSERT INTO {table_name} (
+            user_id,
+            username,
+            name,
+            bio,
+            follower_count,
+            following_count,
+            newsletter_v3_id,
+            first_seen_at,
+            last_seen_at,
+            last_sync_run_id
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            username = COALESCE(excluded.username, {table_name}.username),
+            name = COALESCE(excluded.name, {table_name}.name),
+            bio = COALESCE(excluded.bio, {table_name}.bio),
+            follower_count = COALESCE(excluded.follower_count, {table_name}.follower_count),
+            following_count = COALESCE(excluded.following_count, {table_name}.following_count),
+            newsletter_v3_id = COALESCE(excluded.newsletter_v3_id, {table_name}.newsletter_v3_id),
+            last_seen_at = CURRENT_TIMESTAMP,
+            last_sync_run_id = excluded.last_sync_run_id
+        """
+
+        with self.database.connect() as connection:
+            connection.execute("DROP TABLE IF EXISTS temp_graph_sync_ids")
+            connection.execute("CREATE TEMP TABLE temp_graph_sync_ids (user_id TEXT PRIMARY KEY)")
+
+            seen_ids: set[str] = set()
+            payload: list[tuple[object, ...]] = []
+            for row in rows:
+                user_id = str(row.get("user_id") or "").strip()
+                if not user_id or user_id in seen_ids:
+                    continue
+                seen_ids.add(user_id)
+                payload.append(
+                    (
+                        user_id,
+                        row.get("username"),
+                        row.get("name"),
+                        row.get("bio"),
+                        row.get("follower_count"),
+                        row.get("following_count"),
+                        row.get("newsletter_v3_id"),
+                        run_id,
+                    )
+                )
+
+            if payload:
+                connection.executemany(
+                    "INSERT INTO temp_graph_sync_ids (user_id) VALUES (?)",
+                    [(item[0],) for item in payload],
+                )
+                connection.executemany(upsert_query, payload)
+                connection.execute(
+                    f"""
+                    DELETE FROM {table_name}
+                    WHERE user_id NOT IN (SELECT user_id FROM temp_graph_sync_ids)
+                    """
+                )
+            else:
+                connection.execute(f"DELETE FROM {table_name}")
+            connection.execute("DROP TABLE IF EXISTS temp_graph_sync_ids")
+            connection.commit()
+            return len(payload)
+
+    def replace_own_followers_snapshot(
+        self,
+        rows: list[dict[str, object]],
+        *,
+        run_id: int,
+    ) -> int:
+        return self._replace_social_snapshot(
+            table_name="own_followers_cache",
+            rows=rows,
+            run_id=run_id,
+        )
+
+    def replace_own_following_snapshot(
+        self,
+        rows: list[dict[str, object]],
+        *,
+        run_id: int,
+    ) -> int:
+        return self._replace_social_snapshot(
+            table_name="own_following_cache",
+            rows=rows,
+            run_id=run_id,
+        )
+
+    def cached_own_follower_ids(self) -> set[str]:
+        query = "SELECT user_id FROM own_followers_cache"
+        with self.database.connect() as connection:
+            rows = connection.execute(query).fetchall()
+            return {str(row["user_id"]) for row in rows if row["user_id"]}
+
+    def cached_own_following_ids(self) -> set[str]:
+        query = "SELECT user_id FROM own_following_cache"
+        with self.database.connect() as connection:
+            rows = connection.execute(query).fetchall()
+            return {str(row["user_id"]) for row in rows if row["user_id"]}
+
+    def upsert_imported_follow_cycle_pending_from_following_cache(self) -> int:
+        query = """
+        INSERT INTO follow_cycle (
+            user_id,
+            username,
+            followed_at,
+            follow_source,
+            follow_deadline_at,
+            cleanup_status,
+            updated_at
+        )
+        SELECT
+            c.user_id,
+            c.username,
+            '',
+            'imported_following_cache',
+            NULL,
+            'pending',
+            CURRENT_TIMESTAMP
+        FROM own_following_cache c
+        LEFT JOIN follow_cycle f
+            ON f.user_id = c.user_id
+        WHERE f.user_id IS NULL
+        """
+        with self.database.connect() as connection:
+            connection.execute(query)
+            row = connection.execute("SELECT changes() AS count").fetchone()
+            connection.commit()
+            if row is None:
+                return 0
+            return int(row["count"])
+
     def upsert_candidate_reconciliation(
         self,
         *,
@@ -354,20 +595,28 @@ class ActionRepository:
         SELECT user_id, username, followed_at
         FROM follow_cycle
         WHERE cleanup_status = 'pending'
-          AND COALESCE(
-              follow_deadline_at,
-              datetime(followed_at, ?),
-              datetime('now', 'utc', ?)
-          ) <= datetime('now', 'utc')
-        ORDER BY followed_at ASC
+          AND (
+              followed_at IS NULL
+              OR TRIM(COALESCE(followed_at, '')) = ''
+              OR datetime(followed_at) IS NULL
+              OR COALESCE(
+                  datetime(follow_deadline_at),
+                  datetime(followed_at, ?)
+              ) <= datetime('now', 'utc')
+          )
+        ORDER BY
+          CASE
+              WHEN followed_at IS NULL OR TRIM(COALESCE(followed_at, '')) = '' OR datetime(followed_at) IS NULL THEN 0
+              ELSE 1
+          END ASC,
+          datetime(followed_at) ASC
         LIMIT ?
         """
         fallback_deadline_modifier = f"+{grace_days} day"
-        unknown_followed_at_fallback_modifier = f"-{grace_days} day"
         with self.database.connect() as connection:
             rows = connection.execute(
                 query,
-                (fallback_deadline_modifier, unknown_followed_at_fallback_modifier, limit),
+                (fallback_deadline_modifier, limit),
             ).fetchall()
             return [
                 {"user_id": row["user_id"], "username": row["username"], "followed_at": row["followed_at"]}
