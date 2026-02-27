@@ -72,6 +72,16 @@ class RecommendedPublishersData(_Model):
 
 class FollowersUserConnection(_Model):
     users: list[UserNode] = Field(default_factory=list)
+    paging_info: "PagingInfo | None" = Field(default=None, alias="pagingInfo")
+
+
+class PagingCursor(_Model):
+    from_cursor: str | None = Field(default=None, alias="from")
+    limit: int | None = None
+
+
+class PagingInfo(_Model):
+    next: PagingCursor | None = None
 
 
 class UserResultFollowers(_Model):
@@ -159,6 +169,20 @@ def parse_user_followers_users(result: GraphQLResult) -> list[UserNode]:
     if not payload.user_result or not payload.user_result.followers_user_connection:
         return []
     return payload.user_result.followers_user_connection.users
+
+
+def parse_user_followers_next_from(result: GraphQLResult) -> str | None:
+    payload = UserFollowersData.model_validate(result.data or {})
+    if not payload.user_result or not payload.user_result.followers_user_connection:
+        return None
+    paging = payload.user_result.followers_user_connection.paging_info
+    if not paging or not paging.next:
+        return None
+    value = paging.next.from_cursor
+    if value is None:
+        return None
+    text = value.strip()
+    return text or None
 
 
 def parse_latest_post_id(result: GraphQLResult) -> str | None:
