@@ -103,6 +103,12 @@ class AppSettings(BaseSettings):
         le=5000,
         validation_alias="LIVE_SESSION_TARGET_FOLLOW_ATTEMPTS",
     )
+    live_session_min_follow_attempts: int = Field(
+        default=80,
+        ge=1,
+        le=5000,
+        validation_alias="LIVE_SESSION_MIN_FOLLOW_ATTEMPTS",
+    )
     live_session_max_passes: int = Field(
         default=12,
         ge=1,
@@ -160,10 +166,22 @@ class AppSettings(BaseSettings):
 
     min_read_wait_seconds: int = Field(default=30, ge=0, validation_alias="MIN_READ_WAIT_SECONDS")
     max_read_wait_seconds: int = Field(default=90, ge=0, validation_alias="MAX_READ_WAIT_SECONDS")
+    min_verify_gap_seconds: int = Field(default=3, ge=0, validation_alias="MIN_VERIFY_GAP_SECONDS")
+    max_verify_gap_seconds: int = Field(default=12, ge=0, validation_alias="MAX_VERIFY_GAP_SECONDS")
     min_action_gap_seconds: int = Field(default=30, ge=0, validation_alias="MIN_ACTION_GAP_SECONDS")
     max_action_gap_seconds: int = Field(default=90, ge=0, validation_alias="MAX_ACTION_GAP_SECONDS")
+    max_mutations_per_10_minutes: int = Field(default=24, ge=1, le=500, validation_alias="MAX_MUTATIONS_PER_10_MINUTES")
     min_session_warmup_seconds: int = Field(default=5, ge=0, validation_alias="MIN_SESSION_WARMUP_SECONDS")
     max_session_warmup_seconds: int = Field(default=20, ge=0, validation_alias="MAX_SESSION_WARMUP_SECONDS")
+    pass_cooldown_min_seconds: int = Field(default=20, ge=0, validation_alias="PASS_COOLDOWN_MIN_SECONDS")
+    pass_cooldown_max_seconds: int = Field(default=90, ge=0, validation_alias="PASS_COOLDOWN_MAX_SECONDS")
+    pacing_soft_degrade_cooldown_seconds: int = Field(
+        default=180,
+        ge=0,
+        le=7200,
+        validation_alias="PACING_SOFT_DEGRADE_COOLDOWN_SECONDS",
+    )
+    enable_pacing_auto_clamp: bool = Field(default=True, validation_alias="ENABLE_PACING_AUTO_CLAMP")
 
     risk_halt_consecutive_failures: int = Field(
         default=3,
@@ -284,13 +302,21 @@ class AppSettings(BaseSettings):
             raise ValueError("MAX_CLAP_COUNT must be greater than or equal to MIN_CLAP_COUNT.")
         return value
 
-    @field_validator("max_read_wait_seconds", "max_action_gap_seconds", "max_session_warmup_seconds")
+    @field_validator(
+        "max_read_wait_seconds",
+        "max_verify_gap_seconds",
+        "max_action_gap_seconds",
+        "max_session_warmup_seconds",
+        "pass_cooldown_max_seconds",
+    )
     @classmethod
     def validate_max_at_least_min(cls, value: int, info: ValidationInfo) -> int:
         min_field_map = {
             "max_read_wait_seconds": "min_read_wait_seconds",
+            "max_verify_gap_seconds": "min_verify_gap_seconds",
             "max_action_gap_seconds": "min_action_gap_seconds",
             "max_session_warmup_seconds": "min_session_warmup_seconds",
+            "pass_cooldown_max_seconds": "pass_cooldown_min_seconds",
         }
         min_field = min_field_map[info.field_name]
         min_value = info.data.get(min_field)
