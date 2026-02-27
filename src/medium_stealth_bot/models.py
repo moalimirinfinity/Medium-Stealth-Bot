@@ -92,6 +92,20 @@ class ReconcileOutcome(BaseModel):
     decision_log: list[str] = Field(default_factory=list)
 
 
+class GraphSyncOutcome(BaseModel):
+    dry_run: bool = True
+    mode: str = "auto"
+    run_id: int | None = None
+    skipped: bool = False
+    skip_reason: str | None = None
+    followers_count: int = 0
+    following_count: int = 0
+    imported_pending_count: int = 0
+    source_path: str | None = None
+    used_following_source: str | None = None
+    duration_ms: int = 0
+
+
 class NewsletterState(StrEnum):
     SUBSCRIBED = "subscribed"
     UNSUBSCRIBED = "unsubscribed"
