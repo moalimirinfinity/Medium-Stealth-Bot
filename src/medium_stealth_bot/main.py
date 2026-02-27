@@ -22,7 +22,7 @@ from medium_stealth_bot.database import Database
 from medium_stealth_bot.deployment import validate_production_profile
 from medium_stealth_bot.logging import configure_logging
 from medium_stealth_bot.logic import DailyRunner
-from medium_stealth_bot.models import AuthSessionMaterial, DailyRunOutcome, ProbeSnapshot, ReconcileOutcome
+from medium_stealth_bot.models import AuthSessionMaterial, DailyRunOutcome, GraphSyncOutcome, ProbeSnapshot, ReconcileOutcome
 from medium_stealth_bot.observability import new_run_id, read_latest_run_artifact, write_run_artifact
 from medium_stealth_bot.repository import ActionRepository
 from medium_stealth_bot.safety import RiskHaltError
@@ -336,6 +336,24 @@ def _render_reconcile_outcome(outcome: ReconcileOutcome) -> None:
         console.print(log_table)
 
 
+def _render_graph_sync_outcome(outcome: GraphSyncOutcome) -> None:
+    table = Table(title="Graph Sync")
+    table.add_column("Metric")
+    table.add_column("Value")
+    table.add_row("Mode", outcome.mode)
+    table.add_row("Dry Run", "true" if outcome.dry_run else "false")
+    table.add_row("Skipped", "true" if outcome.skipped else "false")
+    if outcome.skipped:
+        table.add_row("Skip Reason", outcome.skip_reason or "-")
+    table.add_row("Run ID", str(outcome.run_id or "-"))
+    table.add_row("Followers Synced", str(outcome.followers_count))
+    table.add_row("Following Synced", str(outcome.following_count))
+    table.add_row("Imported Pending", str(outcome.imported_pending_count))
+    table.add_row("Following Source", outcome.used_following_source or "-")
+    table.add_row("Duration (ms)", str(outcome.duration_ms))
+    console.print(table)
+
+
 def _render_contract_validation(report: ContractValidationReport) -> None:
     summary = Table(title="Contract Registry Validation")
     summary.add_column("Metric")
@@ -493,6 +511,46 @@ def _build_run_artifact_payload(
                 if result.status_code != 200 or result.has_errors
             ],
         }
+    return payload
+
+
+def _build_standard_artifact_payload(
+    *,
+    run_id: str,
+    command: str,
+    started_at: datetime,
+    ended_at: datetime,
+    tag_slug: str,
+    dry_run: bool | None,
+    status: str,
+    summary: dict[str, Any] | None = None,
+    action_counts: dict[str, int] | None = None,
+    result_counts: dict[str, int] | None = None,
+    reason_counts: dict[str, int] | None = None,
+    kpis: dict[str, float | int] | None = None,
+    client_metrics: dict[str, Any] | None = None,
+    error: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    duration_ms = int((ended_at - started_at).total_seconds() * 1000)
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "command": command,
+        "tag_slug": tag_slug,
+        "dry_run": dry_run,
+        "status": status,
+        "health": "failed" if status == "failed" else "degraded" if status == "halted" else "healthy",
+        "started_at": started_at.isoformat(),
+        "ended_at": ended_at.isoformat(),
+        "duration_ms": duration_ms,
+        "summary": summary or {},
+        "action_counts": action_counts or {},
+        "result_counts": result_counts or {},
+        "reason_counts": reason_counts or {},
+        "kpis": kpis or {},
+        "client_metrics": client_metrics or {},
+        "error": error,
+    }
     return payload
 
 
@@ -935,6 +993,36 @@ def setup_command(
         "Enable pacing auto-clamp?",
         default=settings.enable_pacing_auto_clamp,
     )
+    graph_sync_auto_enabled = typer.confirm(
+        "Enable graph sync auto-run for options 2-8?",
+        default=settings.graph_sync_auto_enabled,
+    )
+    graph_sync_freshness_window_minutes = int(
+        typer.prompt(
+            "Graph sync freshness window minutes",
+            default=settings.graph_sync_freshness_window_minutes,
+            type=int,
+        )
+    )
+    graph_sync_full_pagination = typer.confirm(
+        "Use full pagination during graph sync?",
+        default=settings.graph_sync_full_pagination,
+    )
+    graph_sync_enable_graphql_following = typer.confirm(
+        "Enable GraphQL strategy for following import?",
+        default=settings.graph_sync_enable_graphql_following,
+    )
+    graph_sync_enable_scrape_fallback = typer.confirm(
+        "Enable scrape fallback for following import?",
+        default=settings.graph_sync_enable_scrape_fallback,
+    )
+    graph_sync_scrape_page_timeout_seconds = int(
+        typer.prompt(
+            "Graph sync scrape timeout seconds",
+            default=settings.graph_sync_scrape_page_timeout_seconds,
+            type=int,
+        )
+    )
     cleanup_unfollow_limit = int(
         typer.prompt(
             "Cleanup unfollow limit per run",
@@ -976,6 +1064,12 @@ def setup_command(
         "PASS_COOLDOWN_MAX_SECONDS": str(max(max(0, pass_cooldown_min_seconds), max(0, pass_cooldown_max_seconds))),
         "PACING_SOFT_DEGRADE_COOLDOWN_SECONDS": str(max(0, pacing_soft_degrade_cooldown_seconds)),
         "ENABLE_PACING_AUTO_CLAMP": "true" if enable_pacing_auto_clamp else "false",
+        "GRAPH_SYNC_AUTO_ENABLED": "true" if graph_sync_auto_enabled else "false",
+        "GRAPH_SYNC_FRESHNESS_WINDOW_MINUTES": str(max(0, graph_sync_freshness_window_minutes)),
+        "GRAPH_SYNC_FULL_PAGINATION": "true" if graph_sync_full_pagination else "false",
+        "GRAPH_SYNC_ENABLE_GRAPHQL_FOLLOWING": "true" if graph_sync_enable_graphql_following else "false",
+        "GRAPH_SYNC_ENABLE_SCRAPE_FALLBACK": "true" if graph_sync_enable_scrape_fallback else "false",
+        "GRAPH_SYNC_SCRAPE_PAGE_TIMEOUT_SECONDS": str(max(5, graph_sync_scrape_page_timeout_seconds)),
         "CLEANUP_UNFOLLOW_LIMIT": str(cleanup_unfollow_limit),
         "CLEANUP_UNFOLLOW_WHITELIST_MIN_FOLLOWERS": str(max(0, cleanup_unfollow_whitelist_min_followers)),
     }
@@ -1032,6 +1126,12 @@ def _render_start_menu(
     pass_cooldown_max_seconds: int,
     pacing_soft_degrade_cooldown_seconds: int,
     enable_pacing_auto_clamp: bool,
+    graph_sync_auto_enabled: bool,
+    graph_sync_freshness_window_minutes: int,
+    graph_sync_full_pagination: bool,
+    graph_sync_enable_graphql_following: bool,
+    graph_sync_enable_scrape_fallback: bool,
+    graph_sync_scrape_page_timeout_seconds: int,
     reconcile_limit: int,
     reconcile_page_size: int,
     cleanup_unfollow_limit: int,
@@ -1059,6 +1159,15 @@ def _render_start_menu(
     defaults.add_row("Pass Cooldown (s)", f"{pass_cooldown_min_seconds}-{pass_cooldown_max_seconds}")
     defaults.add_row("Soft-Degrade Cooldown (s)", str(pacing_soft_degrade_cooldown_seconds))
     defaults.add_row("Pacing Auto-Clamp", "true" if enable_pacing_auto_clamp else "false")
+    defaults.add_row("Graph Sync Auto", "true" if graph_sync_auto_enabled else "false")
+    defaults.add_row("Graph Sync Freshness (m)", str(graph_sync_freshness_window_minutes))
+    defaults.add_row("Graph Sync Full Pagination", "true" if graph_sync_full_pagination else "false")
+    defaults.add_row(
+        "GraphQL Following Source",
+        "true" if graph_sync_enable_graphql_following else "false",
+    )
+    defaults.add_row("Scrape Following Fallback", "true" if graph_sync_enable_scrape_fallback else "false")
+    defaults.add_row("Graph Sync Scrape Timeout (s)", str(graph_sync_scrape_page_timeout_seconds))
     defaults.add_row("Cleanup Limit", str(cleanup_unfollow_limit))
     defaults.add_row("Cleanup Whitelist Followers >=", str(cleanup_whitelist_min_followers))
     defaults.add_row("Reconcile Limit", str(reconcile_limit))
@@ -1088,6 +1197,7 @@ def _render_start_menu(
     menu.add_row("15", "Config", "Run setup wizard")
     menu.add_row("16", "Auth", "Refresh auth session")
     menu.add_row("17", "System", "Exit")
+    menu.add_row("18", "Maintenance", "Sync social graph cache")
     console.print(menu)
 
 
@@ -1106,6 +1216,12 @@ def _run_start_menu(
     initial_pass_cooldown_max_seconds: int,
     initial_pacing_soft_degrade_cooldown_seconds: int,
     initial_enable_pacing_auto_clamp: bool,
+    initial_graph_sync_auto_enabled: bool,
+    initial_graph_sync_freshness_window_minutes: int,
+    initial_graph_sync_full_pagination: bool,
+    initial_graph_sync_enable_graphql_following: bool,
+    initial_graph_sync_enable_scrape_fallback: bool,
+    initial_graph_sync_scrape_page_timeout_seconds: int,
     initial_reconcile_limit: int,
     initial_reconcile_page_size: int,
     initial_cleanup_unfollow_limit: int,
@@ -1126,14 +1242,20 @@ def _run_start_menu(
     pass_cooldown_max_seconds = max(pass_cooldown_min_seconds, initial_pass_cooldown_max_seconds)
     pacing_soft_degrade_cooldown_seconds = max(0, initial_pacing_soft_degrade_cooldown_seconds)
     enable_pacing_auto_clamp = initial_enable_pacing_auto_clamp
+    graph_sync_auto_enabled = initial_graph_sync_auto_enabled
+    graph_sync_freshness_window_minutes = max(0, initial_graph_sync_freshness_window_minutes)
+    graph_sync_full_pagination = initial_graph_sync_full_pagination
+    graph_sync_enable_graphql_following = initial_graph_sync_enable_graphql_following
+    graph_sync_enable_scrape_fallback = initial_graph_sync_enable_scrape_fallback
+    graph_sync_scrape_page_timeout_seconds = max(5, initial_graph_sync_scrape_page_timeout_seconds)
     reconcile_limit = max(1, initial_reconcile_limit)
     reconcile_page_size = min(500, max(1, initial_reconcile_page_size))
     cleanup_unfollow_limit = max(1, initial_cleanup_unfollow_limit)
     cleanup_whitelist_min_followers = max(0, initial_cleanup_whitelist_min_followers)
     newsletter_slug = (initial_newsletter_slug or "").strip()
     newsletter_username = (initial_newsletter_username or "").strip()
-    valid_choices = {str(value) for value in range(1, 18)}
-    valid_choices_hint = "1-17"
+    valid_choices = {str(value) for value in range(1, 19)}
+    valid_choices_hint = "1-18"
 
     while True:
         settings = _bootstrap_settings()
@@ -1154,6 +1276,12 @@ def _run_start_menu(
             pass_cooldown_max_seconds=pass_cooldown_max_seconds,
             pacing_soft_degrade_cooldown_seconds=pacing_soft_degrade_cooldown_seconds,
             enable_pacing_auto_clamp=enable_pacing_auto_clamp,
+            graph_sync_auto_enabled=graph_sync_auto_enabled,
+            graph_sync_freshness_window_minutes=graph_sync_freshness_window_minutes,
+            graph_sync_full_pagination=graph_sync_full_pagination,
+            graph_sync_enable_graphql_following=graph_sync_enable_graphql_following,
+            graph_sync_enable_scrape_fallback=graph_sync_enable_scrape_fallback,
+            graph_sync_scrape_page_timeout_seconds=graph_sync_scrape_page_timeout_seconds,
             reconcile_limit=reconcile_limit,
             reconcile_page_size=reconcile_page_size,
             cleanup_unfollow_limit=cleanup_unfollow_limit,
@@ -1206,17 +1334,28 @@ def _run_start_menu(
                     live=True,
                     seed_user_refs=seed_user_refs,
                     session=False,
+                    auto_sync=graph_sync_auto_enabled,
                 ),
             )
         elif choice == "3":
             _execute(
                 "run dry-run cycle",
-                lambda: run_command(tag_slug=tag_slug, live=False, seed_user_refs=seed_user_refs),
+                lambda: run_command(
+                    tag_slug=tag_slug,
+                    live=False,
+                    seed_user_refs=seed_user_refs,
+                    auto_sync=graph_sync_auto_enabled,
+                ),
             )
         elif choice == "4":
             preflight_ok = _execute(
                 "dry-run preflight",
-                lambda: run_command(tag_slug=tag_slug, live=False, seed_user_refs=seed_user_refs),
+                lambda: run_command(
+                    tag_slug=tag_slug,
+                    live=False,
+                    seed_user_refs=seed_user_refs,
+                    auto_sync=graph_sync_auto_enabled,
+                ),
             )
             if preflight_ok:
                 _execute(
@@ -1229,6 +1368,7 @@ def _run_start_menu(
                         session_minutes=live_session_minutes,
                         target_follows=live_session_target_follows,
                         session_max_passes=live_session_max_passes,
+                        auto_sync=graph_sync_auto_enabled,
                     ),
                 )
         elif choice == "5":
@@ -1246,7 +1386,11 @@ def _run_start_menu(
                 cleanup_unfollow_limit = run_limit
             _execute(
                 "cleanup-only unfollow (live)",
-                lambda: cleanup_command(live=True, limit=run_limit),
+                lambda: cleanup_command(
+                    live=True,
+                    limit=run_limit,
+                    auto_sync=graph_sync_auto_enabled,
+                ),
             )
         elif choice == "6":
             run_limit = int(
@@ -1263,17 +1407,31 @@ def _run_start_menu(
                 cleanup_unfollow_limit = run_limit
             _execute(
                 "cleanup-only unfollow (dry-run)",
-                lambda: cleanup_command(live=False, limit=run_limit),
+                lambda: cleanup_command(
+                    live=False,
+                    limit=run_limit,
+                    auto_sync=graph_sync_auto_enabled,
+                ),
             )
         elif choice == "7":
             _execute(
                 "reconcile live",
-                lambda: reconcile_command(live=True, max_users=reconcile_limit, page_size=reconcile_page_size),
+                lambda: reconcile_command(
+                    live=True,
+                    max_users=reconcile_limit,
+                    page_size=reconcile_page_size,
+                    auto_sync=graph_sync_auto_enabled,
+                ),
             )
         elif choice == "8":
             _execute(
                 "reconcile dry-run",
-                lambda: reconcile_command(live=False, max_users=reconcile_limit, page_size=reconcile_page_size),
+                lambda: reconcile_command(
+                    live=False,
+                    max_users=reconcile_limit,
+                    page_size=reconcile_page_size,
+                    auto_sync=graph_sync_auto_enabled,
+                ),
             )
         elif choice == "9":
             _execute("probe reads", lambda: probe_command(tag_slug=tag_slug))
@@ -1300,9 +1458,12 @@ def _run_start_menu(
                 ),
             )
         elif choice == "12":
-            _execute("show status", status_command)
+            _execute("show status", lambda: status_command(emit_artifact=True))
         elif choice == "13":
-            _execute("validate latest artifact", lambda: artifacts_validate_command(artifact_path=None))
+            _execute(
+                "validate latest artifact",
+                lambda: artifacts_validate_command(artifact_path=None, emit_artifact=True),
+            )
         elif choice == "14":
             updated_tag = str(typer.prompt("Default tag", default=tag_slug)).strip()
             if updated_tag:
@@ -1451,6 +1612,49 @@ def _run_start_menu(
                 default=enable_pacing_auto_clamp,
             )
 
+            graph_sync_auto_enabled = typer.confirm(
+                "Enable graph sync auto-run for options 2-8?",
+                default=graph_sync_auto_enabled,
+            )
+
+            sync_freshness_value = int(
+                typer.prompt(
+                    "Graph sync freshness window (minutes)",
+                    default=graph_sync_freshness_window_minutes,
+                    type=int,
+                )
+            )
+            if sync_freshness_value < 0:
+                _print_notice("Graph sync freshness must be >= 0. Keeping previous value.", level="warning")
+            else:
+                graph_sync_freshness_window_minutes = sync_freshness_value
+
+            graph_sync_full_pagination = typer.confirm(
+                "Use full pagination during graph sync?",
+                default=graph_sync_full_pagination,
+            )
+
+            graph_sync_enable_graphql_following = typer.confirm(
+                "Enable GraphQL strategy for following import?",
+                default=graph_sync_enable_graphql_following,
+            )
+            graph_sync_enable_scrape_fallback = typer.confirm(
+                "Enable scrape fallback when following GraphQL is unavailable?",
+                default=graph_sync_enable_scrape_fallback,
+            )
+
+            scrape_timeout_value = int(
+                typer.prompt(
+                    "Graph sync scrape timeout seconds",
+                    default=graph_sync_scrape_page_timeout_seconds,
+                    type=int,
+                )
+            )
+            if scrape_timeout_value < 5:
+                _print_notice("Graph sync scrape timeout must be >= 5 seconds. Keeping previous value.", level="warning")
+            else:
+                graph_sync_scrape_page_timeout_seconds = scrape_timeout_value
+
             cleanup_limit_value = int(
                 typer.prompt(
                     "Default cleanup-only unfollow limit",
@@ -1522,6 +1726,12 @@ def _run_start_menu(
             pass_cooldown_max_seconds = refreshed_settings.pass_cooldown_max_seconds
             pacing_soft_degrade_cooldown_seconds = refreshed_settings.pacing_soft_degrade_cooldown_seconds
             enable_pacing_auto_clamp = refreshed_settings.enable_pacing_auto_clamp
+            graph_sync_auto_enabled = refreshed_settings.graph_sync_auto_enabled
+            graph_sync_freshness_window_minutes = refreshed_settings.graph_sync_freshness_window_minutes
+            graph_sync_full_pagination = refreshed_settings.graph_sync_full_pagination
+            graph_sync_enable_graphql_following = refreshed_settings.graph_sync_enable_graphql_following
+            graph_sync_enable_scrape_fallback = refreshed_settings.graph_sync_enable_scrape_fallback
+            graph_sync_scrape_page_timeout_seconds = refreshed_settings.graph_sync_scrape_page_timeout_seconds
             cleanup_unfollow_limit = max(1, refreshed_settings.cleanup_unfollow_limit)
             cleanup_whitelist_min_followers = max(0, refreshed_settings.cleanup_unfollow_whitelist_min_followers)
             if not newsletter_slug:
@@ -1536,6 +1746,11 @@ def _run_start_menu(
                     env_path=Path(".env"),
                     login_url="https://medium.com/m/signin",
                 ),
+            )
+        elif choice == "18":
+            _execute(
+                "sync social graph cache",
+                lambda: sync_command(live=True, force=False),
             )
         else:
             _print_notice("Exiting start menu.", level="success")
@@ -1586,6 +1801,12 @@ def start_command(
             initial_pass_cooldown_max_seconds=settings.pass_cooldown_max_seconds,
             initial_pacing_soft_degrade_cooldown_seconds=settings.pacing_soft_degrade_cooldown_seconds,
             initial_enable_pacing_auto_clamp=settings.enable_pacing_auto_clamp,
+            initial_graph_sync_auto_enabled=settings.graph_sync_auto_enabled,
+            initial_graph_sync_freshness_window_minutes=settings.graph_sync_freshness_window_minutes,
+            initial_graph_sync_full_pagination=settings.graph_sync_full_pagination,
+            initial_graph_sync_enable_graphql_following=settings.graph_sync_enable_graphql_following,
+            initial_graph_sync_enable_scrape_fallback=settings.graph_sync_enable_scrape_fallback,
+            initial_graph_sync_scrape_page_timeout_seconds=settings.graph_sync_scrape_page_timeout_seconds,
             initial_reconcile_limit=settings.reconcile_scan_limit,
             initial_reconcile_page_size=settings.reconcile_page_size,
             initial_cleanup_unfollow_limit=max(1, settings.cleanup_unfollow_limit),
@@ -1633,24 +1854,97 @@ def probe_command(
 
     run_id = new_run_id("probe")
     structlog_contextvars.bind_contextvars(run_id=run_id, command="probe", tag_slug=tag_slug)
+    log = structlog.get_logger(__name__)
+    started_at = _utc_now()
+    status = "success"
+    error_payload: dict[str, str] | None = None
+    exit_code = 0
+    snapshot: ProbeSnapshot | None = None
+    artifact_path: Path | None = None
     _print_notice(f"Starting probe run `{run_id}` for tag `{tag_slug}`.", level="info")
     try:
-        _, repository = _build_runner(settings)
-
-        async def _run() -> ProbeSnapshot:
-            async with MediumAsyncClient(settings) as client:
-                runner = DailyRunner(settings=settings, client=client, repository=repository)
-                return await runner.probe(tag_slug=tag_slug)
-
         try:
+            _, repository = _build_runner(settings)
+
+            async def _run() -> ProbeSnapshot:
+                async with MediumAsyncClient(settings) as client:
+                    runner = DailyRunner(settings=settings, client=client, repository=repository)
+                    return await runner.probe(tag_slug=tag_slug)
+
             snapshot = asyncio.run(_run())
         except RiskHaltError as exc:
+            status = "halted"
+            exit_code = _risk_halt_exit_code(settings)
+            error_payload = {
+                "type": "RiskHaltError",
+                "message": str(exc),
+                "reason": exc.reason,
+                "task_name": exc.task_name,
+                "detail": exc.detail,
+            }
             _render_risk_halt(exc, settings=settings)
-            halt_exit_code = _risk_halt_exit_code(settings)
-            if halt_exit_code != 0:
-                raise typer.Exit(code=halt_exit_code) from exc
-            return
-        _render_probe(snapshot)
+        except Exception as exc:  # noqa: BLE001
+            status = "failed"
+            exit_code = 1
+            error_payload = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            }
+            _print_notice(f"Probe run failed: {exc}", level="error")
+
+        ended_at = _utc_now()
+        summary: dict[str, Any] = {}
+        kpis: dict[str, float | int] = {}
+        if snapshot is not None:
+            failed_tasks = sum(
+                1
+                for result in snapshot.results.values()
+                if result.status_code != 200 or result.has_errors
+            )
+            summary = {
+                "duration_ms": snapshot.duration_ms,
+                "task_count": len(snapshot.results),
+                "failed_task_count": failed_tasks,
+            }
+            kpis = {
+                "probe_task_count": len(snapshot.results),
+                "probe_failed_task_count": failed_tasks,
+            }
+        artifact_payload = _build_standard_artifact_payload(
+            run_id=run_id,
+            command="probe",
+            started_at=started_at,
+            ended_at=ended_at,
+            tag_slug=tag_slug,
+            dry_run=True,
+            status=status,
+            summary=summary,
+            kpis=kpis,
+            error=error_payload,
+        )
+        payload_ok, payload_issues = validate_artifact_payload(artifact_payload)
+        if not payload_ok:
+            raise RuntimeError(f"probe artifact payload schema validation failed: {', '.join(payload_issues)}")
+        artifact_path = write_run_artifact(
+            artifacts_dir=settings.run_artifacts_dir,
+            run_id=run_id,
+            payload=artifact_payload,
+        )
+        log.info(
+            "run_artifact_written",
+            operation="run_artifact",
+            target_id=None,
+            decision="persist",
+            result="ok",
+            artifact_path=str(artifact_path),
+            status=status,
+        )
+
+        if snapshot is not None:
+            _render_probe(snapshot)
+        _print_notice(f"Run artifact saved: {artifact_path}", level="success")
+        if exit_code != 0:
+            raise typer.Exit(code=exit_code)
     finally:
         structlog_contextvars.clear_contextvars()
 
@@ -1692,25 +1986,100 @@ def contracts_command(
 
     run_id = new_run_id("contracts")
     structlog_contextvars.bind_contextvars(run_id=run_id, command="contracts", tag_slug=tag_slug)
+    log = structlog.get_logger(__name__)
+    started_at = _utc_now()
+    status = "success"
+    error_payload: dict[str, str] | None = None
+    exit_code = 0
+    report: ContractValidationReport | None = None
+    artifact_path: Path | None = None
     _print_notice(
         "Starting contracts validation "
         f"(run_id={run_id}, strict={str(strict).lower()}, execute_reads={str(execute_reads).lower()}).",
         level="info",
     )
     try:
-        report = validate_contract_registry(
-            registry_path=settings.implementation_ops_registry_path,
-            strict=strict,
+        try:
+            report = validate_contract_registry(
+                registry_path=settings.implementation_ops_registry_path,
+                strict=strict,
+                tag_slug=tag_slug,
+                actor_user_id=settings.medium_user_ref,
+                execute_reads=execute_reads,
+                settings=settings,
+                live_newsletter_slug=newsletter_slug or settings.contract_registry_live_newsletter_slug,
+                live_newsletter_username=newsletter_username or settings.contract_registry_live_newsletter_username,
+            )
+            if not report.ok:
+                status = "failed"
+                exit_code = 1
+                error_payload = {
+                    "type": "ContractValidationError",
+                    "message": "contract_validation_failed",
+                }
+        except Exception as exc:  # noqa: BLE001
+            status = "failed"
+            exit_code = 1
+            error_payload = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            }
+            _print_notice(f"Contracts validation failed: {exc}", level="error")
+
+        ended_at = _utc_now()
+        summary: dict[str, Any] = {}
+        kpis: dict[str, float | int] = {}
+        if report is not None:
+            summary = {
+                "registry_operations": len(report.registry_operation_names),
+                "implemented_operations": len(report.implemented_operation_names),
+                "checks_passed": report.passed_count,
+                "checks_failed": report.failed_count,
+                "live_reads_executed": report.live_executed_count,
+                "live_reads_failed": report.live_failed_count,
+                "overall_ok": 1 if report.ok else 0,
+            }
+            kpis = {
+                "contracts_failed_count": report.failed_count,
+                "contracts_live_failed_count": report.live_failed_count,
+                "contracts_missing_in_code": len(report.missing_in_code),
+                "contracts_extra_in_code": len(report.extra_in_code),
+            }
+
+        artifact_payload = _build_standard_artifact_payload(
+            run_id=run_id,
+            command="contracts",
+            started_at=started_at,
+            ended_at=ended_at,
             tag_slug=tag_slug,
-            actor_user_id=settings.medium_user_ref,
-            execute_reads=execute_reads,
-            settings=settings,
-            live_newsletter_slug=newsletter_slug or settings.contract_registry_live_newsletter_slug,
-            live_newsletter_username=newsletter_username or settings.contract_registry_live_newsletter_username,
+            dry_run=not execute_reads,
+            status=status,
+            summary=summary,
+            kpis=kpis,
+            error=error_payload,
         )
-        _render_contract_validation(report)
-        if not report.ok:
-            raise typer.Exit(code=1)
+        payload_ok, payload_issues = validate_artifact_payload(artifact_payload)
+        if not payload_ok:
+            raise RuntimeError(f"contracts artifact payload schema validation failed: {', '.join(payload_issues)}")
+        artifact_path = write_run_artifact(
+            artifacts_dir=settings.run_artifacts_dir,
+            run_id=run_id,
+            payload=artifact_payload,
+        )
+        log.info(
+            "run_artifact_written",
+            operation="run_artifact",
+            target_id=None,
+            decision="persist",
+            result="ok",
+            artifact_path=str(artifact_path),
+            status=status,
+        )
+        if report is not None:
+            _render_contract_validation(report)
+        _print_notice(f"Run artifact saved: {artifact_path}", level="success")
+        if exit_code != 0:
+            raise typer.Exit(code=exit_code)
     finally:
         structlog_contextvars.clear_contextvars()
 
@@ -1758,6 +2127,11 @@ def run_command(
         max=500,
         help="Optional cap on growth-cycle passes in one live session. Defaults to LIVE_SESSION_MAX_PASSES.",
     ),
+    auto_sync: bool = typer.Option(
+        False,
+        "--auto-sync/--no-auto-sync",
+        help="Refresh local social-graph cache before execution.",
+    ),
 ) -> None:
     """
     Run growth automation in either single-cycle or live session mode.
@@ -1779,6 +2153,7 @@ def run_command(
     exit_code = 0
     outcome: DailyRunOutcome | None = None
     artifact_path: Path | None = None
+    sync_outcome: GraphSyncOutcome | None = None
     live_session_enabled = live and session
     mode_label = "live-session" if live_session_enabled else "live-single" if live else "dry-run"
     _print_notice(f"Starting run `{run_id}` (mode={mode_label}, tag={tag_slug}).", level="info")
@@ -1788,8 +2163,18 @@ def run_command(
             _, repository = _build_runner(settings)
 
             async def _run() -> DailyRunOutcome:
+                nonlocal sync_outcome
                 async with MediumAsyncClient(settings) as client:
                     runner = DailyRunner(settings=settings, client=client, repository=repository)
+                    if auto_sync:
+                        sync_outcome_local = await runner.sync_social_graph(
+                            dry_run=not live,
+                            mode="auto",
+                            force=False,
+                        )
+                        if not sync_outcome_local.skipped:
+                            _render_graph_sync_outcome(sync_outcome_local)
+                        sync_outcome = sync_outcome_local
                     if live_session_enabled:
                         resolved_session_minutes = session_minutes or settings.live_session_duration_minutes
                         resolved_target_follows = target_follows or settings.live_session_target_follow_attempts
@@ -1820,6 +2205,11 @@ def run_command(
                     )
 
             outcome = asyncio.run(_run())
+            if outcome is not None and sync_outcome is not None:
+                outcome.kpis["graph_sync_skipped"] = 1 if sync_outcome.skipped else 0
+                outcome.kpis["graph_sync_followers_count"] = sync_outcome.followers_count
+                outcome.kpis["graph_sync_following_count"] = sync_outcome.following_count
+                outcome.kpis["graph_sync_imported_pending_count"] = sync_outcome.imported_pending_count
         except RiskHaltError as exc:
             status = "halted"
             exit_code = _risk_halt_exit_code(settings)
@@ -1894,6 +2284,11 @@ def cleanup_command(
         max=5000,
         help="Optional max cleanup unfollow attempts for this run. Defaults to CLEANUP_UNFOLLOW_LIMIT.",
     ),
+    auto_sync: bool = typer.Option(
+        True,
+        "--auto-sync/--no-auto-sync",
+        help="Refresh local social-graph cache before cleanup execution.",
+    ),
 ) -> None:
     """
     Run cleanup-only unfollow maintenance for overdue non-followback users.
@@ -1914,6 +2309,7 @@ def cleanup_command(
     exit_code = 0
     outcome: DailyRunOutcome | None = None
     artifact_path: Path | None = None
+    sync_outcome: GraphSyncOutcome | None = None
     resolved_limit = limit if limit is not None else settings.cleanup_unfollow_limit
     mode_label = "live" if live else "dry-run"
     _print_notice(
@@ -1926,14 +2322,29 @@ def cleanup_command(
             _, repository = _build_runner(settings)
 
             async def _run() -> DailyRunOutcome:
+                nonlocal sync_outcome
                 async with MediumAsyncClient(settings) as client:
                     runner = DailyRunner(settings=settings, client=client, repository=repository)
+                    if auto_sync:
+                        sync_outcome_local = await runner.sync_social_graph(
+                            dry_run=not live,
+                            mode="auto",
+                            force=False,
+                        )
+                        if not sync_outcome_local.skipped:
+                            _render_graph_sync_outcome(sync_outcome_local)
+                        sync_outcome = sync_outcome_local
                     return await runner.run_cleanup_only(
                         dry_run=not live,
                         max_unfollows=resolved_limit,
                     )
 
             outcome = asyncio.run(_run())
+            if outcome is not None and sync_outcome is not None:
+                outcome.kpis["graph_sync_skipped"] = 1 if sync_outcome.skipped else 0
+                outcome.kpis["graph_sync_followers_count"] = sync_outcome.followers_count
+                outcome.kpis["graph_sync_following_count"] = sync_outcome.following_count
+                outcome.kpis["graph_sync_imported_pending_count"] = sync_outcome.imported_pending_count
         except RiskHaltError as exc:
             status = "halted"
             exit_code = _risk_halt_exit_code(settings)
@@ -1994,6 +2405,133 @@ def cleanup_command(
         structlog_contextvars.clear_contextvars()
 
 
+@app.command("sync")
+def sync_command(
+    live: bool = typer.Option(
+        True,
+        "--live/--dry-run",
+        help="Persist graph sync cache in both modes; dry-run labels observability mode only.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Bypass freshness window and force a full graph sync.",
+    ),
+) -> None:
+    """
+    Sync own followers/following graph into local cache for faster decisions.
+    """
+    settings = _bootstrap_settings()
+    _require_session(settings)
+
+    run_id = new_run_id("sync")
+    structlog_contextvars.bind_contextvars(
+        run_id=run_id,
+        command="sync",
+        mode="live" if live else "dry_run",
+    )
+    log = structlog.get_logger(__name__)
+    started_at = _utc_now()
+    status = "success"
+    error_payload: dict[str, str] | None = None
+    exit_code = 0
+    outcome: GraphSyncOutcome | None = None
+    artifact_path: Path | None = None
+    _print_notice(
+        f"Starting graph sync `{run_id}` (mode={'live' if live else 'dry-run'}, force={str(force).lower()}).",
+        level="info",
+    )
+    try:
+        try:
+            _, repository = _build_runner(settings)
+
+            async def _run() -> GraphSyncOutcome:
+                async with MediumAsyncClient(settings) as client:
+                    runner = DailyRunner(settings=settings, client=client, repository=repository)
+                    return await runner.sync_social_graph(
+                        dry_run=not live,
+                        mode="manual",
+                        force=force,
+                    )
+
+            outcome = asyncio.run(_run())
+        except RiskHaltError as exc:
+            status = "halted"
+            exit_code = _risk_halt_exit_code(settings)
+            error_payload = {
+                "type": "RiskHaltError",
+                "message": str(exc),
+                "reason": exc.reason,
+                "task_name": exc.task_name,
+                "detail": exc.detail,
+            }
+            _render_risk_halt(exc, settings=settings)
+        except Exception as exc:  # noqa: BLE001
+            status = "failed"
+            exit_code = 1
+            error_payload = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            }
+            _print_notice(f"Graph sync failed: {exc}", level="error")
+
+        ended_at = _utc_now()
+        summary: dict[str, Any] = {}
+        kpis: dict[str, float | int] = {}
+        if outcome is not None:
+            summary = {
+                "skipped": outcome.skipped,
+                "skip_reason": outcome.skip_reason,
+                "followers_count": outcome.followers_count,
+                "following_count": outcome.following_count,
+                "imported_pending_count": outcome.imported_pending_count,
+                "duration_ms": outcome.duration_ms,
+                "following_source": outcome.used_following_source or "-",
+            }
+            kpis = {
+                "graph_sync_skipped": 1 if outcome.skipped else 0,
+                "graph_sync_followers_count": outcome.followers_count,
+                "graph_sync_following_count": outcome.following_count,
+                "graph_sync_imported_pending_count": outcome.imported_pending_count,
+            }
+        artifact_payload = _build_standard_artifact_payload(
+            run_id=run_id,
+            command="sync",
+            started_at=started_at,
+            ended_at=ended_at,
+            tag_slug="social_graph",
+            dry_run=not live,
+            status=status,
+            summary=summary,
+            kpis=kpis,
+            error=error_payload,
+        )
+        payload_ok, payload_issues = validate_artifact_payload(artifact_payload)
+        if not payload_ok:
+            raise RuntimeError(f"sync artifact payload schema validation failed: {', '.join(payload_issues)}")
+        artifact_path = write_run_artifact(
+            artifacts_dir=settings.run_artifacts_dir,
+            run_id=run_id,
+            payload=artifact_payload,
+        )
+        log.info(
+            "run_artifact_written",
+            operation="run_artifact",
+            target_id=None,
+            decision="persist",
+            result="ok",
+            artifact_path=str(artifact_path),
+            status=status,
+        )
+        if outcome is not None:
+            _render_graph_sync_outcome(outcome)
+        _print_notice(f"Run artifact saved: {artifact_path}", level="success")
+        if exit_code != 0:
+            raise typer.Exit(code=exit_code)
+    finally:
+        structlog_contextvars.clear_contextvars()
+
+
 @app.command("reconcile")
 def reconcile_command(
     live: bool = typer.Option(
@@ -2015,6 +2553,11 @@ def reconcile_command(
         max=500,
         help="Pagination window for candidate reconciliation scans.",
     ),
+    auto_sync: bool = typer.Option(
+        True,
+        "--auto-sync/--no-auto-sync",
+        help="Refresh local social-graph cache before reconcile execution.",
+    ),
 ) -> None:
     """
     Reconcile local follow state against live UserViewerEdge checks.
@@ -2028,42 +2571,137 @@ def reconcile_command(
         command="reconcile",
         mode="live" if live else "dry_run",
     )
+    log = structlog.get_logger(__name__)
+    started_at = _utc_now()
+    status = "success"
+    error_payload: dict[str, str] | None = None
+    exit_code = 0
+    outcome: ReconcileOutcome | None = None
+    sync_outcome: GraphSyncOutcome | None = None
+    artifact_path: Path | None = None
     _print_notice(
         f"Starting reconcile run `{run_id}` (mode={'live' if live else 'dry-run'}, limit={max_users}, page_size={page_size}).",
         level="info",
     )
     try:
-        _, repository = _build_runner(settings)
-
-        async def _run() -> ReconcileOutcome:
-            async with MediumAsyncClient(settings) as client:
-                runner = DailyRunner(settings=settings, client=client, repository=repository)
-                return await runner.reconcile_follow_states(
-                    dry_run=not live,
-                    max_users=max_users,
-                    page_size=page_size,
-                )
-
         try:
+            _, repository = _build_runner(settings)
+
+            async def _run() -> ReconcileOutcome:
+                nonlocal sync_outcome
+                async with MediumAsyncClient(settings) as client:
+                    runner = DailyRunner(settings=settings, client=client, repository=repository)
+                    if auto_sync:
+                        sync_outcome_local = await runner.sync_social_graph(
+                            dry_run=not live,
+                            mode="auto",
+                            force=False,
+                        )
+                        if not sync_outcome_local.skipped:
+                            _render_graph_sync_outcome(sync_outcome_local)
+                        sync_outcome = sync_outcome_local
+                    return await runner.reconcile_follow_states(
+                        dry_run=not live,
+                        max_users=max_users,
+                        page_size=page_size,
+                    )
+
             outcome = asyncio.run(_run())
         except RiskHaltError as exc:
+            status = "halted"
+            exit_code = _risk_halt_exit_code(settings)
+            error_payload = {
+                "type": "RiskHaltError",
+                "message": str(exc),
+                "reason": exc.reason,
+                "task_name": exc.task_name,
+                "detail": exc.detail,
+            }
             _render_risk_halt(exc, settings=settings)
-            halt_exit_code = _risk_halt_exit_code(settings)
-            if halt_exit_code != 0:
-                raise typer.Exit(code=halt_exit_code) from exc
-            return
-        _render_reconcile_outcome(outcome)
+        except Exception as exc:  # noqa: BLE001
+            status = "failed"
+            exit_code = 1
+            error_payload = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            }
+            _print_notice(f"Reconcile run failed: {exc}", level="error")
+
+        ended_at = _utc_now()
+        summary: dict[str, Any] = {}
+        kpis: dict[str, float | int] = {}
+        if outcome is not None:
+            summary = {
+                "scanned_users": outcome.scanned_users,
+                "updated_users": outcome.updated_users,
+                "following_count": outcome.following_count,
+                "not_following_count": outcome.not_following_count,
+                "unknown_count": outcome.unknown_count,
+            }
+            kpis = {
+                "reconcile_following_count": outcome.following_count,
+                "reconcile_not_following_count": outcome.not_following_count,
+                "reconcile_unknown_count": outcome.unknown_count,
+            }
+        if sync_outcome is not None:
+            kpis["graph_sync_skipped"] = 1 if sync_outcome.skipped else 0
+            kpis["graph_sync_followers_count"] = sync_outcome.followers_count
+            kpis["graph_sync_following_count"] = sync_outcome.following_count
+            kpis["graph_sync_imported_pending_count"] = sync_outcome.imported_pending_count
+        artifact_payload = _build_standard_artifact_payload(
+            run_id=run_id,
+            command="reconcile",
+            started_at=started_at,
+            ended_at=ended_at,
+            tag_slug="reconcile",
+            dry_run=not live,
+            status=status,
+            summary=summary,
+            kpis=kpis,
+            error=error_payload,
+        )
+        payload_ok, payload_issues = validate_artifact_payload(artifact_payload)
+        if not payload_ok:
+            raise RuntimeError(f"reconcile artifact payload schema validation failed: {', '.join(payload_issues)}")
+        artifact_path = write_run_artifact(
+            artifacts_dir=settings.run_artifacts_dir,
+            run_id=run_id,
+            payload=artifact_payload,
+        )
+        log.info(
+            "run_artifact_written",
+            operation="run_artifact",
+            target_id=None,
+            decision="persist",
+            result="ok",
+            artifact_path=str(artifact_path),
+            status=status,
+        )
+        if outcome is not None:
+            _render_reconcile_outcome(outcome)
+        _print_notice(f"Run artifact saved: {artifact_path}", level="success")
+        if exit_code != 0:
+            raise typer.Exit(code=exit_code)
     finally:
         structlog_contextvars.clear_contextvars()
 
 
 @app.command("status")
-def status_command() -> None:
+def status_command(
+    emit_artifact: bool = typer.Option(
+        False,
+        "--emit-artifact/--no-emit-artifact",
+        help="Emit a status command artifact in addition to rendering.",
+    ),
+) -> None:
     """
     Show last-run diagnostic health from the latest run artifact.
     """
     settings = _bootstrap_settings()
-    latest = read_latest_run_artifact(settings.run_artifacts_dir)
+    latest = read_latest_run_artifact(
+        settings.run_artifacts_dir,
+        exclude_commands={"status", "artifacts_validate"},
+    )
     if not latest:
         _print_notice(
             f"No run artifacts found in {settings.run_artifacts_dir}. Execute `uv run bot run` first.",
@@ -2080,6 +2718,36 @@ def status_command() -> None:
         )
         raise typer.Exit(code=1)
     _render_status(artifact, artifact_path=source)
+    if not emit_artifact:
+        return
+
+    run_id = new_run_id("status")
+    started_at = _utc_now()
+    ended_at = _utc_now()
+    summary = {
+        "source_artifact": str(source),
+        "source_status": str(artifact.get("status", "-")),
+        "source_health": str(artifact.get("health", "-")),
+    }
+    payload = _build_standard_artifact_payload(
+        run_id=run_id,
+        command="status",
+        started_at=started_at,
+        ended_at=ended_at,
+        tag_slug=str(artifact.get("tag_slug", "status")),
+        dry_run=None,
+        status="success",
+        summary=summary,
+    )
+    payload_ok, payload_issues = validate_artifact_payload(payload)
+    if not payload_ok:
+        raise RuntimeError(f"status artifact payload schema validation failed: {', '.join(payload_issues)}")
+    path = write_run_artifact(
+        artifacts_dir=settings.run_artifacts_dir,
+        run_id=run_id,
+        payload=payload,
+    )
+    _print_notice(f"Run artifact saved: {path}", level="success")
 
 
 @artifacts_app.command("validate")
@@ -2089,13 +2757,21 @@ def artifacts_validate_command(
         "--path",
         help="Optional path to a run artifact. Defaults to latest artifact in RUN_ARTIFACTS_DIR.",
     ),
+    emit_artifact: bool = typer.Option(
+        False,
+        "--emit-artifact/--no-emit-artifact",
+        help="Emit an artifacts-validate command artifact in addition to validation output.",
+    ),
 ) -> None:
     """
     Validate run artifact schema compatibility and contract shape.
     """
     settings = _bootstrap_settings()
     if artifact_path is None:
-        latest = read_latest_run_artifact(settings.run_artifacts_dir)
+        latest = read_latest_run_artifact(
+            settings.run_artifacts_dir,
+            exclude_commands={"status", "artifacts_validate"},
+        )
         if not latest:
             _print_notice(f"No artifacts found in {settings.run_artifacts_dir}.", level="warning")
             raise typer.Exit(code=1)
@@ -2119,6 +2795,31 @@ def artifacts_validate_command(
         )
         raise typer.Exit(code=1)
     _print_notice(f"Artifact validation passed: {source}", level="success")
+    if not emit_artifact:
+        return
+
+    run_id = new_run_id("artifacts_validate")
+    started_at = _utc_now()
+    ended_at = _utc_now()
+    payload = _build_standard_artifact_payload(
+        run_id=run_id,
+        command="artifacts_validate",
+        started_at=started_at,
+        ended_at=ended_at,
+        tag_slug="artifacts",
+        dry_run=True,
+        status="success",
+        summary={"validated_artifact": str(source)},
+    )
+    payload_ok, payload_issues = validate_artifact_payload(payload)
+    if not payload_ok:
+        raise RuntimeError(f"artifacts_validate payload schema validation failed: {', '.join(payload_issues)}")
+    path = write_run_artifact(
+        artifacts_dir=settings.run_artifacts_dir,
+        run_id=run_id,
+        payload=payload,
+    )
+    _print_notice(f"Run artifact saved: {path}", level="success")
 
 
 if __name__ == "__main__":
