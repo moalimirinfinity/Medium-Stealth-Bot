@@ -102,3 +102,88 @@ def test_timing_controller_enforces_min_gap(monkeypatch) -> None:
     assert first == 0.0
     assert 8.8 <= second <= 9.2
     assert len(sleep_calls) == 1
+
+
+def test_timing_controller_enforces_verify_gap(monkeypatch) -> None:
+    settings = AppSettings(
+        _env_file=None,
+        MIN_VERIFY_GAP_SECONDS=5,
+        MAX_VERIFY_GAP_SECONDS=5,
+    )
+    controller = HumanTimingController(settings=settings)
+
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr("medium_stealth_bot.timing.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr(
+        "medium_stealth_bot.timing.HumanTimingController._sample_delay",
+        lambda *args, **kwargs: 5.0,
+    )
+
+    first = asyncio.run(controller.sleep_verify_gap())
+    controller._last_verify_started_at = controller._now() - 1.0
+    second = asyncio.run(controller.sleep_verify_gap())
+
+    assert first == 0.0
+    assert 3.8 <= second <= 4.2
+    assert len(sleep_calls) == 1
+
+
+def test_timing_controller_enforces_mutation_window_limit(monkeypatch) -> None:
+    settings = AppSettings(
+        _env_file=None,
+        MIN_ACTION_GAP_SECONDS=0,
+        MAX_ACTION_GAP_SECONDS=0,
+        MAX_MUTATIONS_PER_10_MINUTES=1,
+    )
+    controller = HumanTimingController(settings=settings)
+
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr("medium_stealth_bot.timing.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr(
+        "medium_stealth_bot.timing.HumanTimingController._sample_delay",
+        lambda *args, **kwargs: 0.0,
+    )
+
+    first = asyncio.run(controller.sleep_action_gap())
+    second = asyncio.run(controller.sleep_action_gap())
+
+    assert first == 0.0
+    assert second >= 590.0
+    assert controller.mutation_window_limit_hits >= 1
+    assert len(sleep_calls) == 1
+
+
+def test_timing_controller_simulation_mode_avoids_real_sleep(monkeypatch) -> None:
+    settings = AppSettings(
+        _env_file=None,
+        MIN_ACTION_GAP_SECONDS=10,
+        MAX_ACTION_GAP_SECONDS=10,
+    )
+    controller = HumanTimingController(settings=settings)
+    controller.set_simulation_mode(True)
+
+    async def fail_sleep(delay: float) -> None:  # pragma: no cover - assertion path
+        raise AssertionError(f"sleep should not be called in simulation mode (delay={delay})")
+
+    monkeypatch.setattr("medium_stealth_bot.timing.asyncio.sleep", fail_sleep)
+    monkeypatch.setattr(
+        "medium_stealth_bot.timing.HumanTimingController._sample_delay",
+        lambda *args, **kwargs: 10.0,
+    )
+
+    first = asyncio.run(controller.sleep_action_gap())
+    controller._last_action_started_at = controller._now() - 1.0
+    second = asyncio.run(controller.sleep_action_gap())
+    metrics = controller.metrics_snapshot()
+
+    assert first == 0.0
+    assert 8.8 <= second <= 9.2
+    assert metrics["timing_simulated_sleep_seconds_total"] >= second
