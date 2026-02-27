@@ -34,11 +34,21 @@ def test_pending_nonreciprocal_candidates_treats_missing_followed_at_as_overdue(
             """,
             ("user-missing-followed-at", "ghost", "", "legacy_import", None),
         )
+        connection.execute(
+            """
+            INSERT INTO follow_cycle (
+                user_id, username, followed_at, follow_source, follow_deadline_at, cleanup_status, updated_at
+            )
+            VALUES (?, ?, ?, ?, datetime('now', 'utc', '+30 day'), 'pending', CURRENT_TIMESTAMP)
+            """,
+            ("user-missing-followed-at-future-deadline", "ghost2", "", "legacy_import"),
+        )
         connection.commit()
 
     due = repository.pending_nonreciprocal_candidates(grace_days=7, limit=10)
     due_ids = {row["user_id"] for row in due}
     assert "user-missing-followed-at" in due_ids
+    assert "user-missing-followed-at-future-deadline" in due_ids
 
 
 def test_cleanup_pipeline_keeps_users_above_whitelist_threshold(tmp_path: Path, monkeypatch) -> None:
@@ -108,3 +118,65 @@ def test_cleanup_pipeline_keeps_users_above_whitelist_threshold(tmp_path: Path, 
         ).fetchone()
         assert row is not None
         assert row["cleanup_status"] == "kept_whitelist"
+
+
+def test_cleanup_pipeline_uses_cached_followers_before_live_fetch(tmp_path: Path, monkeypatch) -> None:
+    settings = AppSettings(
+        _env_file=None,
+        MEDIUM_SESSION="sid=fake",
+        MEDIUM_USER_REF="actor-user-id",
+        CLEANUP_UNFOLLOW_WHITELIST_MIN_FOLLOWERS=2000,
+    )
+    database = Database(tmp_path / "cleanup-cache.db")
+    database.initialize()
+    repository = ActionRepository(database)
+    runner = DailyRunner(settings=settings, client=StubClient(), repository=repository)
+
+    run_id = repository.begin_graph_sync_run(mode="manual")
+    repository.replace_own_followers_snapshot(
+        [{"user_id": "user-followed-back", "username": "cached-follower"}],
+        run_id=run_id,
+    )
+    repository.complete_graph_sync_run(run_id, status="success")
+
+    with database.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO follow_cycle (
+                user_id, username, followed_at, follow_source, follow_deadline_at, cleanup_status, updated_at
+            )
+            VALUES (?, ?, datetime('now', 'utc', '-30 day'), ?, datetime('now', 'utc', '-7 day'), 'pending', CURRENT_TIMESTAMP)
+            """,
+            ("user-followed-back", "cached-follower", "seed_follow"),
+        )
+        connection.commit()
+
+    async def fail_fetch_own_follower_ids(limit: int) -> set[str]:  # pragma: no cover - assertion path
+        raise AssertionError("fallback fetch should not be used when cache is populated")
+
+    async def fail_execute_with_retry(task_name: str, operation) -> GraphQLResult:  # pragma: no cover - assertion path
+        raise AssertionError(f"no live calls expected, got {task_name}")
+
+    monkeypatch.setattr(runner, "_fetch_own_follower_ids", fail_fetch_own_follower_ids)
+    monkeypatch.setattr(runner, "_execute_with_retry", fail_execute_with_retry)
+
+    decisions: list[CandidateDecision] = []
+    attempted, verified = asyncio.run(
+        runner._execute_cleanup_pipeline(
+            dry_run=False,
+            max_to_run=5,
+            decisions=decisions,
+        )
+    )
+
+    assert attempted == 0
+    assert verified == 0
+    assert any(item.reason == "cleanup:kept_followed_back" for item in decisions)
+
+    with database.connect() as connection:
+        row = connection.execute(
+            "SELECT cleanup_status FROM follow_cycle WHERE user_id = ?",
+            ("user-followed-back",),
+        ).fetchone()
+        assert row is not None
+        assert row["cleanup_status"] == "followed_back"
