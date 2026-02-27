@@ -132,8 +132,8 @@ You can copy a Cookie header from browser DevTools Network tab for a signed-in `
 | 14 | Config | Edit defaults | Edits menu defaults (tag, seed users, session targets, pacing defaults, cleanup/reconcile defaults, newsletter defaults). |
 | 15 | Config | Run setup wizard | Launches setup wizard to write/update runtime defaults in `.env`. |
 | 16 | Auth | Refresh auth session | Runs interactive auth capture and updates session values in `.env`. |
-| 17 | System | Exit | Exits the interactive start menu. |
-| 18 | Maintenance | Sync social graph cache | Refreshes local followers/following cache and imports unknown-timestamp following rows into cleanup tracking. |
+| 17 | Maintenance | Sync social graph cache | Forces a full cache refresh (ignores freshness window) and imports unknown-timestamp following rows into cleanup tracking. |
+| 18 | System | Exit | Exits the interactive start menu. |
 
 ## Safety and Guardrails
 
