@@ -8,6 +8,8 @@
 3. Optional live read check passes when newsletter inputs are configured.
 4. `OPERATOR_KILL_SWITCH=false` in active profile.
 5. No active lock from previous scheduled run (`.data/scheduler/run_daily_live.lock` absent).
+6. If running cleanup-heavy maintenance, refresh cache first:
+   - `uv run bot sync --live --force`
 
 ## Manual Live Run SOP
 
@@ -25,6 +27,35 @@
 2. Confirm daily logs under `.data/scheduler/`.
 3. Review latest run daily via:
    - `uv run bot status`
+
+## Maintenance SOP
+
+### Full Social Graph Refresh
+
+1. Execute:
+   - `uv run bot sync --live --force`
+2. Confirm snapshot counts from command output/artifact (`followers_count`, `following_count`).
+3. Verify latest state:
+   - `uv run bot status`
+
+### Reconcile Follow States
+
+1. Execute live:
+   - `uv run bot reconcile --live --limit 200 --page-size 50`
+2. Use dry-run when validating only:
+   - `uv run bot reconcile --dry-run --limit 200 --page-size 50`
+3. Confirm scanned/updated counts in output and artifact summary.
+
+### Cleanup-Only Unfollow
+
+1. Execute dry-run first:
+   - `uv run bot cleanup --dry-run --limit 50`
+2. Execute live run:
+   - `uv run bot cleanup --live --limit 50`
+3. Expected behavior:
+   - only users present in `own_following_cache` are unfollow candidates
+   - high-follower users are retained by whitelist threshold
+   - live unfollows run with short randomized gaps in an effective `1-4s` window
 
 ## Halt Reason Triage
 

@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import structlog
 import typer
@@ -47,6 +47,68 @@ _NOTICE_PREFIX = {
     "success": "SUCCESS",
     "warning": "WARNING",
     "error": "ERROR",
+}
+
+_START_MENU_OPTIONS: tuple[tuple[str, str, str], ...] = (
+    ("1", "Execution", "Run live growth session (multi-cycle)"),
+    ("2", "Execution", "Run live growth cycle (single pass)"),
+    ("3", "Execution", "Run growth cycle (dry-run)"),
+    ("4", "Execution", "Run dry-run preflight then live growth session"),
+    ("5", "Maintenance", "Cleanup-only unfollow (live)"),
+    ("6", "Maintenance", "Cleanup-only unfollow (dry-run)"),
+    ("7", "Maintenance", "Reconcile follow states (live)"),
+    ("8", "Maintenance", "Reconcile follow states (dry-run)"),
+    ("9", "Maintenance", "Sync social graph cache"),
+    ("10", "Diagnostics", "Probe GraphQL reads"),
+    ("11", "Diagnostics", "Validate operation contracts (parity only)"),
+    ("12", "Diagnostics", "Validate contracts + execute live read checks"),
+    ("13", "Observability", "Show latest run status"),
+    ("14", "Observability", "Validate latest run artifact schema"),
+    ("15", "Config", "Edit defaults"),
+    ("16", "Config", "Run setup wizard"),
+    ("17", "Auth", "Refresh auth session"),
+    ("18", "System", "Exit"),
+)
+
+_START_MENU_GROUP_ORDER: tuple[str, ...] = (
+    "Execution",
+    "Maintenance",
+    "Diagnostics",
+    "Observability",
+    "Config",
+    "Auth",
+    "System",
+)
+
+_START_MENU_GROUP_STYLES: dict[str, str] = {
+    "Execution": "cyan",
+    "Maintenance": "yellow",
+    "Diagnostics": "magenta",
+    "Observability": "green",
+    "Config": "blue",
+    "Auth": "bright_cyan",
+    "System": "red",
+}
+
+_START_MENU_MODE_LABELS: dict[str, str] = {
+    "1": "Live",
+    "2": "Live",
+    "3": "Dry-run",
+    "4": "Hybrid",
+    "5": "Live",
+    "6": "Dry-run",
+    "7": "Live",
+    "8": "Dry-run",
+    "9": "Sync",
+    "10": "Read",
+    "11": "Validate",
+    "12": "Validate+Read",
+    "13": "Inspect",
+    "14": "Validate",
+    "15": "Config",
+    "16": "Setup",
+    "17": "Auth",
+    "18": "Exit",
 }
 
 
@@ -348,6 +410,7 @@ def _render_graph_sync_outcome(outcome: GraphSyncOutcome) -> None:
     table.add_row("Run ID", str(outcome.run_id or "-"))
     table.add_row("Followers Synced", str(outcome.followers_count))
     table.add_row("Following Synced", str(outcome.following_count))
+    table.add_row("Users Upserted", str(outcome.users_upserted_count))
     table.add_row("Imported Pending", str(outcome.imported_pending_count))
     table.add_row("Following Source", outcome.used_following_source or "-")
     table.add_row("Duration (ms)", str(outcome.duration_ms))
@@ -1139,7 +1202,7 @@ def _render_start_menu(
     newsletter_slug: str | None,
     newsletter_username: str | None,
 ) -> None:
-    status_label = "ready" if has_session else "missing (use option 16 to refresh auth)"
+    status_label = "ready" if has_session else "missing (use option 17 to refresh auth)"
     _print_notice(
         f"Session status: {status_label}",
         level="success" if has_session else "warning",
@@ -1176,29 +1239,33 @@ def _render_start_menu(
     defaults.add_row("Newsletter Username", newsletter_username or "-")
     console.print(defaults)
 
-    menu = Table(title="Start Menu")
-    menu.add_column("Option", justify="right")
-    menu.add_column("Group")
+    menu = Table(title="Start Menu", header_style="bold white")
+    menu.add_column("Option", justify="right", style="bold cyan", no_wrap=True)
+    menu.add_column("Group", no_wrap=True)
+    menu.add_column("Mode", style="italic", no_wrap=True)
     menu.add_column("Action")
-    menu.add_row("1", "Execution", "Run live growth session (multi-cycle)")
-    menu.add_row("2", "Execution", "Run live growth cycle (single pass)")
-    menu.add_row("3", "Execution", "Run growth cycle (dry-run)")
-    menu.add_row("4", "Execution", "Run dry-run preflight then live growth session")
-    menu.add_row("5", "Maintenance", "Cleanup-only unfollow (live)")
-    menu.add_row("6", "Maintenance", "Cleanup-only unfollow (dry-run)")
-    menu.add_row("7", "Maintenance", "Reconcile follow states (live)")
-    menu.add_row("8", "Maintenance", "Reconcile follow states (dry-run)")
-    menu.add_row("9", "Diagnostics", "Probe GraphQL reads")
-    menu.add_row("10", "Diagnostics", "Validate operation contracts (parity only)")
-    menu.add_row("11", "Diagnostics", "Validate contracts + execute live read checks")
-    menu.add_row("12", "Observability", "Show latest run status")
-    menu.add_row("13", "Observability", "Validate latest run artifact schema")
-    menu.add_row("14", "Config", "Edit defaults")
-    menu.add_row("15", "Config", "Run setup wizard")
-    menu.add_row("16", "Auth", "Refresh auth session")
-    menu.add_row("17", "Maintenance", "Sync social graph cache")
-    menu.add_row("18", "System", "Exit")
+    grouped_items: dict[str, list[tuple[str, str, str]]] = {group: [] for group in _START_MENU_GROUP_ORDER}
+    for item in _START_MENU_OPTIONS:
+        grouped_items.setdefault(item[1], []).append(item)
+    section_added = False
+    for group in _START_MENU_GROUP_ORDER:
+        group_items = sorted(grouped_items.get(group, []), key=lambda item: int(item[0]))
+        if not group_items:
+            continue
+        if section_added:
+            menu.add_section()
+        group_style = _START_MENU_GROUP_STYLES.get(group, "white")
+        for option, _, action in group_items:
+            mode_label = _START_MENU_MODE_LABELS.get(option, "-")
+            menu.add_row(
+                option,
+                f"[bold {group_style}]{group}[/bold {group_style}]",
+                mode_label,
+                action,
+            )
+        section_added = True
     console.print(menu)
+    _print_notice("Choose an option number (or `q`) and press Enter.", level="info")
 
 
 def _run_start_menu(
@@ -1254,8 +1321,9 @@ def _run_start_menu(
     cleanup_whitelist_min_followers = max(0, initial_cleanup_whitelist_min_followers)
     newsletter_slug = (initial_newsletter_slug or "").strip()
     newsletter_username = (initial_newsletter_username or "").strip()
-    valid_choices = {str(value) for value in range(1, 19)}
-    valid_choices_hint = "1-18"
+    valid_choices = {option for option, _, _ in _START_MENU_OPTIONS}
+    sorted_choices = sorted(valid_choices, key=lambda value: int(value))
+    valid_choices_hint = f"{sorted_choices[0]}-{sorted_choices[-1]}"
 
     while True:
         settings = _bootstrap_settings()
@@ -1313,8 +1381,72 @@ def _run_start_menu(
                 _print_notice(f"{action_name} failed: {exc}", level="error")
                 return False
 
-        if choice == "1":
-            _execute(
+        def _prompt_cleanup_run_limit() -> int:
+            nonlocal cleanup_unfollow_limit
+            run_limit = int(
+                typer.prompt(
+                    "Cleanup-only unfollow limit for this run",
+                    default=cleanup_unfollow_limit,
+                    type=int,
+                )
+            )
+            if run_limit < 1:
+                _print_notice("Cleanup limit must be >= 1. Using current default.", level="warning")
+                return cleanup_unfollow_limit
+            cleanup_unfollow_limit = run_limit
+            return run_limit
+
+        def _refresh_defaults_from_settings(refreshed_settings: AppSettings) -> None:
+            nonlocal seed_user_refs
+            nonlocal live_session_minutes
+            nonlocal live_session_target_follows
+            nonlocal live_session_min_follows
+            nonlocal live_session_max_passes
+            nonlocal max_mutations_per_10_minutes
+            nonlocal min_verify_gap_seconds
+            nonlocal max_verify_gap_seconds
+            nonlocal pass_cooldown_min_seconds
+            nonlocal pass_cooldown_max_seconds
+            nonlocal pacing_soft_degrade_cooldown_seconds
+            nonlocal enable_pacing_auto_clamp
+            nonlocal graph_sync_auto_enabled
+            nonlocal graph_sync_freshness_window_minutes
+            nonlocal graph_sync_full_pagination
+            nonlocal graph_sync_enable_graphql_following
+            nonlocal graph_sync_enable_scrape_fallback
+            nonlocal graph_sync_scrape_page_timeout_seconds
+            nonlocal cleanup_unfollow_limit
+            nonlocal cleanup_whitelist_min_followers
+            nonlocal newsletter_slug
+            nonlocal newsletter_username
+
+            seed_user_refs = seed_user_refs or refreshed_settings.discovery_seed_users
+            live_session_minutes = refreshed_settings.live_session_duration_minutes
+            live_session_target_follows = refreshed_settings.live_session_target_follow_attempts
+            live_session_min_follows = refreshed_settings.live_session_min_follow_attempts
+            live_session_max_passes = refreshed_settings.live_session_max_passes
+            max_mutations_per_10_minutes = refreshed_settings.max_mutations_per_10_minutes
+            min_verify_gap_seconds = refreshed_settings.min_verify_gap_seconds
+            max_verify_gap_seconds = refreshed_settings.max_verify_gap_seconds
+            pass_cooldown_min_seconds = refreshed_settings.pass_cooldown_min_seconds
+            pass_cooldown_max_seconds = refreshed_settings.pass_cooldown_max_seconds
+            pacing_soft_degrade_cooldown_seconds = refreshed_settings.pacing_soft_degrade_cooldown_seconds
+            enable_pacing_auto_clamp = refreshed_settings.enable_pacing_auto_clamp
+            graph_sync_auto_enabled = refreshed_settings.graph_sync_auto_enabled
+            graph_sync_freshness_window_minutes = refreshed_settings.graph_sync_freshness_window_minutes
+            graph_sync_full_pagination = refreshed_settings.graph_sync_full_pagination
+            graph_sync_enable_graphql_following = refreshed_settings.graph_sync_enable_graphql_following
+            graph_sync_enable_scrape_fallback = refreshed_settings.graph_sync_enable_scrape_fallback
+            graph_sync_scrape_page_timeout_seconds = refreshed_settings.graph_sync_scrape_page_timeout_seconds
+            cleanup_unfollow_limit = max(1, refreshed_settings.cleanup_unfollow_limit)
+            cleanup_whitelist_min_followers = max(0, refreshed_settings.cleanup_unfollow_whitelist_min_followers)
+            if not newsletter_slug:
+                newsletter_slug = refreshed_settings.contract_registry_live_newsletter_slug or ""
+            if not newsletter_username:
+                newsletter_username = refreshed_settings.contract_registry_live_newsletter_username or ""
+
+        simple_actions: dict[str, tuple[str, Callable[[], None]]] = {
+            "1": (
                 "run live growth session",
                 lambda: run_command(
                     tag_slug=tag_slug,
@@ -1325,9 +1457,8 @@ def _run_start_menu(
                     target_follows=live_session_target_follows,
                     session_max_passes=live_session_max_passes,
                 ),
-            )
-        elif choice == "2":
-            _execute(
+            ),
+            "2": (
                 "run live single cycle",
                 lambda: run_command(
                     tag_slug=tag_slug,
@@ -1336,9 +1467,8 @@ def _run_start_menu(
                     session=False,
                     auto_sync=graph_sync_auto_enabled,
                 ),
-            )
-        elif choice == "3":
-            _execute(
+            ),
+            "3": (
                 "run dry-run cycle",
                 lambda: run_command(
                     tag_slug=tag_slug,
@@ -1346,8 +1476,68 @@ def _run_start_menu(
                     seed_user_refs=seed_user_refs,
                     auto_sync=graph_sync_auto_enabled,
                 ),
-            )
-        elif choice == "4":
+            ),
+            "7": (
+                "reconcile live",
+                lambda: reconcile_command(
+                    live=True,
+                    max_users=reconcile_limit,
+                    page_size=reconcile_page_size,
+                    auto_sync=graph_sync_auto_enabled,
+                ),
+            ),
+            "8": (
+                "reconcile dry-run",
+                lambda: reconcile_command(
+                    live=False,
+                    max_users=reconcile_limit,
+                    page_size=reconcile_page_size,
+                    auto_sync=graph_sync_auto_enabled,
+                ),
+            ),
+            "9": ("sync social graph cache", lambda: sync_command(live=True, force=True)),
+            "10": ("probe reads", lambda: probe_command(tag_slug=tag_slug)),
+            "11": (
+                "validate contracts",
+                lambda: contracts_command(
+                    tag_slug=tag_slug,
+                    strict=True,
+                    execute_reads=False,
+                    newsletter_slug=None,
+                    newsletter_username=None,
+                ),
+            ),
+            "12": (
+                "validate contracts with live reads",
+                lambda: contracts_command(
+                    tag_slug=tag_slug,
+                    strict=True,
+                    execute_reads=True,
+                    newsletter_slug=newsletter_slug or None,
+                    newsletter_username=newsletter_username or None,
+                ),
+            ),
+            "13": ("show status", lambda: status_command(emit_artifact=True)),
+            "14": (
+                "validate latest artifact",
+                lambda: artifacts_validate_command(artifact_path=None, emit_artifact=True),
+            ),
+            "17": (
+                "refresh auth session",
+                lambda: auth_command(
+                    write_env=True,
+                    env_path=Path(".env"),
+                    login_url="https://medium.com/m/signin",
+                ),
+            ),
+        }
+
+        if choice in simple_actions:
+            action_name, handler = simple_actions[choice]
+            _execute(action_name, handler)
+            continue
+
+        if choice == "4":
             preflight_ok = _execute(
                 "dry-run preflight",
                 lambda: run_command(
@@ -1372,18 +1562,7 @@ def _run_start_menu(
                     ),
                 )
         elif choice == "5":
-            run_limit = int(
-                typer.prompt(
-                    "Cleanup-only unfollow limit for this run",
-                    default=cleanup_unfollow_limit,
-                    type=int,
-                )
-            )
-            if run_limit < 1:
-                _print_notice("Cleanup limit must be >= 1. Using current default.", level="warning")
-                run_limit = cleanup_unfollow_limit
-            else:
-                cleanup_unfollow_limit = run_limit
+            run_limit = _prompt_cleanup_run_limit()
             _execute(
                 "cleanup-only unfollow (live)",
                 lambda: cleanup_command(
@@ -1393,18 +1572,7 @@ def _run_start_menu(
                 ),
             )
         elif choice == "6":
-            run_limit = int(
-                typer.prompt(
-                    "Cleanup-only unfollow limit for this run",
-                    default=cleanup_unfollow_limit,
-                    type=int,
-                )
-            )
-            if run_limit < 1:
-                _print_notice("Cleanup limit must be >= 1. Using current default.", level="warning")
-                run_limit = cleanup_unfollow_limit
-            else:
-                cleanup_unfollow_limit = run_limit
+            run_limit = _prompt_cleanup_run_limit()
             _execute(
                 "cleanup-only unfollow (dry-run)",
                 lambda: cleanup_command(
@@ -1413,58 +1581,7 @@ def _run_start_menu(
                     auto_sync=graph_sync_auto_enabled,
                 ),
             )
-        elif choice == "7":
-            _execute(
-                "reconcile live",
-                lambda: reconcile_command(
-                    live=True,
-                    max_users=reconcile_limit,
-                    page_size=reconcile_page_size,
-                    auto_sync=graph_sync_auto_enabled,
-                ),
-            )
-        elif choice == "8":
-            _execute(
-                "reconcile dry-run",
-                lambda: reconcile_command(
-                    live=False,
-                    max_users=reconcile_limit,
-                    page_size=reconcile_page_size,
-                    auto_sync=graph_sync_auto_enabled,
-                ),
-            )
-        elif choice == "9":
-            _execute("probe reads", lambda: probe_command(tag_slug=tag_slug))
-        elif choice == "10":
-            _execute(
-                "validate contracts",
-                lambda: contracts_command(
-                    tag_slug=tag_slug,
-                    strict=True,
-                    execute_reads=False,
-                    newsletter_slug=None,
-                    newsletter_username=None,
-                ),
-            )
-        elif choice == "11":
-            _execute(
-                "validate contracts with live reads",
-                lambda: contracts_command(
-                    tag_slug=tag_slug,
-                    strict=True,
-                    execute_reads=True,
-                    newsletter_slug=newsletter_slug or None,
-                    newsletter_username=newsletter_username or None,
-                ),
-            )
-        elif choice == "12":
-            _execute("show status", lambda: status_command(emit_artifact=True))
-        elif choice == "13":
-            _execute(
-                "validate latest artifact",
-                lambda: artifacts_validate_command(artifact_path=None, emit_artifact=True),
-            )
-        elif choice == "14":
+        elif choice == "15":
             updated_tag = str(typer.prompt("Default tag", default=tag_slug)).strip()
             if updated_tag:
                 tag_slug = updated_tag
@@ -1711,47 +1828,10 @@ def _run_start_menu(
             newsletter_username = "" if username_input == "-" else username_input
 
             _print_notice("Defaults updated.", level="success")
-        elif choice == "15":
+        elif choice == "16":
             _execute("run setup wizard", lambda: setup_command(env_path=Path(".env"), auth_if_missing=True))
             refreshed_settings = _bootstrap_settings()
-            seed_user_refs = seed_user_refs or refreshed_settings.discovery_seed_users
-            live_session_minutes = refreshed_settings.live_session_duration_minutes
-            live_session_target_follows = refreshed_settings.live_session_target_follow_attempts
-            live_session_min_follows = refreshed_settings.live_session_min_follow_attempts
-            live_session_max_passes = refreshed_settings.live_session_max_passes
-            max_mutations_per_10_minutes = refreshed_settings.max_mutations_per_10_minutes
-            min_verify_gap_seconds = refreshed_settings.min_verify_gap_seconds
-            max_verify_gap_seconds = refreshed_settings.max_verify_gap_seconds
-            pass_cooldown_min_seconds = refreshed_settings.pass_cooldown_min_seconds
-            pass_cooldown_max_seconds = refreshed_settings.pass_cooldown_max_seconds
-            pacing_soft_degrade_cooldown_seconds = refreshed_settings.pacing_soft_degrade_cooldown_seconds
-            enable_pacing_auto_clamp = refreshed_settings.enable_pacing_auto_clamp
-            graph_sync_auto_enabled = refreshed_settings.graph_sync_auto_enabled
-            graph_sync_freshness_window_minutes = refreshed_settings.graph_sync_freshness_window_minutes
-            graph_sync_full_pagination = refreshed_settings.graph_sync_full_pagination
-            graph_sync_enable_graphql_following = refreshed_settings.graph_sync_enable_graphql_following
-            graph_sync_enable_scrape_fallback = refreshed_settings.graph_sync_enable_scrape_fallback
-            graph_sync_scrape_page_timeout_seconds = refreshed_settings.graph_sync_scrape_page_timeout_seconds
-            cleanup_unfollow_limit = max(1, refreshed_settings.cleanup_unfollow_limit)
-            cleanup_whitelist_min_followers = max(0, refreshed_settings.cleanup_unfollow_whitelist_min_followers)
-            if not newsletter_slug:
-                newsletter_slug = refreshed_settings.contract_registry_live_newsletter_slug or ""
-            if not newsletter_username:
-                newsletter_username = refreshed_settings.contract_registry_live_newsletter_username or ""
-        elif choice == "16":
-            _execute(
-                "refresh auth session",
-                lambda: auth_command(
-                    write_env=True,
-                    env_path=Path(".env"),
-                    login_url="https://medium.com/m/signin",
-                ),
-            )
-        elif choice == "17":
-            _execute(
-                "sync social graph cache",
-                lambda: sync_command(live=True, force=True),
-            )
+            _refresh_defaults_from_settings(refreshed_settings)
         elif choice == "18":
             _print_notice("Exiting start menu.", level="success")
             return
@@ -2209,6 +2289,7 @@ def run_command(
                 outcome.kpis["graph_sync_skipped"] = 1 if sync_outcome.skipped else 0
                 outcome.kpis["graph_sync_followers_count"] = sync_outcome.followers_count
                 outcome.kpis["graph_sync_following_count"] = sync_outcome.following_count
+                outcome.kpis["graph_sync_users_upserted_count"] = sync_outcome.users_upserted_count
                 outcome.kpis["graph_sync_imported_pending_count"] = sync_outcome.imported_pending_count
         except RiskHaltError as exc:
             status = "halted"
@@ -2344,6 +2425,7 @@ def cleanup_command(
                 outcome.kpis["graph_sync_skipped"] = 1 if sync_outcome.skipped else 0
                 outcome.kpis["graph_sync_followers_count"] = sync_outcome.followers_count
                 outcome.kpis["graph_sync_following_count"] = sync_outcome.following_count
+                outcome.kpis["graph_sync_users_upserted_count"] = sync_outcome.users_upserted_count
                 outcome.kpis["graph_sync_imported_pending_count"] = sync_outcome.imported_pending_count
         except RiskHaltError as exc:
             status = "halted"
@@ -2417,6 +2499,11 @@ def sync_command(
         "--force",
         help="Bypass freshness window and force a full graph sync.",
     ),
+    full: bool = typer.Option(
+        True,
+        "--full/--respect-pagination-config",
+        help="Use full pagination to fetch complete followers/following sets.",
+    ),
 ) -> None:
     """
     Sync own followers/following graph into local cache for faster decisions.
@@ -2438,12 +2525,15 @@ def sync_command(
     outcome: GraphSyncOutcome | None = None
     artifact_path: Path | None = None
     _print_notice(
-        f"Starting graph sync `{run_id}` (mode={'live' if live else 'dry-run'}, force={str(force).lower()}).",
+        f"Starting graph sync `{run_id}` "
+        f"(mode={'live' if live else 'dry-run'}, force={str(force).lower()}, full={str(full).lower()}).",
         level="info",
     )
     try:
         try:
             _, repository = _build_runner(settings)
+            if full:
+                settings.graph_sync_full_pagination = True
 
             async def _run() -> GraphSyncOutcome:
                 async with MediumAsyncClient(settings) as client:
@@ -2484,6 +2574,7 @@ def sync_command(
                 "skip_reason": outcome.skip_reason,
                 "followers_count": outcome.followers_count,
                 "following_count": outcome.following_count,
+                "users_upserted_count": outcome.users_upserted_count,
                 "imported_pending_count": outcome.imported_pending_count,
                 "duration_ms": outcome.duration_ms,
                 "following_source": outcome.used_following_source or "-",
@@ -2492,6 +2583,7 @@ def sync_command(
                 "graph_sync_skipped": 1 if outcome.skipped else 0,
                 "graph_sync_followers_count": outcome.followers_count,
                 "graph_sync_following_count": outcome.following_count,
+                "graph_sync_users_upserted_count": outcome.users_upserted_count,
                 "graph_sync_imported_pending_count": outcome.imported_pending_count,
             }
         artifact_payload = _build_standard_artifact_payload(
@@ -2647,6 +2739,7 @@ def reconcile_command(
             kpis["graph_sync_skipped"] = 1 if sync_outcome.skipped else 0
             kpis["graph_sync_followers_count"] = sync_outcome.followers_count
             kpis["graph_sync_following_count"] = sync_outcome.following_count
+            kpis["graph_sync_users_upserted_count"] = sync_outcome.users_upserted_count
             kpis["graph_sync_imported_pending_count"] = sync_outcome.imported_pending_count
         artifact_payload = _build_standard_artifact_payload(
             run_id=run_id,

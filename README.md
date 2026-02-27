@@ -13,10 +13,13 @@ This project turns manual follower discovery, scoring, follow/reconcile cycles, 
 
 ## Feature Highlights
 
-- Interactive CLI menu (`bot start`) with guided options for live, dry-run, reconcile, contracts, and status.
+- Interactive CLI menu (`bot start`) with grouped actions (Execution, Maintenance, Diagnostics, Observability, Config, Auth, System).
 - Quick-live mode (`bot start --quick-live`) for automation and scheduler use.
-- Live session mode for multi-cycle execution (target duration + follow target).
+- Live session mode for multi-cycle execution (target duration + follow target) with `LIVE_SESSION_MAX_PASSES` as a hard session cap.
 - Cleanup whitelist guard (`CLEANUP_UNFOLLOW_WHITELIST_MIN_FOLLOWERS`) to keep high-follower accounts.
+- Cleanup pipeline is cache-first and unfollows only users present in `own_following_cache`; stale pending rows are marked skipped.
+- One-click social graph sync (`bot sync`) imports full followers/following snapshots into cache tables and upserts users.
+- Reconcile now scans paginated worklists across offsets to avoid first-page-only drift.
 - Contract integrity layer:
   - operation parity checks
   - response field/path validation
@@ -88,6 +91,8 @@ uv run bot cleanup --dry-run
 uv run bot cleanup --live --limit 50
 uv run bot sync --live
 uv run bot sync --dry-run
+uv run bot sync --live --force
+uv run bot sync --respect-pagination-config
 uv run bot reconcile --limit 200 --page-size 50
 uv run bot reconcile --dry-run --limit 200 --page-size 50
 uv run bot probe --tag programming
@@ -98,6 +103,18 @@ uv run bot contracts --tag programming --execute-reads \
 uv run bot profile-validate --env-path .env.production
 uv run bot status
 uv run bot artifacts validate
+```
+
+One-click full social graph import (followers + following into DB caches, with full pagination):
+
+```bash
+uv run bot sync
+```
+
+Force refresh even inside freshness window:
+
+```bash
+uv run bot sync --force
 ```
 
 ## Auth Fallback (`auth-import`)
@@ -124,15 +141,15 @@ You can copy a Cookie header from browser DevTools Network tab for a signed-in `
 | 6 | Maintenance | Cleanup-only unfollow (dry-run) | Previews overdue cleanup unfollows without mutation. |
 | 7 | Maintenance | Reconcile follow states (live) | Calls live follow-state checks and writes reconciliation updates locally. |
 | 8 | Maintenance | Reconcile follow states (dry-run) | Runs reconciliation checks without writes. |
-| 9 | Diagnostics | Probe GraphQL reads | Executes read-only probe tasks for connectivity/contract health checks. |
-| 10 | Diagnostics | Validate operation contracts (parity only) | Validates implementation vs registry parity without live read execution. |
-| 11 | Diagnostics | Validate contracts + execute live read checks | Runs option 10 plus live read/state checks against Medium. |
-| 12 | Observability | Show latest run status | Displays health and summary from the latest run artifact. |
-| 13 | Observability | Validate latest run artifact schema | Validates latest run artifact JSON schema/shape. |
-| 14 | Config | Edit defaults | Edits menu defaults (tag, seed users, session targets, pacing defaults, cleanup/reconcile defaults, newsletter defaults). |
-| 15 | Config | Run setup wizard | Launches setup wizard to write/update runtime defaults in `.env`. |
-| 16 | Auth | Refresh auth session | Runs interactive auth capture and updates session values in `.env`. |
-| 17 | Maintenance | Sync social graph cache | Forces a full cache refresh (ignores freshness window) and imports unknown-timestamp following rows into cleanup tracking. |
+| 9 | Maintenance | Sync social graph cache | Forces a full cache refresh (ignores freshness window), fetches full pagination, and imports unknown-timestamp following rows into cleanup tracking. |
+| 10 | Diagnostics | Probe GraphQL reads | Executes read-only probe tasks for connectivity/contract health checks. |
+| 11 | Diagnostics | Validate operation contracts (parity only) | Validates implementation vs registry parity without live read execution. |
+| 12 | Diagnostics | Validate contracts + execute live read checks | Runs option 11 plus live read/state checks against Medium. |
+| 13 | Observability | Show latest run status | Displays health and summary from the latest run artifact. |
+| 14 | Observability | Validate latest run artifact schema | Validates latest run artifact JSON schema/shape. |
+| 15 | Config | Edit defaults | Edits menu defaults (tag, seed users, session targets, pacing defaults, cleanup/reconcile defaults, newsletter defaults). |
+| 16 | Config | Run setup wizard | Launches setup wizard to write/update runtime defaults in `.env`. |
+| 17 | Auth | Refresh auth session | Runs interactive auth capture and updates session values in `.env`. |
 | 18 | System | Exit | Exits the interactive start menu. |
 
 ## Safety and Guardrails
@@ -140,11 +157,12 @@ You can copy a Cookie header from browser DevTools Network tab for a signed-in `
 - UTC day-boundary policy for all daily budgets.
 - `MEDIUM_USER_REF` must be a Medium `user_id` (not `@username`).
 - Safety behavior is operator-configurable in `.env`.
-- Live session pacing supports a hard follow cap + soft follow floor envelope.
+- Live session pacing supports a hard follow cap + soft follow floor envelope, and `LIVE_SESSION_MAX_PASSES` is enforced as a hard pass cap.
 - Pacing soft-degrade can temporarily suspend mutations while keeping read paths active.
 - Cleanup keeps high-follower accounts when `CLEANUP_UNFOLLOW_WHITELIST_MIN_FOLLOWERS` threshold is met.
 - Cleanup treats missing follow timestamps as overdue by default (so legacy rows are not stuck pending forever).
-- Cleanup unfollow pacing uses a dedicated short gap range (`CLEANUP_UNFOLLOW_MIN_GAP_SECONDS` to `CLEANUP_UNFOLLOW_MAX_GAP_SECONDS`).
+- Cleanup candidate selection is constrained by local following cache membership to avoid stale unfollows.
+- Cleanup unfollow pacing uses a dedicated short gap range, clamped to an effective `1-4s` window per action.
 - Options 2-8 can auto-sync cached social graph state before action execution using freshness-window controls.
 - Live can halt on:
   - challenge detections/status codes

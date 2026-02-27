@@ -73,6 +73,10 @@ Design rule: newsletter subscription is not treated as guaranteed user-follow st
 - `follow_cycle`
 - `candidate_reconciliation`
 - `blacklist`
+- `own_followers_cache`
+- `own_following_cache`
+- `graph_sync_runs`
+- `graph_sync_state`
 - `action_log`
 - `snapshots`
 - `schema_migrations`
@@ -114,9 +118,23 @@ Discovery sources:
 
 ### Reconciliation (`bot reconcile`)
 
-- Scans persisted `candidate_reconciliation` and pending `follow_cycle` users.
+- Builds a paginated worklist from `candidate_reconciliation` and pending `follow_cycle` users.
 - Executes `UserViewerEdge` checks.
 - Writes canonical follow-state updates in live mode.
+
+### Social Graph Sync (`bot sync`)
+
+- Pulls own followers and following into local cache tables.
+- Uses full pagination by default (`--full` default true).
+- Supports force refresh (`--force`) that bypasses freshness window checks.
+- Upserts `users` from cache snapshots and imports missing following rows into `follow_cycle` as pending.
+
+### Cleanup (`bot cleanup`)
+
+- Uses cache-first candidate filtering: only pending rows that still exist in `own_following_cache` are unfollow-eligible.
+- Missing-cache rows are marked skipped (`cleanup_status='skipped'`) in live mode to prevent repeated churn.
+- Applies whitelist keep logic when follower count meets `CLEANUP_UNFOLLOW_WHITELIST_MIN_FOLLOWERS`.
+- Uses short unfollow pacing gaps clamped to effective `1-4s`.
 
 ### Safety
 
@@ -132,6 +150,7 @@ Hard-stop triggers:
 - session warm-up sleep
 - read-delay sleeps
 - inter-action non-uniform cooldowns
+- cleanup-only short unfollow pacing window (`1-4s` effective clamp)
 
 ## 7. CLI Surface
 
@@ -143,6 +162,8 @@ Hard-stop triggers:
 - `uv run bot probe --tag programming`
 - `uv run bot contracts --tag programming [--execute-reads]`
 - `uv run bot run --tag programming [--dry-run] [--seed-user ...]`
+- `uv run bot cleanup [--live|--dry-run] [--limit N]`
+- `uv run bot sync [--live|--dry-run] [--force] [--full|--respect-pagination-config]`
 - `uv run bot reconcile --limit N --page-size N [--dry-run]`
 - `uv run bot artifacts validate [--path <artifact>]`
 - `uv run bot status`

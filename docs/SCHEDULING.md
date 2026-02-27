@@ -30,6 +30,10 @@ Behavior:
 - executes dry-run preflight then live cycle
 - writes logs to `.data/scheduler/`
 
+Note:
+
+- The scheduled runner is for growth execution. Use `uv run bot sync --live --force` separately when you need a full social-graph refresh before maintenance tasks.
+
 ## Cron (Linux/macOS)
 
 Template: `ops/scheduling/cron.example`
