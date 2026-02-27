@@ -118,6 +118,28 @@ class AppSettings(BaseSettings):
     max_follow_actions_per_run: int = Field(default=5, ge=0, validation_alias="MAX_FOLLOW_ACTIONS_PER_RUN")
     reconcile_scan_limit: int = Field(default=200, ge=1, le=5000, validation_alias="RECONCILE_SCAN_LIMIT")
     reconcile_page_size: int = Field(default=50, ge=1, le=500, validation_alias="RECONCILE_PAGE_SIZE")
+    graph_sync_auto_enabled: bool = Field(default=True, validation_alias="GRAPH_SYNC_AUTO_ENABLED")
+    graph_sync_freshness_window_minutes: int = Field(
+        default=5,
+        ge=0,
+        le=24 * 12,
+        validation_alias="GRAPH_SYNC_FRESHNESS_WINDOW_MINUTES",
+    )
+    graph_sync_full_pagination: bool = Field(default=True, validation_alias="GRAPH_SYNC_FULL_PAGINATION")
+    graph_sync_enable_graphql_following: bool = Field(
+        default=True,
+        validation_alias="GRAPH_SYNC_ENABLE_GRAPHQL_FOLLOWING",
+    )
+    graph_sync_enable_scrape_fallback: bool = Field(
+        default=True,
+        validation_alias="GRAPH_SYNC_ENABLE_SCRAPE_FALLBACK",
+    )
+    graph_sync_scrape_page_timeout_seconds: int = Field(
+        default=30,
+        ge=5,
+        le=300,
+        validation_alias="GRAPH_SYNC_SCRAPE_PAGE_TIMEOUT_SECONDS",
+    )
     follow_candidate_limit: int = Field(default=30, ge=1, le=500, validation_alias="FOLLOW_CANDIDATE_LIMIT")
     follow_cooldown_hours: int = Field(default=72, ge=1, le=24 * 60, validation_alias="FOLLOW_COOLDOWN_HOURS")
     min_following_follower_ratio: float = Field(
@@ -150,12 +172,22 @@ class AppSettings(BaseSettings):
         le=180,
         validation_alias="UNFOLLOW_NONRECIPROCAL_AFTER_DAYS",
     )
-    cleanup_unfollow_limit: int = Field(default=10, ge=0, le=100, validation_alias="CLEANUP_UNFOLLOW_LIMIT")
+    cleanup_unfollow_limit: int = Field(default=10, ge=0, le=5000, validation_alias="CLEANUP_UNFOLLOW_LIMIT")
     cleanup_unfollow_whitelist_min_followers: int = Field(
         default=2000,
         ge=0,
         le=2_000_000_000,
         validation_alias="CLEANUP_UNFOLLOW_WHITELIST_MIN_FOLLOWERS",
+    )
+    cleanup_unfollow_min_gap_seconds: int = Field(
+        default=1,
+        ge=0,
+        validation_alias="CLEANUP_UNFOLLOW_MIN_GAP_SECONDS",
+    )
+    cleanup_unfollow_max_gap_seconds: int = Field(
+        default=5,
+        ge=0,
+        validation_alias="CLEANUP_UNFOLLOW_MAX_GAP_SECONDS",
     )
     own_followers_scan_limit: int = Field(default=80, ge=1, le=500, validation_alias="OWN_FOLLOWERS_SCAN_LIMIT")
 
@@ -306,6 +338,7 @@ class AppSettings(BaseSettings):
         "max_read_wait_seconds",
         "max_verify_gap_seconds",
         "max_action_gap_seconds",
+        "cleanup_unfollow_max_gap_seconds",
         "max_session_warmup_seconds",
         "pass_cooldown_max_seconds",
     )
@@ -315,6 +348,7 @@ class AppSettings(BaseSettings):
             "max_read_wait_seconds": "min_read_wait_seconds",
             "max_verify_gap_seconds": "min_verify_gap_seconds",
             "max_action_gap_seconds": "min_action_gap_seconds",
+            "cleanup_unfollow_max_gap_seconds": "cleanup_unfollow_min_gap_seconds",
             "max_session_warmup_seconds": "min_session_warmup_seconds",
             "pass_cooldown_max_seconds": "pass_cooldown_min_seconds",
         }
