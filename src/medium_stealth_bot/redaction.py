@@ -44,7 +44,9 @@ def redact_payload(value: Any, *, key: str | None = None, depth: int = 0) -> Any
             return REDACTED
         if isinstance(value, str):
             return REDACTED
-        return REDACTED
+        # Keep non-string scalars (for example numeric KPI fields that include
+        # words like "session") to avoid breaking artifact schema validation.
+        return value
 
     if isinstance(value, dict):
         out: dict[str, Any] = {}
