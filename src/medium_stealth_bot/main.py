@@ -1196,8 +1196,8 @@ def _render_start_menu(
     menu.add_row("14", "Config", "Edit defaults")
     menu.add_row("15", "Config", "Run setup wizard")
     menu.add_row("16", "Auth", "Refresh auth session")
-    menu.add_row("17", "System", "Exit")
-    menu.add_row("18", "Maintenance", "Sync social graph cache")
+    menu.add_row("17", "Maintenance", "Sync social graph cache")
+    menu.add_row("18", "System", "Exit")
     console.print(menu)
 
 
@@ -1292,7 +1292,7 @@ def _run_start_menu(
 
         choice = str(typer.prompt("Select option", default="1")).strip().lower()
         if choice in {"q", "quit", "exit"}:
-            choice = "17"
+            choice = "18"
         if choice not in valid_choices:
             _print_notice(f"Invalid option. Choose {valid_choices_hint} (or q to exit).", level="warning")
             continue
@@ -1747,12 +1747,12 @@ def _run_start_menu(
                     login_url="https://medium.com/m/signin",
                 ),
             )
-        elif choice == "18":
+        elif choice == "17":
             _execute(
                 "sync social graph cache",
-                lambda: sync_command(live=True, force=False),
+                lambda: sync_command(live=True, force=True),
             )
-        else:
+        elif choice == "18":
             _print_notice("Exiting start menu.", level="success")
             return
 
