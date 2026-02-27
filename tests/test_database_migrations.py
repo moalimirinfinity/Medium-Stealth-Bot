@@ -13,11 +13,11 @@ def test_database_migrations_are_idempotent(tmp_path: Path) -> None:
     connection = sqlite3.connect(db_path)
     try:
         user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        assert user_version >= 4
+        assert user_version >= 5
 
         rows = connection.execute("SELECT version, checksum FROM schema_migrations ORDER BY version").fetchall()
         versions = [int(row[0]) for row in rows]
-        assert versions == [1, 2, 3, 4]
+        assert versions == [1, 2, 3, 4, 5]
 
         columns = {
             row[1]
