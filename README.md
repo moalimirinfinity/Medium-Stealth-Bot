@@ -130,6 +130,7 @@ uv run bot auth-import --cookie-file /path/to/medium-cookie-header.txt
 You can copy a Cookie header from browser DevTools Network tab for a signed-in `https://medium.com` request.
 
 ## Start Menu Options (`uv run bot start`)
+
 <img width="645" height="409" alt="image" src="https://github.com/user-attachments/assets/650bf8cf-bd0e-4140-9918-0cd72be6e7e3" />
 
 
