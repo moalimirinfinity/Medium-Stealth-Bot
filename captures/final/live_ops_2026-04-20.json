@@ -1,0 +1,226 @@
+{
+  "capturedAt": "2026-04-20T08:00:31.509Z",
+  "purpose": "live_graphql_ops_summary",
+  "sourceCapture": "captures/final/live_capture_2026-04-20.json",
+  "totalUniqueOperationNames": 9,
+  "operationNames": [
+    "ClapMutation",
+    "DeleteResponseMutation",
+    "LogClientEventsMutation",
+    "LogExperimentExposure",
+    "PublishPostThreadedResponse",
+    "UnfollowUserMutation",
+    "UnsubscribeNewsletterV3Mutation",
+    "UseBaseCacheControlQuery",
+    "VisitorQuery"
+  ],
+  "mutationNames": [
+    "ClapMutation",
+    "DeleteResponseMutation",
+    "LogClientEventsMutation",
+    "LogExperimentExposure",
+    "PublishPostThreadedResponse",
+    "UnfollowUserMutation",
+    "UnsubscribeNewsletterV3Mutation"
+  ],
+  "practicalCritical": [
+    "ClapMutation",
+    "DeleteResponseMutation",
+    "UnfollowUserMutation",
+    "UnsubscribeNewsletterV3Mutation"
+  ],
+  "operationStats": [
+    {
+      "operationName": "ClapMutation",
+      "hits": 2,
+      "stubbedHits": 2,
+      "nonStubbedHits": 0,
+      "evidence": "probe_stubbed_only",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "numClaps",
+          "targetPostId",
+          "userId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/post/redacted"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "DeleteResponseMutation",
+      "hits": 1,
+      "stubbedHits": 1,
+      "nonStubbedHits": 0,
+      "evidence": "probe_stubbed_only",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "responseId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/post/redacted"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "LogClientEventsMutation",
+      "hits": 2,
+      "stubbedHits": 0,
+      "nonStubbedHits": 2,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        403
+      ],
+      "variableKeySets": [
+        [
+          "payload"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/me/followers"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "LogExperimentExposure",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "input"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/me/followers"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "PublishPostThreadedResponse",
+      "hits": 1,
+      "stubbedHits": 1,
+      "nonStubbedHits": 0,
+      "evidence": "probe_stubbed_only",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "deltas",
+          "inResponseToPostId",
+          "inResponseToQuoteId",
+          "responseDistribution",
+          "sortType"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/post/redacted"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "UnfollowUserMutation",
+      "hits": 1,
+      "stubbedHits": 1,
+      "nonStubbedHits": 0,
+      "evidence": "probe_stubbed_only",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "targetUserId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/post/redacted"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "UnsubscribeNewsletterV3Mutation",
+      "hits": 1,
+      "stubbedHits": 1,
+      "nonStubbedHits": 0,
+      "evidence": "probe_stubbed_only",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "newsletterV3Id"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/post/redacted"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "UseBaseCacheControlQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        []
+      ],
+      "samplePageUrls": [
+        "https://medium.com/me/followers"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "VisitorQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        []
+      ],
+      "samplePageUrls": [
+        "https://medium.com/me/followers"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    }
+  ],
+  "sanitizedForPublicPush": true
+}

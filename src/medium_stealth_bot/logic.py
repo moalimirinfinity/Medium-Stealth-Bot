@@ -14,7 +14,9 @@ from medium_stealth_bot.models import (
     CandidateDecision,
     CandidateSource,
     CandidateUser,
+    GrowthDiscoveryMode,
     DailyRunOutcome,
+    GrowthMode,
     GraphSyncOutcome,
     GraphQLError,
     GraphQLResult,
@@ -31,10 +33,14 @@ from medium_stealth_bot.timing import HumanTimingController
 from medium_stealth_bot.typed_payloads import (
     UserNode,
     parse_clap_count,
+    parse_delete_response_success,
     parse_latest_post_id,
+    parse_publish_threaded_response_id,
     parse_recommended_publishers_users,
     parse_topic_latest_story_creators,
+    parse_user_followers_next_from,
     parse_user_followers_users,
+    parse_viewer_clap_count,
     parse_user_viewer_follower_count,
     parse_user_viewer_is_following,
 )
@@ -43,11 +49,16 @@ ACTION_SUBSCRIBE = "follow_subscribe_attempt"
 ACTION_UNFOLLOW = "cleanup_unfollow"
 ACTION_CLAP = "clap_pre_follow"
 ACTION_CLAP_SKIPPED = "clap_pre_follow_skipped"
+ACTION_COMMENT = "comment_pre_follow"
+ACTION_COMMENT_SKIPPED = "comment_pre_follow_skipped"
+ACTION_UNDO_CLAP = "cleanup_undo_clap"
+ACTION_DELETE_COMMENT = "cleanup_delete_comment"
 ACTION_FOLLOW_VERIFIED = "follow_verified"
 TRACKED_DAILY_ACTION_TYPES: tuple[str, ...] = (
     ACTION_SUBSCRIBE,
     ACTION_UNFOLLOW,
     ACTION_CLAP,
+    ACTION_COMMENT,
 )
 
 
@@ -117,8 +128,22 @@ class DailyRunner:
         tag_slug: str = "programming",
         dry_run: bool = True,
         seed_user_refs: list[str] | None = None,
+        growth_mode: GrowthMode | None = None,
+        discovery_mode: GrowthDiscoveryMode | None = None,
+        target_user_refs: list[str] | None = None,
+        target_user_scan_limit: int | None = None,
     ) -> DailyRunOutcome:
         self._assert_operator_not_stopped(task_name="run_daily_cycle")
+        resolved_growth_mode = self._resolve_growth_mode(growth_mode)
+        resolved_discovery_mode = self._resolve_discovery_mode(discovery_mode)
+        resolved_target_user_refs = target_user_refs or []
+        resolved_target_user_scan_limit = (
+            self._resolve_target_user_scan_limit(target_user_scan_limit)
+            if resolved_discovery_mode == GrowthDiscoveryMode.TARGET_USER_FOLLOWERS
+            else None
+        )
+        if resolved_discovery_mode == GrowthDiscoveryMode.TARGET_USER_FOLLOWERS and not resolved_target_user_refs:
+            raise ValueError("target_user_refs are required for target-user-followers discovery.")
         if not self._in_live_session:
             self.timing.reset_session_state()
             self.timing.reset_metrics()
@@ -130,6 +155,7 @@ class DailyRunner:
             ACTION_SUBSCRIBE: self.settings.max_subscribe_actions_per_day,
             ACTION_UNFOLLOW: self.settings.max_unfollow_actions_per_day,
             ACTION_CLAP: self.settings.max_clap_actions_per_day,
+            ACTION_COMMENT: self.settings.max_comment_actions_per_day,
         }
         action_remaining = {
             action_type: max(0, action_limits[action_type] - action_counts.get(action_type, 0))
@@ -146,6 +172,11 @@ class DailyRunner:
                 budget_exhausted=True,
                 actions_today=actions_today_start,
                 max_actions_per_day=max_actions,
+                cleanup_only_mode=False,
+                growth_mode=resolved_growth_mode,
+                discovery_mode=resolved_discovery_mode,
+                target_user_refs=resolved_target_user_refs,
+                target_user_scan_limit=resolved_target_user_scan_limit,
                 action_counts_today=action_counts,
                 action_limits_per_day=action_limits,
                 action_remaining_per_day=action_remaining,
@@ -154,11 +185,29 @@ class DailyRunner:
                 client_metrics=self.client.metrics_snapshot(),
             )
 
-        probe = await self.probe(tag_slug=tag_slug)
+        probe = (
+            await self.probe(tag_slug=tag_slug)
+            if resolved_discovery_mode == GrowthDiscoveryMode.GENERAL
+            else None
+        )
 
-        seed_refs = (seed_user_refs or []) + self.settings.discovery_seed_users
-        candidates = await self._build_candidates(probe=probe, seed_user_refs=seed_refs)
-        candidates = candidates[: self.settings.follow_candidate_limit]
+        seed_refs = (
+            (seed_user_refs or []) + self.settings.discovery_seed_users
+            if resolved_discovery_mode == GrowthDiscoveryMode.GENERAL
+            else []
+        )
+        candidates = await self._build_candidates(
+            probe=probe,
+            seed_user_refs=seed_refs,
+            discovery_mode=resolved_discovery_mode,
+            target_user_refs=resolved_target_user_refs,
+            target_user_scan_limit=resolved_target_user_scan_limit,
+        )
+        candidates = candidates[: self._candidate_limit_for_discovery(
+            discovery_mode=resolved_discovery_mode,
+            target_user_scan_limit=resolved_target_user_scan_limit,
+            target_user_refs=resolved_target_user_refs,
+        )]
 
         decisions: list[CandidateDecision] = []
         eligible = await self._evaluate_candidates(
@@ -182,31 +231,33 @@ class DailyRunner:
         )
         if not mutations_enabled and not dry_run:
             follow_slots = 0
-        follow_attempted, follow_verified, clap_attempted, clap_verified, source_follow_verified_counts = (
+        (
+            follow_attempted,
+            follow_verified,
+            clap_attempted,
+            clap_verified,
+            comment_attempted,
+            comment_verified,
+            source_follow_verified_counts,
+        ) = (
             await self._execute_follow_pipeline(
                 eligible_candidates=eligible,
                 max_to_run=follow_slots,
                 clap_budget_remaining=action_remaining[ACTION_CLAP],
+                comment_budget_remaining=action_remaining[ACTION_COMMENT],
                 dry_run=dry_run,
                 decisions=decisions,
+                growth_mode=resolved_growth_mode,
             )
         )
         action_counts[ACTION_SUBSCRIBE] += follow_attempted
         action_counts[ACTION_CLAP] += clap_attempted
+        action_counts[ACTION_COMMENT] += comment_attempted
         action_remaining[ACTION_SUBSCRIBE] = max(0, action_limits[ACTION_SUBSCRIBE] - action_counts[ACTION_SUBSCRIBE])
         action_remaining[ACTION_CLAP] = max(0, action_limits[ACTION_CLAP] - action_counts[ACTION_CLAP])
-        remaining_budget = max(0, remaining_budget - follow_attempted - clap_attempted)
-
-        cleanup_cap = min(self.settings.cleanup_unfollow_limit, remaining_budget, action_remaining[ACTION_UNFOLLOW])
-        if not mutations_enabled and not dry_run:
-            cleanup_cap = 0
-        cleanup_attempted, cleanup_verified = await self._execute_cleanup_pipeline(
-            dry_run=dry_run,
-            max_to_run=cleanup_cap,
-            decisions=decisions,
-        )
-        action_counts[ACTION_UNFOLLOW] += cleanup_attempted
-        action_remaining[ACTION_UNFOLLOW] = max(0, action_limits[ACTION_UNFOLLOW] - action_counts[ACTION_UNFOLLOW])
+        action_remaining[ACTION_COMMENT] = max(0, action_limits[ACTION_COMMENT] - action_counts[ACTION_COMMENT])
+        cleanup_attempted = 0
+        cleanup_verified = 0
         decision_reason_counts, decision_result_counts = self._summarize_decisions(decisions)
         self._emit_decision_logs(decisions)
 
@@ -224,6 +275,8 @@ class DailyRunner:
             eligible_candidates=len(eligible),
             clap_attempted=clap_attempted,
             clap_verified=clap_verified,
+            comment_attempted=comment_attempted,
+            comment_verified=comment_verified,
         )
         kpis.update(self.repository.follow_cycle_kpis())
         kpis.update(self.timing.metrics_snapshot())
@@ -239,6 +292,8 @@ class DailyRunner:
             follow_verified=follow_verified,
             clap_attempted=clap_attempted,
             clap_verified=clap_verified,
+            comment_attempted=comment_attempted,
+            comment_verified=comment_verified,
             cleanup_attempted=cleanup_attempted,
             cleanup_verified=cleanup_verified,
             actions_today=actions_today_end,
@@ -249,6 +304,10 @@ class DailyRunner:
             source_candidate_counts=source_candidate_counts,
             source_follow_verified_counts=source_follow_verified_counts,
             follow_limit_for_cycle=follow_limit_for_cycle,
+            growth_mode=resolved_growth_mode.value,
+            discovery_mode=resolved_discovery_mode.value,
+            target_user_refs=resolved_target_user_refs,
+            target_user_scan_limit=resolved_target_user_scan_limit,
             mutations_enabled=mutations_enabled,
             decision_reason_counts=decision_reason_counts,
             decision_result_counts=decision_result_counts,
@@ -260,6 +319,11 @@ class DailyRunner:
             budget_exhausted=False,
             actions_today=actions_today_end,
             max_actions_per_day=max_actions,
+            cleanup_only_mode=False,
+            growth_mode=resolved_growth_mode,
+            discovery_mode=resolved_discovery_mode,
+            target_user_refs=resolved_target_user_refs,
+            target_user_scan_limit=resolved_target_user_scan_limit,
             action_counts_today=action_counts,
             action_limits_per_day=action_limits,
             action_remaining_per_day=action_remaining,
@@ -270,6 +334,8 @@ class DailyRunner:
             follow_actions_verified=follow_verified,
             clap_actions_attempted=clap_attempted,
             clap_actions_verified=clap_verified,
+            comment_actions_attempted=comment_attempted,
+            comment_actions_verified=comment_verified,
             cleanup_actions_attempted=cleanup_attempted,
             cleanup_actions_verified=cleanup_verified,
             source_candidate_counts=source_candidate_counts,
@@ -293,8 +359,22 @@ class DailyRunner:
         target_follow_attempts: int | None = None,
         max_duration_minutes: int | None = None,
         max_passes: int | None = None,
+        growth_mode: GrowthMode | None = None,
+        discovery_mode: GrowthDiscoveryMode | None = None,
+        target_user_refs: list[str] | None = None,
+        target_user_scan_limit: int | None = None,
     ) -> DailyRunOutcome:
         self._assert_operator_not_stopped(task_name="run_live_session")
+        resolved_growth_mode = self._resolve_growth_mode(growth_mode)
+        resolved_discovery_mode = self._resolve_discovery_mode(discovery_mode)
+        resolved_target_user_refs = target_user_refs or []
+        resolved_target_user_scan_limit = (
+            self._resolve_target_user_scan_limit(target_user_scan_limit)
+            if resolved_discovery_mode == GrowthDiscoveryMode.TARGET_USER_FOLLOWERS
+            else None
+        )
+        if resolved_discovery_mode == GrowthDiscoveryMode.TARGET_USER_FOLLOWERS and not resolved_target_user_refs:
+            raise ValueError("target_user_refs are required for target-user-followers discovery.")
 
         resolved_target_follows = max(1, target_follow_attempts or self.settings.live_session_target_follow_attempts)
         resolved_min_follows = max(1, self.settings.live_session_min_follow_attempts)
@@ -316,6 +396,8 @@ class DailyRunner:
         total_follow_verified = 0
         total_clap_attempted = 0
         total_clap_verified = 0
+        total_comment_attempted = 0
+        total_comment_verified = 0
         total_cleanup_attempted = 0
         total_cleanup_verified = 0
         total_source_candidate_counts: dict[str, int] = {}
@@ -370,12 +452,20 @@ class DailyRunner:
                     max_passes=resolved_max_passes,
                     elapsed_seconds=round(elapsed_before_pass, 3),
                     follow_cap_this_pass=follow_cap_this_pass,
+                    growth_mode=resolved_growth_mode.value,
+                    discovery_mode=resolved_discovery_mode.value,
+                    target_user_refs=resolved_target_user_refs,
+                    target_user_scan_limit=resolved_target_user_scan_limit,
                     mutations_enabled=mutations_enabled,
                 )
                 outcome = await self.run_daily_cycle(
                     tag_slug=tag_slug,
                     dry_run=False,
                     seed_user_refs=seed_user_refs,
+                    growth_mode=resolved_growth_mode,
+                    discovery_mode=resolved_discovery_mode,
+                    target_user_refs=resolved_target_user_refs,
+                    target_user_scan_limit=resolved_target_user_scan_limit,
                 )
                 last_outcome = outcome
 
@@ -385,6 +475,8 @@ class DailyRunner:
                 total_follow_verified += outcome.follow_actions_verified
                 total_clap_attempted += outcome.clap_actions_attempted
                 total_clap_verified += outcome.clap_actions_verified
+                total_comment_attempted += outcome.comment_actions_attempted
+                total_comment_verified += outcome.comment_actions_verified
                 total_cleanup_attempted += outcome.cleanup_actions_attempted
                 total_cleanup_verified += outcome.cleanup_actions_verified
                 self._merge_int_counts(total_source_candidate_counts, outcome.source_candidate_counts)
@@ -429,6 +521,9 @@ class DailyRunner:
                     follow_attempted_this_pass=outcome.follow_actions_attempted,
                     follow_attempted_total=total_follow_attempted,
                     follow_verified_total=total_follow_verified,
+                    comment_attempted_this_pass=outcome.comment_actions_attempted,
+                    comment_attempted_total=total_comment_attempted,
+                    comment_verified_total=total_comment_verified,
                     cleanup_attempted_this_pass=outcome.cleanup_actions_attempted,
                     cleanup_verified_total=total_cleanup_verified,
                     budget_exhausted=outcome.budget_exhausted,
@@ -462,6 +557,7 @@ class DailyRunner:
                 ACTION_SUBSCRIBE: self.settings.max_subscribe_actions_per_day,
                 ACTION_UNFOLLOW: self.settings.max_unfollow_actions_per_day,
                 ACTION_CLAP: self.settings.max_clap_actions_per_day,
+                ACTION_COMMENT: self.settings.max_comment_actions_per_day,
             }
             action_remaining = {
                 action_type: max(0, action_limits[action_type] - action_counts.get(action_type, 0))
@@ -475,6 +571,8 @@ class DailyRunner:
                 eligible_candidates=0,
                 clap_attempted=0,
                 clap_verified=0,
+                comment_attempted=0,
+                comment_verified=0,
             )
             kpis.update(self.repository.follow_cycle_kpis())
             kpis.update(
@@ -495,6 +593,11 @@ class DailyRunner:
                 budget_exhausted=actions_today >= self.settings.max_actions_per_day,
                 actions_today=actions_today,
                 max_actions_per_day=self.settings.max_actions_per_day,
+                cleanup_only_mode=False,
+                growth_mode=resolved_growth_mode,
+                discovery_mode=resolved_discovery_mode,
+                target_user_refs=resolved_target_user_refs,
+                target_user_scan_limit=resolved_target_user_scan_limit,
                 action_counts_today=action_counts,
                 action_limits_per_day=action_limits,
                 action_remaining_per_day=action_remaining,
@@ -516,6 +619,8 @@ class DailyRunner:
             eligible_candidates=total_eligible,
             clap_attempted=total_clap_attempted,
             clap_verified=total_clap_verified,
+            comment_attempted=total_comment_attempted,
+            comment_verified=total_comment_verified,
         )
         kpis.update(self.repository.follow_cycle_kpis())
         kpis.update(
@@ -537,6 +642,11 @@ class DailyRunner:
             budget_exhausted=last_outcome.budget_exhausted,
             actions_today=last_outcome.actions_today,
             max_actions_per_day=last_outcome.max_actions_per_day,
+            cleanup_only_mode=False,
+            growth_mode=resolved_growth_mode,
+            discovery_mode=resolved_discovery_mode,
+            target_user_refs=resolved_target_user_refs,
+            target_user_scan_limit=resolved_target_user_scan_limit,
             action_counts_today=last_outcome.action_counts_today,
             action_limits_per_day=last_outcome.action_limits_per_day,
             action_remaining_per_day=last_outcome.action_remaining_per_day,
@@ -547,6 +657,8 @@ class DailyRunner:
             follow_actions_verified=total_follow_verified,
             clap_actions_attempted=total_clap_attempted,
             clap_actions_verified=total_clap_verified,
+            comment_actions_attempted=total_comment_attempted,
+            comment_actions_verified=total_comment_verified,
             cleanup_actions_attempted=total_cleanup_attempted,
             cleanup_actions_verified=total_cleanup_verified,
             source_candidate_counts=total_source_candidate_counts,
@@ -571,7 +683,13 @@ class DailyRunner:
             stop_reason=stop_reason,
             follow_attempted=total_follow_attempted,
             follow_verified=total_follow_verified,
+            comment_attempted=total_comment_attempted,
+            comment_verified=total_comment_verified,
             follow_target_min=resolved_min_follows,
+            growth_mode=resolved_growth_mode.value,
+            discovery_mode=resolved_discovery_mode.value,
+            target_user_refs=resolved_target_user_refs,
+            target_user_scan_limit=resolved_target_user_scan_limit,
             cleanup_attempted=total_cleanup_attempted,
             cleanup_verified=total_cleanup_verified,
             session_pacing_degrade_events=pacing_degrade_events,
@@ -599,6 +717,7 @@ class DailyRunner:
             ACTION_SUBSCRIBE: self.settings.max_subscribe_actions_per_day,
             ACTION_UNFOLLOW: self.settings.max_unfollow_actions_per_day,
             ACTION_CLAP: self.settings.max_clap_actions_per_day,
+            ACTION_COMMENT: self.settings.max_comment_actions_per_day,
         }
         action_remaining = {
             action_type: max(0, action_limits[action_type] - action_counts.get(action_type, 0))
@@ -615,6 +734,8 @@ class DailyRunner:
                 budget_exhausted=True,
                 actions_today=actions_today_start,
                 max_actions_per_day=max_actions,
+                cleanup_only_mode=True,
+                growth_mode=None,
                 action_counts_today=action_counts,
                 action_limits_per_day=action_limits,
                 action_remaining_per_day=action_remaining,
@@ -659,6 +780,8 @@ class DailyRunner:
             eligible_candidates=0,
             clap_attempted=0,
             clap_verified=0,
+            comment_attempted=0,
+            comment_verified=0,
         )
         kpis.update(self.repository.follow_cycle_kpis())
         kpis.update(self.timing.metrics_snapshot())
@@ -686,6 +809,8 @@ class DailyRunner:
             budget_exhausted=False,
             actions_today=actions_today_end,
             max_actions_per_day=max_actions,
+            cleanup_only_mode=True,
+            growth_mode=None,
             action_counts_today=action_counts,
             action_limits_per_day=action_limits,
             action_remaining_per_day=action_remaining,
@@ -883,12 +1008,12 @@ class DailyRunner:
     @staticmethod
     def _is_mutation_task(task_name: str) -> bool:
         lowered = task_name.lower()
-        mutation_tokens = ("mutation", "subscribe", "unfollow", "clap")
+        mutation_tokens = ("mutation", "subscribe", "unfollow", "clap", "comment")
         return any(token in lowered for token in mutation_tokens)
 
     def _retry_budget_for_task(self, task_name: str) -> int:
         lowered = task_name.lower()
-        if any(token in lowered for token in ("mutation", "subscribe", "unfollow", "clap")):
+        if any(token in lowered for token in ("mutation", "subscribe", "unfollow", "clap", "comment")):
             return self.settings.mutation_max_retries
         if any(token in lowered for token in ("verify", "viewer_edge", "reconcile")):
             return self.settings.verify_max_retries
@@ -957,15 +1082,26 @@ class DailyRunner:
     async def _build_candidates(
         self,
         *,
-        probe: ProbeSnapshot,
+        probe: ProbeSnapshot | None,
         seed_user_refs: list[str],
+        discovery_mode: GrowthDiscoveryMode,
+        target_user_refs: list[str],
+        target_user_scan_limit: int | None,
     ) -> list[CandidateUser]:
         pool: dict[str, CandidateUser] = {}
 
-        self._extract_topic_latest_candidates(probe, pool)
-        self._extract_topic_who_to_follow_candidates(probe, pool)
-        self._extract_who_to_follow_module_candidates(probe, pool)
-        await self._extract_seed_followers_candidates(seed_user_refs, pool)
+        if discovery_mode == GrowthDiscoveryMode.GENERAL:
+            if probe is not None:
+                self._extract_topic_latest_candidates(probe, pool)
+                self._extract_topic_who_to_follow_candidates(probe, pool)
+                self._extract_who_to_follow_module_candidates(probe, pool)
+            await self._extract_seed_followers_candidates(seed_user_refs, pool)
+        else:
+            await self._extract_target_user_followers_candidates(
+                target_user_refs=target_user_refs,
+                pool=pool,
+                per_target_scan_limit=self._resolve_target_user_scan_limit(target_user_scan_limit),
+            )
 
         for candidate in pool.values():
             candidate.matched_keywords = self._match_keywords(candidate.bio)
@@ -981,7 +1117,14 @@ class DailyRunner:
             )
 
         ordered = sorted(pool.values(), key=lambda item: item.score, reverse=True)
-        self.log.info("candidates_built", count=len(ordered), seed_sources=len(seed_user_refs))
+        self.log.info(
+            "candidates_built",
+            count=len(ordered),
+            discovery_mode=discovery_mode.value,
+            seed_sources=len(seed_user_refs),
+            target_sources=len(target_user_refs),
+            target_user_scan_limit=target_user_scan_limit,
+        )
         return ordered
 
     def _extract_topic_latest_candidates(self, probe: ProbeSnapshot, pool: dict[str, CandidateUser]) -> None:
@@ -1054,6 +1197,64 @@ class DailyRunner:
                     candidate = self._candidate_from_user_node(node, source=CandidateSource.SEED_FOLLOWERS)
                     if candidate:
                         self._merge_candidate(pool, candidate)
+
+    async def _extract_target_user_followers_candidates(
+        self,
+        *,
+        target_user_refs: list[str],
+        pool: dict[str, CandidateUser],
+        per_target_scan_limit: int,
+    ) -> None:
+        for target_ref in target_user_refs:
+            for node in await self._fetch_user_followers_nodes(
+                user_ref=target_ref,
+                limit=per_target_scan_limit,
+                task_name="target_user_followers",
+            ):
+                candidate = self._candidate_from_user_node(node, source=CandidateSource.TARGET_USER_FOLLOWERS)
+                if candidate:
+                    self._merge_candidate(pool, candidate)
+
+    async def _fetch_user_followers_nodes(
+        self,
+        *,
+        user_ref: str,
+        limit: int,
+        task_name: str,
+    ) -> list[UserNode]:
+        user_id, username = self._parse_user_ref(user_ref)
+        if not user_id and not username:
+            return []
+
+        remaining = max(1, limit)
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        collected: dict[str, UserNode] = {}
+
+        while remaining > 0:
+            page_limit = min(operations.USER_FOLLOWERS_MAX_LIMIT, remaining)
+            result = await self._execute_with_retry(
+                task_name,
+                operations.user_followers(
+                    user_id=user_id,
+                    username=username,
+                    limit=page_limit,
+                    paging_from=cursor,
+                ),
+            )
+            for node in parse_user_followers_users(result):
+                if node.id not in collected:
+                    collected[node.id] = node
+            remaining = max(0, limit - len(collected))
+            if remaining <= 0:
+                break
+            next_cursor = parse_user_followers_next_from(result)
+            if not next_cursor or next_cursor in seen_cursors:
+                break
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+
+        return list(collected.values())[:limit]
 
     @staticmethod
     def _parse_user_ref(ref: str) -> tuple[str | None, str | None]:
@@ -1241,23 +1442,38 @@ class DailyRunner:
         eligible_candidates: list[CandidateUser],
         max_to_run: int,
         clap_budget_remaining: int,
+        comment_budget_remaining: int,
         dry_run: bool,
         decisions: list[CandidateDecision],
-    ) -> tuple[int, int, int, int, dict[str, int]]:
+        growth_mode: GrowthMode,
+    ) -> tuple[int, int, int, int, int, int, dict[str, int]]:
         attempted = 0
         verified = 0
         clap_attempted = 0
         clap_verified = 0
+        comment_attempted = 0
+        comment_verified = 0
         source_follow_verified_counts: dict[str, int] = {}
+        clap_enabled = self._pre_follow_clap_enabled(growth_mode)
+        comment_enabled = self._pre_follow_comment_enabled(growth_mode)
         for candidate in eligible_candidates[:max_to_run]:
             self._assert_operator_not_stopped(task_name="follow_pipeline")
             attempted += 1
 
             if dry_run:
-                if self.settings.enable_pre_follow_clap and clap_budget_remaining > 0:
+                if clap_enabled and clap_budget_remaining > 0:
                     clap_budget_remaining -= 1
                     clap_attempted += 1
                     await self._sleep_action_gap(action_type=ACTION_CLAP, target_user_id=candidate.user_id)
+                if (
+                    comment_enabled
+                    and comment_budget_remaining > 0
+                    and self.settings.pre_follow_comment_templates
+                    and self._should_attempt_pre_follow_comment()
+                ):
+                    comment_budget_remaining -= 1
+                    comment_attempted += 1
+                    await self._sleep_action_gap(action_type=ACTION_COMMENT, target_user_id=candidate.user_id)
                 await self._sleep_action_gap(action_type=ACTION_SUBSCRIBE, target_user_id=candidate.user_id)
                 self._append_decision(
                     decisions,
@@ -1277,15 +1493,27 @@ class DailyRunner:
                 bio=candidate.bio,
             )
 
-            clap_used, clap_is_verified = await self._maybe_pre_follow_clap(
+            (
+                clap_used,
+                clap_is_verified,
+                comment_used,
+                comment_is_verified,
+            ) = await self._execute_pre_follow_engagement(
                 candidate,
+                growth_mode=growth_mode,
                 clap_budget_remaining=clap_budget_remaining,
+                comment_budget_remaining=comment_budget_remaining,
             )
             if clap_used:
                 clap_budget_remaining -= 1
                 clap_attempted += 1
             if clap_is_verified:
                 clap_verified += 1
+            if comment_used:
+                comment_budget_remaining -= 1
+                comment_attempted += 1
+            if comment_is_verified:
+                comment_verified += 1
 
             await self._sleep_action_gap(action_type=ACTION_SUBSCRIBE, target_user_id=candidate.user_id)
             mutation = await self._execute_with_retry(
@@ -1372,41 +1600,97 @@ class DailyRunner:
                     reason="follow_failed:verification_failed",
                 )
 
-        return attempted, verified, clap_attempted, clap_verified, source_follow_verified_counts
+        return (
+            attempted,
+            verified,
+            clap_attempted,
+            clap_verified,
+            comment_attempted,
+            comment_verified,
+            source_follow_verified_counts,
+        )
 
-    async def _maybe_pre_follow_clap(
+    async def _execute_pre_follow_engagement(
         self,
         candidate: CandidateUser,
         *,
+        growth_mode: GrowthMode,
         clap_budget_remaining: int,
-    ) -> tuple[bool, bool]:
-        if not self.settings.enable_pre_follow_clap:
-            return False, False
-        if clap_budget_remaining <= 0:
-            self.repository.record_action(ACTION_CLAP_SKIPPED, candidate.user_id, "budget_exhausted")
-            return False, False
+        comment_budget_remaining: int,
+    ) -> tuple[bool, bool, bool, bool]:
+        clap_enabled = self._pre_follow_clap_enabled(growth_mode)
+        comment_enabled = self._pre_follow_comment_enabled(growth_mode)
+        if not clap_enabled and not comment_enabled:
+            return False, False, False, False
 
-        post_id = candidate.latest_post_id
-        if not post_id:
-            latest_post = await self._execute_with_retry(
-                "pre_follow_latest_post",
-                operations.user_latest_post(user_id=candidate.user_id, username=candidate.username),
-            )
-            post_id = parse_latest_post_id(latest_post)
-            if post_id:
-                candidate.latest_post_id = post_id
+        clap_should_attempt = False
+        comment_should_attempt = False
+        comment_text: str | None = None
 
+        if clap_enabled:
+            if clap_budget_remaining <= 0:
+                self.repository.record_action(ACTION_CLAP_SKIPPED, candidate.user_id, "budget_exhausted")
+            elif not self.settings.medium_user_ref:
+                self.repository.record_action(ACTION_CLAP_SKIPPED, candidate.user_id, "missing_actor_user_id")
+            else:
+                clap_should_attempt = True
+
+        if comment_enabled:
+            if comment_budget_remaining <= 0:
+                self.repository.record_action(ACTION_COMMENT_SKIPPED, candidate.user_id, "budget_exhausted")
+            elif not self._should_attempt_pre_follow_comment():
+                self.repository.record_action(ACTION_COMMENT_SKIPPED, candidate.user_id, "probability_gate")
+            else:
+                comment_text = self._select_pre_follow_comment_text()
+                if not comment_text:
+                    self.repository.record_action(ACTION_COMMENT_SKIPPED, candidate.user_id, "no_template")
+                else:
+                    comment_should_attempt = True
+
+        if not clap_should_attempt and not comment_should_attempt:
+            return False, False, False, False
+
+        post_id = await self._resolve_candidate_latest_post_id(candidate)
         if not post_id:
-            self.repository.record_action(ACTION_CLAP_SKIPPED, candidate.user_id, "no_post")
-            return False, False
+            if clap_should_attempt:
+                self.repository.record_action(ACTION_CLAP_SKIPPED, candidate.user_id, "no_post")
+            if comment_should_attempt:
+                self.repository.record_action(ACTION_COMMENT_SKIPPED, candidate.user_id, "no_post")
+            return False, False, False, False
 
         if self.settings.pre_follow_read_wait_seconds > 0:
             await self._sleep_read_delay(target_user_id=candidate.user_id)
 
+        clap_verified = False
+        comment_verified = False
+        if clap_should_attempt:
+            clap_verified = await self._perform_pre_follow_clap(candidate, post_id=post_id)
+        if comment_should_attempt and comment_text:
+            comment_verified = await self._perform_pre_follow_comment(
+                candidate,
+                post_id=post_id,
+                comment_text=comment_text,
+            )
+        return clap_should_attempt, clap_verified, comment_should_attempt, comment_verified
+
+    async def _resolve_candidate_latest_post_id(self, candidate: CandidateUser) -> str | None:
+        post_id = candidate.latest_post_id
+        if post_id:
+            return post_id
+        latest_post = await self._execute_with_retry(
+            "pre_follow_latest_post",
+            operations.user_latest_post(user_id=candidate.user_id, username=candidate.username),
+        )
+        post_id = parse_latest_post_id(latest_post)
+        if post_id:
+            candidate.latest_post_id = post_id
+        return post_id
+
+    async def _perform_pre_follow_clap(self, candidate: CandidateUser, *, post_id: str) -> bool:
         actor_user_id = self.settings.medium_user_ref
         if not actor_user_id:
             self.repository.record_action(ACTION_CLAP_SKIPPED, candidate.user_id, "missing_actor_user_id")
-            return False, False
+            return False
 
         clap_count = random.randint(self.settings.min_clap_count, self.settings.max_clap_count)
         await self._sleep_action_gap(action_type=ACTION_CLAP, target_user_id=candidate.user_id)
@@ -1416,20 +1700,89 @@ class DailyRunner:
         )
         clap_ok = clap_result.status_code == 200 and not clap_result.has_errors
         observed_clap_count = parse_clap_count(clap_result)
+        viewer_clap_count = parse_viewer_clap_count(clap_result)
         clap_verified = clap_ok and observed_clap_count is not None and observed_clap_count >= 1
         clap_action_key = self._daily_action_key(ACTION_CLAP, candidate.user_id, extra=post_id)
-        status_label = (
-            f"verified:{observed_clap_count}"
-            if clap_verified
-            else f"failed:{clap_count}"
-        )
+        if clap_verified:
+            status_label = (
+                f"verified:num_claps={clap_count};"
+                f"viewer_clap_count={'' if viewer_clap_count is None else viewer_clap_count};"
+                f"post_clap_count={'' if observed_clap_count is None else observed_clap_count}"
+            )
+        else:
+            status_label = f"failed:num_claps={clap_count}"
         self.repository.record_action(
             ACTION_CLAP,
             candidate.user_id,
             status_label,
             action_key=clap_action_key,
         )
-        return True, clap_verified
+        return clap_verified
+
+    async def _perform_pre_follow_comment(
+        self,
+        candidate: CandidateUser,
+        *,
+        post_id: str,
+        comment_text: str,
+    ) -> bool:
+        await self._sleep_action_gap(action_type=ACTION_COMMENT, target_user_id=candidate.user_id)
+        comment_result = await self._execute_with_retry(
+            "comment_pre_follow",
+            operations.publish_threaded_response(post_id, comment_text),
+        )
+        comment_id = parse_publish_threaded_response_id(comment_result)
+        comment_verified = comment_result.status_code == 200 and not comment_result.has_errors and bool(comment_id)
+        comment_action_key = self._daily_action_key(ACTION_COMMENT, candidate.user_id, extra=post_id)
+        status_label = f"verified:{comment_id}" if comment_verified else "failed"
+        self.repository.record_action(
+            ACTION_COMMENT,
+            candidate.user_id,
+            status_label,
+            action_key=comment_action_key,
+        )
+        return comment_verified
+
+    def _resolve_growth_mode(self, growth_mode: GrowthMode | None) -> GrowthMode:
+        return growth_mode or self.settings.default_growth_mode
+
+    @staticmethod
+    def _resolve_discovery_mode(discovery_mode: GrowthDiscoveryMode | None) -> GrowthDiscoveryMode:
+        return discovery_mode or GrowthDiscoveryMode.GENERAL
+
+    def _resolve_target_user_scan_limit(self, target_user_scan_limit: int | None) -> int:
+        resolved = target_user_scan_limit or self.settings.target_user_followers_scan_limit
+        return max(1, resolved)
+
+    def _candidate_limit_for_discovery(
+        self,
+        *,
+        discovery_mode: GrowthDiscoveryMode,
+        target_user_scan_limit: int | None,
+        target_user_refs: list[str],
+    ) -> int:
+        if discovery_mode == GrowthDiscoveryMode.TARGET_USER_FOLLOWERS:
+            return self._resolve_target_user_scan_limit(target_user_scan_limit) * max(1, len(target_user_refs))
+        return self.settings.follow_candidate_limit
+
+    @staticmethod
+    def _smart_growth_enabled(growth_mode: GrowthMode) -> bool:
+        return growth_mode == GrowthMode.SMART
+
+    def _pre_follow_clap_enabled(self, growth_mode: GrowthMode) -> bool:
+        return self._smart_growth_enabled(growth_mode) and self.settings.enable_pre_follow_clap
+
+    def _pre_follow_comment_enabled(self, growth_mode: GrowthMode) -> bool:
+        return self._smart_growth_enabled(growth_mode) and self.settings.enable_pre_follow_comment
+
+    def _should_attempt_pre_follow_comment(self) -> bool:
+        return random.random() < self.settings.pre_follow_comment_probability
+
+    def _select_pre_follow_comment_text(self) -> str | None:
+        templates = self.settings.pre_follow_comment_templates
+        if not templates:
+            return None
+        return random.choice(templates)
 
     async def _execute_cleanup_pipeline(
         self,
@@ -1608,6 +1961,7 @@ class DailyRunner:
                     verified_now=True,
                 )
                 self.repository.mark_candidate_reconciled(user_id, UserFollowState.NOT_FOLLOWING)
+                await self._rollback_public_engagement(user_id=user_id)
                 decisions.append(
                     CandidateDecision(
                         user_id=user_id,
@@ -1634,6 +1988,76 @@ class DailyRunner:
                 )
 
         return attempted, verified
+
+    async def _rollback_public_engagement(self, *, user_id: str) -> None:
+        await self._undo_verified_claps(user_id=user_id)
+        await self._delete_verified_comments(user_id=user_id)
+
+    async def _undo_verified_claps(self, *, user_id: str) -> None:
+        actor_user_id = self.settings.medium_user_ref
+        if not actor_user_id:
+            return
+
+        for row in self.repository.verified_actions_for_target(
+            target_id=user_id,
+            action_type=ACTION_CLAP,
+            rollback_action_type=ACTION_UNDO_CLAP,
+        ):
+            post_id = self._action_key_extra(row.get("action_key"))
+            clap_count = self._verified_clap_count(row.get("status"))
+            if not post_id or clap_count is None or clap_count <= 0:
+                continue
+
+            rollback_key = self._rollback_action_key(ACTION_UNDO_CLAP, row.get("action_key"))
+            await self._sleep_action_gap(action_type=ACTION_UNDO_CLAP, target_user_id=user_id)
+            rollback = await self._execute_with_retry(
+                "cleanup_undo_clap",
+                operations.undo_clap_post(post_id, actor_user_id, clap_count),
+            )
+            viewer_clap_count = parse_viewer_clap_count(rollback)
+            rollback_ok = rollback.status_code == 200 and not rollback.has_errors
+            rollback_verified = rollback_ok and (viewer_clap_count == 0 or viewer_clap_count is None)
+            status_label = (
+                f"verified:viewer_clap_count={'' if viewer_clap_count is None else viewer_clap_count}"
+                if rollback_verified
+                else (
+                    f"failed:viewer_clap_count={'' if viewer_clap_count is None else viewer_clap_count};"
+                    f"requested={clap_count}"
+                )
+            )
+            self.repository.record_action(
+                ACTION_UNDO_CLAP,
+                user_id,
+                status_label,
+                action_key=rollback_key,
+            )
+
+    async def _delete_verified_comments(self, *, user_id: str) -> None:
+        for row in self.repository.verified_actions_for_target(
+            target_id=user_id,
+            action_type=ACTION_COMMENT,
+            rollback_action_type=ACTION_DELETE_COMMENT,
+        ):
+            comment_id = self._verified_comment_id(row.get("status"))
+            if not comment_id:
+                continue
+
+            rollback_key = self._rollback_action_key(ACTION_DELETE_COMMENT, row.get("action_key"))
+            await self._sleep_action_gap(action_type=ACTION_DELETE_COMMENT, target_user_id=user_id)
+            rollback = await self._execute_with_retry(
+                "cleanup_delete_comment",
+                operations.delete_response(comment_id),
+            )
+            rollback_ok = rollback.status_code == 200 and not rollback.has_errors
+            rollback_deleted = parse_delete_response_success(rollback) is True
+            rollback_verified = rollback_ok and rollback_deleted
+            status_label = f"verified:{comment_id}" if rollback_verified else f"failed:{comment_id}"
+            self.repository.record_action(
+                ACTION_DELETE_COMMENT,
+                user_id,
+                status_label,
+                action_key=rollback_key,
+            )
 
     async def _fetch_own_follower_ids(self, limit: int) -> set[str]:
         if not self.settings.medium_user_ref:
@@ -1891,16 +2315,20 @@ class DailyRunner:
         eligible_candidates: int,
         clap_attempted: int,
         clap_verified: int,
+        comment_attempted: int,
+        comment_verified: int,
     ) -> dict[str, float | int]:
         follow_verify_rate = (follow_verified / follow_attempted) if follow_attempted > 0 else 0.0
         cleanup_verify_rate = (cleanup_verified / cleanup_attempted) if cleanup_attempted > 0 else 0.0
         eligible_conversion_rate = (follow_verified / eligible_candidates) if eligible_candidates > 0 else 0.0
         clap_verify_rate = (clap_verified / clap_attempted) if clap_attempted > 0 else 0.0
+        comment_verify_rate = (comment_verified / comment_attempted) if comment_attempted > 0 else 0.0
         return {
             "follow_verify_rate": round(follow_verify_rate, 4),
             "cleanup_verify_rate": round(cleanup_verify_rate, 4),
             "eligible_conversion_rate": round(eligible_conversion_rate, 4),
             "clap_verify_rate": round(clap_verify_rate, 4),
+            "comment_verify_rate": round(comment_verify_rate, 4),
             "net_follow_delta": follow_verified - cleanup_verified,
         }
 
@@ -1911,6 +2339,37 @@ class DailyRunner:
         if extra:
             parts.append(extra)
         return ":".join(parts)
+
+    @staticmethod
+    def _rollback_action_key(action_type: str, original_action_key: str | None) -> str | None:
+        if not original_action_key:
+            return None
+        return f"{action_type}:{original_action_key}"
+
+    @staticmethod
+    def _action_key_extra(action_key: str | None) -> str | None:
+        if not action_key:
+            return None
+        parts = action_key.split(":", 3)
+        if len(parts) < 4:
+            return None
+        return parts[3] or None
+
+    @staticmethod
+    def _verified_comment_id(status: str | None) -> str | None:
+        if not status or not status.startswith("verified:"):
+            return None
+        value = status.split(":", 1)[1].strip()
+        return value or None
+
+    @staticmethod
+    def _verified_clap_count(status: str | None) -> int | None:
+        if not status or not status.startswith("verified:"):
+            return None
+        match = re.search(r"num_claps=(\d+)", status)
+        if not match:
+            return None
+        return int(match.group(1))
 
     def _assert_operator_not_stopped(self, *, task_name: str) -> None:
         if not self.settings.operator_kill_switch:

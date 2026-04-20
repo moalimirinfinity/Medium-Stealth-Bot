@@ -1,12 +1,12 @@
 {
-  "generatedAt": "2026-02-25T09:08:03Z",
+  "generatedAt": "2026-04-20T08:01:00Z",
   "canonicalCapture": "captures/final/live_capture_2026-02-24.json",
   "canonicalOps": "captures/final/live_ops_2026-02-24.json",
   "files": [
     {
       "path": "captures/final/implementation_ops_2026-02-24.json",
-      "operationNames": 13,
-      "mutationNames": 5,
+      "operationNames": 14,
+      "mutationNames": 6,
       "evidenceLevel": "curated_implementation_subset",
       "isCanonical": true
     },
@@ -18,11 +18,25 @@
       "isCanonical": true
     },
     {
+      "path": "captures/final/live_capture_2026-04-20.json",
+      "operationNames": 9,
+      "mutationNames": 7,
+      "evidenceLevel": "sanitized_public_capture",
+      "isCanonical": false
+    },
+    {
       "path": "captures/final/live_ops_2026-02-24.json",
-      "operationNames": 39,
-      "mutationNames": 8,
+      "operationNames": 40,
+      "mutationNames": 9,
       "evidenceLevel": "derived_summary",
       "isCanonical": true
+    },
+    {
+      "path": "captures/final/live_ops_2026-04-20.json",
+      "operationNames": 9,
+      "mutationNames": 7,
+      "evidenceLevel": "sanitized_public_capture",
+      "isCanonical": false
     },
     {
       "path": "captures/final/practical_capture_2026-02-21.json",

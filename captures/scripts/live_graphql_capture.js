@@ -95,6 +95,8 @@ async function main() {
   if (!env.MEDIUM_SESSION) {
     throw new Error("MEDIUM_SESSION missing in .env");
   }
+  const activityUrl = (env.MEDIUM_ACTIVITY_URL || "").trim();
+  const captureHeadless = String(env.PLAYWRIGHT_HEADLESS || "true").toLowerCase() !== "false";
 
   const cookiePairs = parseCookieHeader(env.MEDIUM_SESSION);
   const hasXsrfCookie = cookiePairs.some((c) => c.name === "xsrf");
@@ -110,7 +112,7 @@ async function main() {
     secure: true,
   }));
 
-  const browser = await chromium.launch({ headless: false });
+  const browser = await chromium.launch({ headless: captureHeadless });
   const context = await browser.newContext({
     viewport: { width: 1440, height: 900 },
     userAgent:
@@ -245,6 +247,11 @@ async function main() {
   await navigateAndSettle(page, "https://medium.com/me/following");
   visits.push("https://medium.com/me/following");
 
+  if (activityUrl) {
+    await navigateAndSettle(page, activityUrl);
+    visits.push(activityUrl);
+  }
+
   await navigateAndSettle(page, "https://medium.com/tag/programming/latest");
   visits.push("https://medium.com/tag/programming/latest");
 
@@ -273,7 +280,7 @@ async function main() {
       {
         operationName: "ClapMutation",
         query:
-          "mutation ClapMutation($targetPostId: ID!, $userId: ID!, $numClaps: Int!) { clap(targetPostId: $targetPostId, userId: $userId, numClaps: $numClaps) { __typename } }",
+          "mutation ClapMutation($targetPostId: ID!, $userId: ID!, $numClaps: Int!) { clap(targetPostId: $targetPostId, userId: $userId, numClaps: $numClaps) { __typename viewerEdge { __typename id clapCount } id clapCount } }",
         variables: {
           targetPostId: "7d66cfdfa301",
           userId: "cf6627889e92",
@@ -290,6 +297,24 @@ async function main() {
           inResponseToQuoteId: null,
           responseDistribution: "PUBLIC",
           sortType: "NEWEST",
+        },
+      },
+      {
+        operationName: "ClapMutation",
+        query:
+          "mutation ClapMutation($targetPostId: ID!, $userId: ID!, $numClaps: Int!) { clap(targetPostId: $targetPostId, userId: $userId, numClaps: $numClaps) { __typename viewerEdge { __typename id clapCount } id clapCount } }",
+        variables: {
+          targetPostId: "7d66cfdfa301",
+          userId: "cf6627889e92",
+          numClaps: -13,
+        },
+      },
+      {
+        operationName: "DeleteResponseMutation",
+        query:
+          "mutation DeleteResponseMutation($responseId: ID!) { deletePost(targetPostId: $responseId) }",
+        variables: {
+          responseId: "9facd32dd4b0",
         },
       },
     ];
@@ -368,6 +393,7 @@ async function main() {
       "UnsubscribeNewsletterV3Mutation",
       "UnfollowUserMutation",
       "ClapMutation",
+      "DeleteResponseMutation",
     ].filter((name) => opNames.includes(name)),
   );
 

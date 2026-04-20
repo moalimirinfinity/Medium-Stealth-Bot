@@ -2,6 +2,7 @@
 
 ## Canonical Capture
 Use `captures/final/live_capture_2026-02-24.json` as primary truth for implementation.
+Use `captures/final/live_capture_2026-04-20.json` as targeted supplemental evidence for rollback mutations (`DeleteResponseMutation` and negative `ClapMutation`).
 Use `captures/final/implementation_ops_2026-02-24.json` as the focused operation subset for coding.
 The focused subset is runtime-aligned: capture-observed operations plus the runtime helper `UserLatestPostQuery`.
 The subset is also a machine-readable operation registry with per-operation `classification`, `riskLevel`,
@@ -45,6 +46,22 @@ Single request shape:
   - `targetUserId`
 - Classification: `user_unfollow`.
 
+### Undo Claps
+- Operation: `ClapMutation`
+- Variables:
+  - `targetPostId`
+  - `userId`
+  - `numClaps`
+- Rule: rollback uses the same mutation with a negative `numClaps` value.
+
+### Delete Comment / Response
+- Operation: `DeleteResponseMutation`
+- Variables:
+  - `responseId`
+- Backend field:
+  - `deletePost`
+- Note: current evidence comes from the account activity flow (`/activity`) rather than the older capture bundle.
+
 ### Verify Actual Follow State
 - Operation: `UserViewerEdge`
 - Signal:
@@ -77,6 +94,7 @@ Single request shape:
 - Reconcile accuracy depends on `UserViewerEdge` reliability.
 - Cleanup accuracy depends on separating subscription-state signals from true graph follow-state signals.
 - Graph sync and cache refresh should not infer user-follow state without explicit verify reads.
+- Public-engagement cleanup should undo claps with negative `ClapMutation` payloads and remove bot-authored comments with `DeleteResponseMutation`.
 
 ## Classification Taxonomy
 - `read`: no intended state change.

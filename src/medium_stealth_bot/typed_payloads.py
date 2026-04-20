@@ -130,12 +130,32 @@ class NewsletterV3ViewerEdgeData(_Model):
     newsletter_v3: NewsletterV3Viewer | None = Field(default=None, alias="newsletterV3")
 
 
+class ClapViewerEdge(_Model):
+    clap_count: int | None = Field(default=None, alias="clapCount")
+
+
 class ClapPayload(_Model):
     clap_count: int | None = Field(default=None, alias="clapCount")
+    viewer_edge: ClapViewerEdge | None = Field(default=None, alias="viewerEdge")
 
 
 class ClapMutationData(_Model):
     clap: ClapPayload | None = None
+
+
+class PublishPostThreadedResponsePayload(_Model):
+    id: str | None = None
+
+
+class PublishPostThreadedResponseData(_Model):
+    publish_post_threaded_response: PublishPostThreadedResponsePayload | None = Field(
+        default=None,
+        alias="publishPostThreadedResponse",
+    )
+
+
+class DeleteResponseMutationData(_Model):
+    delete_post: bool | None = Field(default=None, alias="deletePost")
 
 
 def parse_topic_latest_story_creators(result: GraphQLResult) -> list[tuple[UserNode, str | None]]:
@@ -221,3 +241,22 @@ def parse_clap_count(result: GraphQLResult) -> int | None:
     if not payload.clap:
         return None
     return payload.clap.clap_count
+
+
+def parse_viewer_clap_count(result: GraphQLResult) -> int | None:
+    payload = ClapMutationData.model_validate(result.data or {})
+    if not payload.clap or not payload.clap.viewer_edge:
+        return None
+    return payload.clap.viewer_edge.clap_count
+
+
+def parse_publish_threaded_response_id(result: GraphQLResult) -> str | None:
+    payload = PublishPostThreadedResponseData.model_validate(result.data or {})
+    if not payload.publish_post_threaded_response:
+        return None
+    return payload.publish_post_threaded_response.id
+
+
+def parse_delete_response_success(result: GraphQLResult) -> bool | None:
+    payload = DeleteResponseMutationData.model_validate(result.data or {})
+    return payload.delete_post

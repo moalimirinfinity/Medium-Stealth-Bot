@@ -2,7 +2,7 @@
   "capturedAt": "2026-02-24T02:35:15.188Z",
   "purpose": "live_graphql_ops_summary",
   "sourceCapture": "captures/final/live_capture_2026-02-24.json",
-  "totalUniqueOperationNames": 39,
+  "totalUniqueOperationNames": 40,
   "operationNames": [
     "AddToCatalogBaseQuery",
     "AvatarMenuQuery",
@@ -11,6 +11,7 @@
     "ClapMutation",
     "CollectionViewerEdge",
     "CreatorActionOverflowPopoverQuery",
+    "DeleteResponseMutation",
     "InteractivePostBodyQuery",
     "LogClientEventsMutation",
     "LogExperimentExposure",
@@ -46,6 +47,7 @@
   ],
   "mutationNames": [
     "ClapMutation",
+    "DeleteResponseMutation",
     "LogClientEventsMutation",
     "LogExperimentExposure",
     "PublishPostThreadedResponse",
@@ -56,6 +58,7 @@
   ],
   "practicalCritical": [
     "ClapMutation",
+    "DeleteResponseMutation",
     "NewsletterV3ViewerEdge",
     "SubscribeNewsletterV3Mutation",
     "TopicLatestStorieQuery",
@@ -213,6 +216,27 @@
       "variableKeySets": [
         [
           "postId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/user/profile"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "DeleteResponseMutation",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "user_supplied_activity_payload",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "responseId"
         ]
       ],
       "samplePageUrls": [

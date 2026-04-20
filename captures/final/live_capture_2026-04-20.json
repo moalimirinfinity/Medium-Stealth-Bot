@@ -1,0 +1,338 @@
+{
+  "capturedAt": "2026-04-20T08:00:31.509Z",
+  "purpose": "live_graphql_capture",
+  "source": "playwright + .env session cookies",
+  "visits": [
+    "https://medium.com/me/followers",
+    "https://medium.com/me/following",
+    "https://medium.com/tag/programming",
+    "https://medium.com/post/redacted"
+  ],
+  "actions": [
+    "tag-follow-not-found",
+    "manual-mutation-probes-sent",
+    "article-clap-not-found"
+  ],
+  "totalRequestsCaptured": 11,
+  "totalUniqueOperationNames": 9,
+  "operationNames": [
+    "ClapMutation",
+    "DeleteResponseMutation",
+    "LogClientEventsMutation",
+    "LogExperimentExposure",
+    "PublishPostThreadedResponse",
+    "UnfollowUserMutation",
+    "UnsubscribeNewsletterV3Mutation",
+    "UseBaseCacheControlQuery",
+    "VisitorQuery"
+  ],
+  "mutationNames": [
+    "ClapMutation",
+    "DeleteResponseMutation",
+    "LogClientEventsMutation",
+    "LogExperimentExposure",
+    "PublishPostThreadedResponse",
+    "UnfollowUserMutation",
+    "UnsubscribeNewsletterV3Mutation"
+  ],
+  "practicalCritical": [
+    "ClapMutation",
+    "DeleteResponseMutation",
+    "UnfollowUserMutation",
+    "UnsubscribeNewsletterV3Mutation"
+  ],
+  "requests": [
+    {
+      "capturedAt": "2026-04-20T07:58:44.692Z",
+      "requestUrl": "https://medium.com/_/graphql",
+      "status": 200,
+      "operationName": "VisitorQuery",
+      "query": "query VisitorQuery {\n  visitor {\n    id\n    geolocation {\n      country\n      __typename\n    }\n    __typename\n  }\n}\n",
+      "variableKeys": [],
+      "requestBodyLength": 186,
+      "requestHeadersSubset": {
+        "origin": "https://medium.com",
+        "content-type": "application/json",
+        "apollographql-client-name": "lite",
+        "apollographql-client-version": "main-20260416-171403-2c58fcd4d8"
+      },
+      "responseSummary": {
+        "hasData": true,
+        "hasErrors": false,
+        "errorCount": 0,
+        "topLevelDataKeys": [
+          "visitor"
+        ],
+        "nonJson": false
+      },
+      "stubbed": false
+    },
+    {
+      "capturedAt": "2026-04-20T07:58:44.730Z",
+      "requestUrl": "https://medium.com/_/graphql",
+      "status": 200,
+      "operationName": "UseBaseCacheControlQuery",
+      "query": "query UseBaseCacheControlQuery {\n  viewer {\n    __typename\n    id\n  }\n}\n",
+      "variableKeys": [],
+      "requestBodyLength": 150,
+      "requestHeadersSubset": {
+        "origin": "https://medium.com",
+        "content-type": "application/json",
+        "apollographql-client-name": "lite",
+        "apollographql-client-version": "main-20260416-171403-2c58fcd4d8"
+      },
+      "responseSummary": {
+        "hasData": true,
+        "hasErrors": false,
+        "errorCount": 0,
+        "topLevelDataKeys": [
+          "viewer"
+        ],
+        "nonJson": false
+      },
+      "stubbed": false
+    },
+    {
+      "capturedAt": "2026-04-20T07:58:44.777Z",
+      "requestUrl": "https://medium.com/_/graphql",
+      "status": 200,
+      "operationName": "LogExperimentExposure",
+      "query": "mutation LogExperimentExposure($input: LogExperimentExposureInput!) {\n  logExperimentExposure(input: $input) {\n    success\n    __typename\n  }\n}\n",
+      "variableKeys": [
+        "input"
+      ],
+      "requestBodyLength": 287,
+      "requestHeadersSubset": {
+        "origin": "https://medium.com",
+        "content-type": "application/json",
+        "apollographql-client-name": "lite",
+        "apollographql-client-version": "main-20260416-171403-2c58fcd4d8"
+      },
+      "responseSummary": {
+        "hasData": true,
+        "hasErrors": false,
+        "errorCount": 0,
+        "topLevelDataKeys": [
+          "logExperimentExposure"
+        ],
+        "nonJson": false
+      },
+      "stubbed": false
+    },
+    {
+      "capturedAt": "2026-04-20T07:58:49.619Z",
+      "requestUrl": "https://medium.com/_/graphql",
+      "status": 403,
+      "operationName": "LogClientEventsMutation",
+      "query": "mutation LogClientEventsMutation($payload: String!) {\n  logClientEvents(input: {payload: $payload}) {\n    success\n    __typename\n  }\n}\n",
+      "variableKeys": [
+        "payload"
+      ],
+      "requestBodyLength": 2397,
+      "requestHeadersSubset": {
+        "origin": "https://medium.com",
+        "content-type": "application/json",
+        "apollographql-client-name": "lite",
+        "apollographql-client-version": "main-20260416-171403-2c58fcd4d8"
+      },
+      "responseSummary": {
+        "hasData": false,
+        "hasErrors": false,
+        "errorCount": 0,
+        "topLevelDataKeys": [],
+        "nonJson": true
+      },
+      "stubbed": false
+    },
+    {
+      "capturedAt": "2026-04-20T07:58:53.492Z",
+      "requestUrl": "https://medium.com/_/graphql",
+      "status": 403,
+      "operationName": "LogClientEventsMutation",
+      "query": "mutation LogClientEventsMutation($payload: String!) {\n  logClientEvents(input: {payload: $payload}) {\n    success\n    __typename\n  }\n}\n",
+      "variableKeys": [
+        "payload"
+      ],
+      "requestBodyLength": 2397,
+      "requestHeadersSubset": {
+        "origin": "https://medium.com",
+        "content-type": "application/json",
+        "apollographql-client-name": "lite",
+        "apollographql-client-version": "main-20260416-171403-2c58fcd4d8"
+      },
+      "responseSummary": {
+        "hasData": false,
+        "hasErrors": false,
+        "errorCount": 0,
+        "topLevelDataKeys": [],
+        "nonJson": true
+      },
+      "stubbed": false
+    },
+    {
+      "capturedAt": "2026-04-20T07:59:54.332Z",
+      "requestUrl": "https://medium.com/_/graphql",
+      "status": 200,
+      "operationName": "UnsubscribeNewsletterV3Mutation",
+      "query": "mutation UnsubscribeNewsletterV3Mutation($newsletterV3Id: ID!) { unsubscribeNewsletterV3(newsletterV3Id: $newsletterV3Id) }",
+      "variableKeys": [
+        "newsletterV3Id"
+      ],
+      "requestBodyLength": 233,
+      "requestHeadersSubset": {
+        "origin": "https://medium.com",
+        "content-type": "application/json",
+        "apollographql-client-name": "lite",
+        "apollographql-client-version": "main-20260223-200902-cb62c3b9f7"
+      },
+      "responseSummary": {
+        "hasData": false,
+        "hasErrors": false,
+        "errorCount": 0,
+        "topLevelDataKeys": [],
+        "nonJson": true,
+        "parseError": "Error: response.json: Protocol error (Network.getResponseBody): No resource with given identifier found"
+      },
+      "stubbed": true
+    },
+    {
+      "capturedAt": "2026-04-20T07:59:54.332Z",
+      "requestUrl": "https://medium.com/_/graphql",
+      "status": 200,
+      "operationName": "UnfollowUserMutation",
+      "query": "mutation UnfollowUserMutation($targetUserId: ID!) { unfollowUser(targetUserId: $targetUserId) { __typename id name viewerEdge { __typename id isFollowing } } }",
+      "variableKeys": [
+        "targetUserId"
+      ],
+      "requestBodyLength": 256,
+      "requestHeadersSubset": {
+        "origin": "https://medium.com",
+        "content-type": "application/json",
+        "apollographql-client-name": "lite",
+        "apollographql-client-version": "main-20260223-200902-cb62c3b9f7"
+      },
+      "responseSummary": {
+        "hasData": false,
+        "hasErrors": false,
+        "errorCount": 0,
+        "topLevelDataKeys": [],
+        "nonJson": true,
+        "parseError": "Error: response.json: Protocol error (Network.getResponseBody): No resource with given identifier found"
+      },
+      "stubbed": true
+    },
+    {
+      "capturedAt": "2026-04-20T07:59:54.332Z",
+      "requestUrl": "https://medium.com/_/graphql",
+      "status": 200,
+      "operationName": "ClapMutation",
+      "query": "mutation ClapMutation($targetPostId: ID!, $userId: ID!, $numClaps: Int!) { clap(targetPostId: $targetPostId, userId: $userId, numClaps: $numClaps) { __typename viewerEdge { __typename id clapCount } id clapCount } }",
+      "variableKeys": [
+        "numClaps",
+        "targetPostId",
+        "userId"
+      ],
+      "requestBodyLength": 341,
+      "requestHeadersSubset": {
+        "origin": "https://medium.com",
+        "content-type": "application/json",
+        "apollographql-client-name": "lite",
+        "apollographql-client-version": "main-20260223-200902-cb62c3b9f7"
+      },
+      "responseSummary": {
+        "hasData": false,
+        "hasErrors": false,
+        "errorCount": 0,
+        "topLevelDataKeys": [],
+        "nonJson": true,
+        "parseError": "Error: response.json: Protocol error (Network.getResponseBody): No resource with given identifier found"
+      },
+      "stubbed": true
+    },
+    {
+      "capturedAt": "2026-04-20T07:59:54.332Z",
+      "requestUrl": "https://medium.com/_/graphql",
+      "status": 200,
+      "operationName": "PublishPostThreadedResponse",
+      "query": "mutation PublishPostThreadedResponse($inResponseToPostId: ID!, $deltas: [Delta!]!, $inResponseToQuoteId: ID, $responseDistribution: ResponseDistributionType, $sortType: ResponseSortType) { publishPostThreadedResponse(inResponseToPostId: $inResponseToPostId, deltas: $deltas, inResponseToQuoteId: $inResponseToQuoteId, responseDistribution: $responseDistribution, sortType: $sortType) { __typename } }",
+      "variableKeys": [
+        "deltas",
+        "inResponseToPostId",
+        "inResponseToQuoteId",
+        "responseDistribution",
+        "sortType"
+      ],
+      "requestBodyLength": 650,
+      "requestHeadersSubset": {
+        "origin": "https://medium.com",
+        "content-type": "application/json",
+        "apollographql-client-name": "lite",
+        "apollographql-client-version": "main-20260223-200902-cb62c3b9f7"
+      },
+      "responseSummary": {
+        "hasData": false,
+        "hasErrors": false,
+        "errorCount": 0,
+        "topLevelDataKeys": [],
+        "nonJson": true,
+        "parseError": "Error: response.json: Protocol error (Network.getResponseBody): No resource with given identifier found"
+      },
+      "stubbed": true
+    },
+    {
+      "capturedAt": "2026-04-20T07:59:54.333Z",
+      "requestUrl": "https://medium.com/_/graphql",
+      "status": 200,
+      "operationName": "ClapMutation",
+      "query": "mutation ClapMutation($targetPostId: ID!, $userId: ID!, $numClaps: Int!) { clap(targetPostId: $targetPostId, userId: $userId, numClaps: $numClaps) { __typename viewerEdge { __typename id clapCount } id clapCount } }",
+      "variableKeys": [
+        "numClaps",
+        "targetPostId",
+        "userId"
+      ],
+      "requestBodyLength": 343,
+      "requestHeadersSubset": {
+        "origin": "https://medium.com",
+        "content-type": "application/json",
+        "apollographql-client-name": "lite",
+        "apollographql-client-version": "main-20260223-200902-cb62c3b9f7"
+      },
+      "responseSummary": {
+        "hasData": false,
+        "hasErrors": false,
+        "errorCount": 0,
+        "topLevelDataKeys": [],
+        "nonJson": true,
+        "parseError": "Error: response.json: Protocol error (Network.getResponseBody): No resource with given identifier found"
+      },
+      "stubbed": true
+    },
+    {
+      "capturedAt": "2026-04-20T07:59:54.333Z",
+      "requestUrl": "https://medium.com/_/graphql",
+      "status": 200,
+      "operationName": "DeleteResponseMutation",
+      "query": "mutation DeleteResponseMutation($responseId: ID!) { deletePost(targetPostId: $responseId) }",
+      "variableKeys": [
+        "responseId"
+      ],
+      "requestBodyLength": 188,
+      "requestHeadersSubset": {
+        "origin": "https://medium.com",
+        "content-type": "application/json",
+        "apollographql-client-name": "lite",
+        "apollographql-client-version": "main-20260223-200902-cb62c3b9f7"
+      },
+      "responseSummary": {
+        "hasData": false,
+        "hasErrors": false,
+        "errorCount": 0,
+        "topLevelDataKeys": [],
+        "nonJson": true,
+        "parseError": "Error: response.json: Protocol error (Network.getResponseBody): No resource with given identifier found"
+      },
+      "stubbed": true
+    }
+  ],
+  "sanitizedForPublicPush": true
+}

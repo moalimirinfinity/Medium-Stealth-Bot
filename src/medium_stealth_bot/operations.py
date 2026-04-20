@@ -221,6 +221,11 @@ mutation ClapMutation($targetPostId: ID!, $userId: ID!, $numClaps: Int!) {
     __typename
     id
     clapCount
+    viewerEdge {
+      __typename
+      id
+      clapCount
+    }
   }
 }
 """.strip()
@@ -237,6 +242,12 @@ mutation PublishPostThreadedResponse($inResponseToPostId: ID!, $deltas: [Delta!]
     __typename
     id
   }
+}
+""".strip()
+
+DELETE_RESPONSE_MUTATION = """
+mutation DeleteResponseMutation($responseId: ID!) {
+  deletePost(targetPostId: $responseId)
 }
 """.strip()
 
@@ -368,6 +379,10 @@ def clap_post(target_post_id: str, user_id: str, num_claps: int = 1) -> GraphQLO
     )
 
 
+def undo_clap_post(target_post_id: str, user_id: str, num_claps: int) -> GraphQLOperation:
+    return clap_post(target_post_id, user_id, num_claps=-abs(num_claps))
+
+
 def publish_threaded_response(
     in_response_to_post_id: str,
     text: str,
@@ -384,4 +399,12 @@ def publish_threaded_response(
             "responseDistribution": response_distribution,
             "sortType": sort_type,
         },
+    )
+
+
+def delete_response(response_id: str) -> GraphQLOperation:
+    return GraphQLOperation(
+        operationName="DeleteResponseMutation",
+        query=DELETE_RESPONSE_MUTATION,
+        variables={"responseId": response_id},
     )

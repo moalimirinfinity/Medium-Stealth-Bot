@@ -16,6 +16,7 @@ FALLBACK_NEWSLETTER_SLUG = "example-newsletter"
 FALLBACK_NEWSLETTER_V3_ID = "example-newsletter-v3-id"
 FALLBACK_TARGET_USER_ID = "example-target-user-id"
 FALLBACK_POST_ID = "example-post-id"
+FALLBACK_RESPONSE_ID = "example-response-id"
 
 
 @dataclass
@@ -110,6 +111,7 @@ def _sample_operation_builders(tag_slug: str, actor_user_id: str | None) -> dict
         "UnfollowUserMutation": operations.unfollow_user(FALLBACK_TARGET_USER_ID),
         "ClapMutation": operations.clap_post(FALLBACK_POST_ID, user_id, num_claps=1),
         "PublishPostThreadedResponse": operations.publish_threaded_response(FALLBACK_POST_ID, "hello"),
+        "DeleteResponseMutation": operations.delete_response(FALLBACK_RESPONSE_ID),
     }
 
 

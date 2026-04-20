@@ -476,6 +476,39 @@
       "expectedTopLevelResponseFields": [
         "publishPostThreadedResponse.id"
       ]
+    },
+    {
+      "operationName": "DeleteResponseMutation",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "user_supplied_activity_payload",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "responseId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/user/profile"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ],
+      "classification": [
+        "mutation",
+        "high-risk"
+      ],
+      "riskLevel": "high",
+      "requiredVariableKeys": [
+        "responseId"
+      ],
+      "optionalVariableKeys": [],
+      "expectedTopLevelResponseFields": [
+        "deletePost"
+      ]
     }
   ],
   "sanitizedForPublicPush": true

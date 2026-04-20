@@ -104,6 +104,44 @@ class ActionRepository:
             row = connection.execute(query, params).fetchone()
             return row is not None
 
+    def verified_actions_for_target(
+        self,
+        *,
+        target_id: str,
+        action_type: str,
+        rollback_action_type: str | None = None,
+    ) -> list[dict[str, str | None]]:
+        query = """
+        SELECT source.action_key, source.status, source.timestamp
+        FROM action_log AS source
+        WHERE source.target_id = ?
+          AND source.action_type = ?
+          AND source.status LIKE 'verified:%'
+        """
+        params: list[object] = [target_id, action_type]
+        if rollback_action_type:
+            query += """
+          AND NOT EXISTS (
+              SELECT 1
+              FROM action_log AS rollback
+              WHERE rollback.action_type = ?
+                AND rollback.status LIKE 'verified:%'
+                AND rollback.action_key = ? || ':' || source.action_key
+          )
+            """
+            params.extend([rollback_action_type, rollback_action_type])
+        query += "\n        ORDER BY source.timestamp DESC, source.id DESC"
+        with self.database.connect() as connection:
+            rows = connection.execute(query, tuple(params)).fetchall()
+            return [
+                {
+                    "action_key": row["action_key"],
+                    "status": row["status"],
+                    "timestamp": row["timestamp"],
+                }
+                for row in rows
+            ]
+
     def is_blacklisted(self, user_id: str) -> bool:
         query = "SELECT 1 FROM blacklist WHERE user_id = ? LIMIT 1"
         with self.database.connect() as connection:

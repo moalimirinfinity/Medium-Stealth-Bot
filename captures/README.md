@@ -17,6 +17,11 @@ The application uses these files for:
 - `final/live_ops_2026-02-24.json`
   - Compact operation summary derived from the live capture.
   - Includes operation list, mutation list, variable key sets, hit counts, and sample page URLs.
+- `final/live_capture_2026-04-20.json`
+  - Targeted rollback-refresh capture focused on undo-clap and delete-comment payloads.
+  - Confirms `DeleteResponseMutation` and negative `ClapMutation` request shapes with the current harness.
+- `final/live_ops_2026-04-20.json`
+  - Compact summary for the targeted rollback-refresh capture.
 - `final/implementation_ops_2026-02-24.json`
   - Curated runtime-aligned subset of core operations needed for bot implementation (follow/unfollow/discovery/state checks + helper reads).
   - Includes operation-registry metadata: `classification`, `riskLevel`, variable contracts, and expected response fields.
@@ -54,6 +59,8 @@ NODE_PATH="$tmpdir/node_modules" node captures/scripts/live_graphql_capture.js
 This regenerates:
 - `captures/final/live_capture_YYYY-MM-DD.json`
 - `captures/final/live_ops_YYYY-MM-DD.json`
+
+For delete-comment coverage, set `MEDIUM_ACTIVITY_URL` in `.env` to the signed-in account activity page before refreshing captures so the harness can visit that flow as well.
 
 ## CI Integrity Check
 
