@@ -1,6 +1,8 @@
 from medium_stealth_bot.database import Database
 from medium_stealth_bot.models import (
     CanonicalRelationshipState,
+    CandidateSource,
+    CandidateUser,
     NewsletterState,
     RelationshipConfidence,
     UserFollowState,
@@ -12,8 +14,34 @@ class ActionRepository:
         self.database = database
 
     @staticmethod
+    def _serialize_source_labels(source_labels: list[str]) -> str | None:
+        normalized = sorted({label.strip() for label in source_labels if label and label.strip()})
+        return ",".join(normalized) if normalized else None
+
+    @staticmethod
+    def _parse_candidate_sources(raw_source_labels: str | None) -> list[CandidateSource]:
+        parsed: list[CandidateSource] = []
+        if not raw_source_labels:
+            return parsed
+        for item in raw_source_labels.split(","):
+            value = item.strip()
+            if not value:
+                continue
+            try:
+                source = CandidateSource(value)
+            except ValueError:
+                continue
+            if source not in parsed:
+                parsed.append(source)
+        return parsed
+
+    @staticmethod
     def _utc_modifier_hours(hours: int) -> str:
         return f"-{hours} hours"
+
+    @staticmethod
+    def _utc_add_hours_modifier(hours: int) -> str:
+        return f"+{hours} hours"
 
     def actions_today_utc(self, action_types: tuple[str, ...] | None = None) -> int:
         # Product rule: daily budgets are calculated on UTC calendar day boundaries.
@@ -103,6 +131,52 @@ class ActionRepository:
         with self.database.connect() as connection:
             row = connection.execute(query, params).fetchone()
             return row is not None
+
+    def recent_action_retry_after(
+        self,
+        user_id: str,
+        *,
+        within_hours: int,
+        action_types: tuple[str, ...] | None = None,
+    ) -> str | None:
+        if action_types:
+            placeholders = ", ".join(["?"] * len(action_types))
+            query = f"""
+            SELECT datetime(timestamp, ?) AS retry_after_at
+            FROM action_log
+            WHERE target_id = ?
+              AND action_type IN ({placeholders})
+              AND timestamp >= datetime('now', 'utc', ?)
+            ORDER BY datetime(timestamp) DESC, id DESC
+            LIMIT 1
+            """
+            params: tuple[object, ...] = (
+                self._utc_add_hours_modifier(within_hours),
+                user_id,
+                *action_types,
+                self._utc_modifier_hours(within_hours),
+            )
+        else:
+            query = """
+            SELECT datetime(timestamp, ?) AS retry_after_at
+            FROM action_log
+            WHERE target_id = ?
+              AND timestamp >= datetime('now', 'utc', ?)
+            ORDER BY datetime(timestamp) DESC, id DESC
+            LIMIT 1
+            """
+            params = (
+                self._utc_add_hours_modifier(within_hours),
+                user_id,
+                self._utc_modifier_hours(within_hours),
+            )
+
+        with self.database.connect() as connection:
+            row = connection.execute(query, params).fetchone()
+            if row is None:
+                return None
+            retry_after_at = row["retry_after_at"]
+            return str(retry_after_at) if retry_after_at else None
 
     def verified_actions_for_target(
         self,
@@ -564,6 +638,259 @@ class ActionRepository:
             connection.execute(query, (follow_state.value, user_id))
             connection.commit()
 
+    def growth_queue_ready_count(self) -> int:
+        query = """
+        SELECT COUNT(*) AS count
+        FROM growth_candidate_queue
+        WHERE queue_state = 'queued'
+           OR (
+               queue_state = 'deferred'
+               AND (
+                   retry_after_at IS NULL
+                   OR datetime(retry_after_at) <= datetime('now', 'utc')
+               )
+           )
+        """
+        with self.database.connect() as connection:
+            row = connection.execute(query).fetchone()
+            return int(row["count"]) if row is not None else 0
+
+    def upsert_growth_candidate_buffer(
+        self,
+        candidates: list[CandidateUser],
+        *,
+        queue_reason: str,
+    ) -> int:
+        if not candidates:
+            return 0
+
+        user_query = """
+        INSERT INTO users (
+            user_id,
+            username,
+            name,
+            follower_count,
+            following_count,
+            newsletter_id,
+            bio,
+            last_scraped_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id) DO UPDATE SET
+            username = COALESCE(excluded.username, users.username),
+            name = COALESCE(excluded.name, users.name),
+            follower_count = COALESCE(excluded.follower_count, users.follower_count),
+            following_count = COALESCE(excluded.following_count, users.following_count),
+            newsletter_id = COALESCE(excluded.newsletter_id, users.newsletter_id),
+            bio = COALESCE(excluded.bio, users.bio),
+            last_scraped_at = CURRENT_TIMESTAMP
+        """
+        queue_query = """
+        INSERT INTO growth_candidate_queue (
+            user_id,
+            username,
+            name,
+            bio,
+            newsletter_v3_id,
+            source_labels,
+            queued_score,
+            follower_count,
+            following_count,
+            latest_post_id,
+            latest_post_title,
+            last_post_created_at,
+            queue_state,
+            retry_after_at,
+            last_reason,
+            discover_count,
+            first_discovered_at,
+            last_discovered_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id) DO UPDATE SET
+            username = COALESCE(excluded.username, growth_candidate_queue.username),
+            name = COALESCE(excluded.name, growth_candidate_queue.name),
+            bio = COALESCE(excluded.bio, growth_candidate_queue.bio),
+            newsletter_v3_id = COALESCE(excluded.newsletter_v3_id, growth_candidate_queue.newsletter_v3_id),
+            source_labels = COALESCE(excluded.source_labels, growth_candidate_queue.source_labels),
+            queued_score = excluded.queued_score,
+            follower_count = COALESCE(excluded.follower_count, growth_candidate_queue.follower_count),
+            following_count = COALESCE(excluded.following_count, growth_candidate_queue.following_count),
+            latest_post_id = COALESCE(excluded.latest_post_id, growth_candidate_queue.latest_post_id),
+            latest_post_title = COALESCE(excluded.latest_post_title, growth_candidate_queue.latest_post_title),
+            last_post_created_at = COALESCE(excluded.last_post_created_at, growth_candidate_queue.last_post_created_at),
+            queue_state = 'queued',
+            retry_after_at = NULL,
+            last_reason = excluded.last_reason,
+            discover_count = growth_candidate_queue.discover_count + 1,
+            last_discovered_at = CURRENT_TIMESTAMP
+        """
+
+        user_rows: list[tuple[object, ...]] = []
+        queue_rows: list[tuple[object, ...]] = []
+        seen_ids: set[str] = set()
+        for candidate in candidates:
+            if candidate.user_id in seen_ids:
+                continue
+            seen_ids.add(candidate.user_id)
+            serialized_sources = self._serialize_source_labels([source.value for source in candidate.sources])
+            user_rows.append(
+                (
+                    candidate.user_id,
+                    candidate.username,
+                    candidate.name,
+                    candidate.follower_count,
+                    candidate.following_count,
+                    candidate.newsletter_v3_id,
+                    candidate.bio,
+                )
+            )
+            queue_rows.append(
+                (
+                    candidate.user_id,
+                    candidate.username,
+                    candidate.name,
+                    candidate.bio,
+                    candidate.newsletter_v3_id,
+                    serialized_sources,
+                    candidate.score,
+                    candidate.follower_count,
+                    candidate.following_count,
+                    candidate.latest_post_id,
+                    candidate.latest_post_title,
+                    candidate.last_post_created_at,
+                    queue_reason,
+                )
+            )
+
+        with self.database.connect() as connection:
+            connection.executemany(user_query, user_rows)
+            connection.executemany(queue_query, queue_rows)
+            connection.commit()
+        return len(queue_rows)
+
+    def queued_growth_candidates(self, *, limit: int) -> list[CandidateUser]:
+        query = """
+        SELECT
+            user_id,
+            username,
+            name,
+            bio,
+            newsletter_v3_id,
+            source_labels,
+            queued_score,
+            follower_count,
+            following_count,
+            latest_post_id,
+            latest_post_title,
+            last_post_created_at
+        FROM growth_candidate_queue
+        WHERE queue_state = 'queued'
+           OR (
+               queue_state = 'deferred'
+               AND (
+                   retry_after_at IS NULL
+                   OR datetime(retry_after_at) <= datetime('now', 'utc')
+               )
+           )
+        ORDER BY
+            CASE WHEN queue_state = 'queued' THEN 0 ELSE 1 END,
+            queued_score DESC,
+            datetime(last_discovered_at) DESC,
+            datetime(first_discovered_at) ASC
+        LIMIT ?
+        """
+        with self.database.connect() as connection:
+            rows = connection.execute(query, (max(1, limit),)).fetchall()
+            return [
+                CandidateUser(
+                    user_id=row["user_id"],
+                    username=row["username"],
+                    name=row["name"],
+                    bio=row["bio"],
+                    newsletter_v3_id=row["newsletter_v3_id"],
+                    follower_count=row["follower_count"],
+                    following_count=row["following_count"],
+                    latest_post_id=row["latest_post_id"],
+                    latest_post_title=row["latest_post_title"],
+                    last_post_created_at=row["last_post_created_at"],
+                    score=float(row["queued_score"] or 0.0),
+                    sources=self._parse_candidate_sources(row["source_labels"]),
+                )
+                for row in rows
+            ]
+
+    def mark_growth_candidate_queue_state(
+        self,
+        user_id: str,
+        *,
+        queue_state: str,
+        reason: str,
+        candidate: CandidateUser | None = None,
+        observed_follow_state: UserFollowState | None = None,
+        attempted: bool = False,
+        followed: bool = False,
+        retry_after_at: str | None = None,
+    ) -> None:
+        query = """
+        UPDATE growth_candidate_queue
+        SET queue_state = ?,
+            last_reason = ?,
+            username = COALESCE(?, username),
+            name = COALESCE(?, name),
+            bio = COALESCE(?, bio),
+            newsletter_v3_id = COALESCE(?, newsletter_v3_id),
+            source_labels = COALESCE(?, source_labels),
+            queued_score = COALESCE(?, queued_score),
+            follower_count = COALESCE(?, follower_count),
+            following_count = COALESCE(?, following_count),
+            latest_post_id = COALESCE(?, latest_post_id),
+            latest_post_title = COALESCE(?, latest_post_title),
+            last_post_created_at = COALESCE(?, last_post_created_at),
+            retry_after_at = CASE
+                WHEN ? = 'deferred' THEN COALESCE(?, retry_after_at)
+                ELSE NULL
+            END,
+            last_screened_at = CURRENT_TIMESTAMP,
+            last_attempted_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE last_attempted_at END,
+            last_followed_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE last_followed_at END,
+            attempt_count = attempt_count + CASE WHEN ? THEN 1 ELSE 0 END,
+            follow_verified_count = follow_verified_count + CASE WHEN ? THEN 1 ELSE 0 END,
+            last_observed_follow_state = COALESCE(?, last_observed_follow_state)
+        WHERE user_id = ?
+        """
+        serialized_sources = None
+        if candidate is not None:
+            serialized_sources = self._serialize_source_labels([source.value for source in candidate.sources])
+        with self.database.connect() as connection:
+            connection.execute(
+                query,
+                (
+                    queue_state,
+                    reason,
+                    candidate.username if candidate is not None else None,
+                    candidate.name if candidate is not None else None,
+                    candidate.bio if candidate is not None else None,
+                    candidate.newsletter_v3_id if candidate is not None else None,
+                    serialized_sources,
+                    candidate.score if candidate is not None else None,
+                    candidate.follower_count if candidate is not None else None,
+                    candidate.following_count if candidate is not None else None,
+                    candidate.latest_post_id if candidate is not None else None,
+                    candidate.latest_post_title if candidate is not None else None,
+                    candidate.last_post_created_at if candidate is not None else None,
+                    queue_state,
+                    retry_after_at,
+                    1 if attempted else 0,
+                    1 if followed else 0,
+                    1 if attempted else 0,
+                    1 if followed else 0,
+                    observed_follow_state.value if observed_follow_state is not None else None,
+                    user_id,
+                ),
+            )
+            connection.commit()
+
     def reconciliation_candidates_page(self, *, limit: int, offset: int = 0) -> list[dict[str, str | None]]:
         query = """
         SELECT user_id, MAX(username) AS username, MAX(rank_ts) AS rank_ts
@@ -613,6 +940,58 @@ class ActionRepository:
             "follow_back_rate": round(follow_back_rate, 4),
         }
 
+    def follow_cycle_conversion_breakdowns(self) -> tuple[dict[str, dict[str, float | int]], dict[str, dict[str, float | int]], dict[str, dict[str, float | int]]]:
+        query = """
+        SELECT cleanup_status, growth_policy, growth_sources
+        FROM follow_cycle
+        """
+        with self.database.connect() as connection:
+            rows = connection.execute(query).fetchall()
+
+        def _blank_metrics() -> dict[str, float | int]:
+            return {
+                "total": 0,
+                "completed": 0,
+                "followed_back": 0,
+                "nonreciprocal": 0,
+                "follow_back_rate": 0.0,
+            }
+
+        def _update(bucket: dict[str, dict[str, float | int]], key: str, cleanup_status: str) -> None:
+            metrics = bucket.setdefault(key, _blank_metrics())
+            metrics["total"] = int(metrics["total"]) + 1
+            if cleanup_status == "followed_back":
+                metrics["completed"] = int(metrics["completed"]) + 1
+                metrics["followed_back"] = int(metrics["followed_back"]) + 1
+            elif cleanup_status == "unfollowed_nonreciprocal":
+                metrics["completed"] = int(metrics["completed"]) + 1
+                metrics["nonreciprocal"] = int(metrics["nonreciprocal"]) + 1
+
+        by_source: dict[str, dict[str, float | int]] = {}
+        by_policy: dict[str, dict[str, float | int]] = {}
+        by_source_policy: dict[str, dict[str, float | int]] = {}
+
+        for row in rows:
+            cleanup_status = str(row["cleanup_status"] or "").strip() or "unknown"
+            growth_policy = str(row["growth_policy"] or "").strip() or "unknown"
+            raw_sources = str(row["growth_sources"] or "").strip()
+            growth_sources = [item.strip() for item in raw_sources.split(",") if item.strip()]
+            if not growth_sources:
+                growth_sources = ["unknown"]
+
+            _update(by_policy, growth_policy, cleanup_status)
+            for source in growth_sources:
+                _update(by_source, source, cleanup_status)
+                _update(by_source_policy, f"{source}|{growth_policy}", cleanup_status)
+
+        for bucket in (by_source, by_policy, by_source_policy):
+            for metrics in bucket.values():
+                completed = int(metrics["completed"])
+                followed_back = int(metrics["followed_back"])
+                metrics["follow_back_rate"] = round((followed_back / completed) if completed > 0 else 0.0, 4)
+
+        return by_source, by_policy, by_source_policy
+
     def mark_follow_cycle_started(
         self,
         *,
@@ -620,6 +999,8 @@ class ActionRepository:
         username: str | None,
         source: str,
         grace_days: int,
+        growth_policy: str | None = None,
+        growth_sources: list[str] | None = None,
     ) -> None:
         query = """
         INSERT INTO follow_cycle (
@@ -627,24 +1008,40 @@ class ActionRepository:
             username,
             followed_at,
             follow_source,
+            growth_policy,
+            growth_sources,
             follow_deadline_at,
             cleanup_status,
             updated_at
         )
         VALUES (
-            ?, ?, CURRENT_TIMESTAMP, ?, datetime('now', 'utc', ?), 'pending', CURRENT_TIMESTAMP
+            ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, datetime('now', 'utc', ?), 'pending', CURRENT_TIMESTAMP
         )
         ON CONFLICT(user_id) DO UPDATE SET
             username = COALESCE(excluded.username, follow_cycle.username),
             followed_at = CURRENT_TIMESTAMP,
             follow_source = excluded.follow_source,
+            growth_policy = excluded.growth_policy,
+            growth_sources = excluded.growth_sources,
             follow_deadline_at = datetime('now', 'utc', ?),
             cleanup_status = 'pending',
             updated_at = CURRENT_TIMESTAMP
         """
         modifier = f"+{grace_days} day"
+        serialized_sources = ",".join(sorted({item.strip() for item in (growth_sources or []) if item and item.strip()})) or None
         with self.database.connect() as connection:
-            connection.execute(query, (user_id, username, source, modifier, modifier))
+            connection.execute(
+                query,
+                (
+                    user_id,
+                    username,
+                    source,
+                    growth_policy,
+                    serialized_sources,
+                    modifier,
+                    modifier,
+                ),
+            )
             connection.commit()
 
     def mark_followed_back(self, user_id: str) -> None:
