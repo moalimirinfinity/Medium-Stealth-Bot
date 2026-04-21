@@ -51,10 +51,41 @@ class ProbeSnapshot(BaseModel):
     results: dict[str, GraphQLResult]
 
 
+class GrowthMode(StrEnum):
+    SIMPLE = "simple"
+    SMART = "smart"
+
+
+class GrowthDiscoveryMode(StrEnum):
+    GENERAL = "general"
+    TARGET_USER_FOLLOWERS = "target-user-followers"
+
+
+class GrowthPolicy(StrEnum):
+    FOLLOW_ONLY = "follow-only"
+    WARM_ENGAGE = "warm-engage"
+    WARM_ENGAGE_RARE_COMMENT = "warm-engage-plus-rare-comment"
+
+
+class GrowthSource(StrEnum):
+    TOPIC_RECOMMENDED = "topic-recommended"
+    SEED_FOLLOWERS = "seed-followers"
+    TARGET_USER_FOLLOWERS = "target-user-followers"
+    PUBLICATION_ADJACENT = "publication-adjacent"
+    RESPONDERS = "responders"
+
+
 class DailyRunOutcome(BaseModel):
     budget_exhausted: bool
     actions_today: int
     max_actions_per_day: int
+    cleanup_only_mode: bool = False
+    growth_policy: GrowthPolicy | None = None
+    growth_sources: list[GrowthSource] = Field(default_factory=list)
+    growth_mode: GrowthMode | None = None
+    discovery_mode: GrowthDiscoveryMode | None = None
+    target_user_refs: list[str] = Field(default_factory=list)
+    target_user_scan_limit: int | None = None
     action_counts_today: dict[str, int] = Field(default_factory=dict)
     action_limits_per_day: dict[str, int] = Field(default_factory=dict)
     action_remaining_per_day: dict[str, int] = Field(default_factory=dict)
@@ -65,10 +96,16 @@ class DailyRunOutcome(BaseModel):
     follow_actions_verified: int = 0
     clap_actions_attempted: int = 0
     clap_actions_verified: int = 0
+    comment_actions_attempted: int = 0
+    comment_actions_verified: int = 0
     cleanup_actions_attempted: int = 0
     cleanup_actions_verified: int = 0
     source_candidate_counts: dict[str, int] = Field(default_factory=dict)
     source_follow_verified_counts: dict[str, int] = Field(default_factory=dict)
+    policy_follow_verified_counts: dict[str, int] = Field(default_factory=dict)
+    conversion_by_source: dict[str, dict[str, float | int]] = Field(default_factory=dict)
+    conversion_by_policy: dict[str, dict[str, float | int]] = Field(default_factory=dict)
+    conversion_by_source_policy: dict[str, dict[str, float | int]] = Field(default_factory=dict)
     kpis: dict[str, float | int] = Field(default_factory=dict)
     client_metrics: dict[str, Any] = Field(default_factory=dict)
     decision_log: list[str] = Field(default_factory=list)
@@ -139,7 +176,10 @@ class CandidateSource(StrEnum):
     TOPIC_LATEST_STORIES = "topic_latest_stories"
     TOPIC_WHO_TO_FOLLOW = "topic_who_to_follow"
     WHO_TO_FOLLOW_MODULE = "who_to_follow_module"
+    TOPIC_CURATED_LIST = "topic_curated_list"
     SEED_FOLLOWERS = "seed_followers"
+    TARGET_USER_FOLLOWERS = "target_user_followers"
+    POST_RESPONDERS = "post_responders"
 
 
 class CandidateUser(BaseModel):
@@ -151,6 +191,8 @@ class CandidateUser(BaseModel):
     follower_count: int | None = None
     following_count: int | None = None
     latest_post_id: str | None = None
+    latest_post_title: str | None = None
+    last_post_created_at: str | None = None
     score: float = 0.0
     matched_keywords: list[str] = Field(default_factory=list)
     sources: list[CandidateSource] = Field(default_factory=list)
