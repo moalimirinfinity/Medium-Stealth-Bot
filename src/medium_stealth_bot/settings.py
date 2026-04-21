@@ -4,6 +4,9 @@ from typing import Literal
 from pydantic import Field, ValidationInfo, computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from medium_stealth_bot.comment_templates import DEFAULT_PRE_FOLLOW_COMMENT_TEMPLATES_RAW
+from medium_stealth_bot.models import GrowthMode, GrowthPolicy, GrowthSource
+
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -91,6 +94,11 @@ class AppSettings(BaseSettings):
         ge=0,
         validation_alias="MAX_CLAP_ACTIONS_PER_DAY",
     )
+    max_comment_actions_per_day: int = Field(
+        default=8,
+        ge=0,
+        validation_alias="MAX_COMMENT_ACTIONS_PER_DAY",
+    )
     live_session_duration_minutes: int = Field(
         default=60,
         ge=1,
@@ -140,6 +148,21 @@ class AppSettings(BaseSettings):
         le=300,
         validation_alias="GRAPH_SYNC_SCRAPE_PAGE_TIMEOUT_SECONDS",
     )
+    legacy_default_growth_mode: GrowthMode | None = Field(default=None, validation_alias="DEFAULT_GROWTH_MODE")
+    default_growth_policy: GrowthPolicy = Field(
+        default=GrowthPolicy.WARM_ENGAGE,
+        validation_alias="DEFAULT_GROWTH_POLICY",
+    )
+    default_growth_sources_raw: str = Field(
+        default="topic-recommended,seed-followers",
+        validation_alias="DEFAULT_GROWTH_SOURCES",
+    )
+    target_user_followers_scan_limit: int = Field(
+        default=50,
+        ge=1,
+        le=500,
+        validation_alias="TARGET_USER_FOLLOWERS_SCAN_LIMIT",
+    )
     follow_candidate_limit: int = Field(default=30, ge=1, le=500, validation_alias="FOLLOW_CANDIDATE_LIMIT")
     follow_cooldown_hours: int = Field(default=72, ge=1, le=24 * 60, validation_alias="FOLLOW_COOLDOWN_HOURS")
     min_following_follower_ratio: float = Field(
@@ -147,6 +170,24 @@ class AppSettings(BaseSettings):
         ge=0.0,
         le=100.0,
         validation_alias="MIN_FOLLOWING_FOLLOWER_RATIO",
+    )
+    max_following_follower_ratio: float = Field(
+        default=20.0,
+        ge=0.0,
+        le=500.0,
+        validation_alias="MAX_FOLLOWING_FOLLOWER_RATIO",
+    )
+    candidate_min_followers: int = Field(default=25, ge=0, validation_alias="CANDIDATE_MIN_FOLLOWERS")
+    candidate_max_followers: int = Field(default=0, ge=0, validation_alias="CANDIDATE_MAX_FOLLOWERS")
+    candidate_min_following: int = Field(default=0, ge=0, validation_alias="CANDIDATE_MIN_FOLLOWING")
+    candidate_max_following: int = Field(default=0, ge=0, validation_alias="CANDIDATE_MAX_FOLLOWING")
+    require_candidate_bio: bool = Field(default=False, validation_alias="REQUIRE_CANDIDATE_BIO")
+    require_candidate_latest_post: bool = Field(default=True, validation_alias="REQUIRE_CANDIDATE_LATEST_POST")
+    candidate_recent_activity_days: int = Field(
+        default=0,
+        ge=0,
+        le=3650,
+        validation_alias="CANDIDATE_RECENT_ACTIVITY_DAYS",
     )
     require_bio_keyword_match: bool = Field(default=False, validation_alias="REQUIRE_BIO_KEYWORD_MATCH")
     score_weight_ratio: float = Field(default=1.0, ge=0.0, le=10.0, validation_alias="SCORE_WEIGHT_RATIO")
@@ -165,6 +206,24 @@ class AppSettings(BaseSettings):
         ge=1,
         le=50,
         validation_alias="DISCOVERY_SECOND_HOP_SEED_LIMIT",
+    )
+    topic_curated_list_item_limit: int = Field(
+        default=6,
+        ge=1,
+        le=25,
+        validation_alias="TOPIC_CURATED_LIST_ITEM_LIMIT",
+    )
+    responder_posts_per_run: int = Field(
+        default=4,
+        ge=1,
+        le=20,
+        validation_alias="RESPONDER_POSTS_PER_RUN",
+    )
+    responder_candidates_per_post: int = Field(
+        default=8,
+        ge=1,
+        le=50,
+        validation_alias="RESPONDER_CANDIDATES_PER_POST",
     )
     unfollow_nonreciprocal_after_days: int = Field(
         default=7,
@@ -192,21 +251,32 @@ class AppSettings(BaseSettings):
     own_followers_scan_limit: int = Field(default=80, ge=1, le=500, validation_alias="OWN_FOLLOWERS_SCAN_LIMIT")
 
     enable_pre_follow_clap: bool = Field(default=True, validation_alias="ENABLE_PRE_FOLLOW_CLAP")
-    pre_follow_read_wait_seconds: int = Field(default=60, ge=0, le=600, validation_alias="PRE_FOLLOW_READ_WAIT_SECONDS")
+    enable_pre_follow_comment: bool = Field(default=False, validation_alias="ENABLE_PRE_FOLLOW_COMMENT")
+    pre_follow_comment_probability: float = Field(
+        default=0.15,
+        ge=0.0,
+        le=1.0,
+        validation_alias="PRE_FOLLOW_COMMENT_PROBABILITY",
+    )
+    pre_follow_comment_templates_raw: str = Field(
+        default=DEFAULT_PRE_FOLLOW_COMMENT_TEMPLATES_RAW,
+        validation_alias="PRE_FOLLOW_COMMENT_TEMPLATES",
+    )
+    pre_follow_read_wait_seconds: int = Field(default=35, ge=0, le=600, validation_alias="PRE_FOLLOW_READ_WAIT_SECONDS")
     min_clap_count: int = Field(default=12, ge=1, le=50, validation_alias="MIN_CLAP_COUNT")
     max_clap_count: int = Field(default=40, ge=1, le=50, validation_alias="MAX_CLAP_COUNT")
 
-    min_read_wait_seconds: int = Field(default=30, ge=0, validation_alias="MIN_READ_WAIT_SECONDS")
-    max_read_wait_seconds: int = Field(default=90, ge=0, validation_alias="MAX_READ_WAIT_SECONDS")
-    min_verify_gap_seconds: int = Field(default=3, ge=0, validation_alias="MIN_VERIFY_GAP_SECONDS")
-    max_verify_gap_seconds: int = Field(default=12, ge=0, validation_alias="MAX_VERIFY_GAP_SECONDS")
-    min_action_gap_seconds: int = Field(default=30, ge=0, validation_alias="MIN_ACTION_GAP_SECONDS")
-    max_action_gap_seconds: int = Field(default=90, ge=0, validation_alias="MAX_ACTION_GAP_SECONDS")
-    max_mutations_per_10_minutes: int = Field(default=24, ge=1, le=500, validation_alias="MAX_MUTATIONS_PER_10_MINUTES")
-    min_session_warmup_seconds: int = Field(default=5, ge=0, validation_alias="MIN_SESSION_WARMUP_SECONDS")
-    max_session_warmup_seconds: int = Field(default=20, ge=0, validation_alias="MAX_SESSION_WARMUP_SECONDS")
-    pass_cooldown_min_seconds: int = Field(default=20, ge=0, validation_alias="PASS_COOLDOWN_MIN_SECONDS")
-    pass_cooldown_max_seconds: int = Field(default=90, ge=0, validation_alias="PASS_COOLDOWN_MAX_SECONDS")
+    min_read_wait_seconds: int = Field(default=15, ge=0, validation_alias="MIN_READ_WAIT_SECONDS")
+    max_read_wait_seconds: int = Field(default=45, ge=0, validation_alias="MAX_READ_WAIT_SECONDS")
+    min_verify_gap_seconds: int = Field(default=1, ge=0, validation_alias="MIN_VERIFY_GAP_SECONDS")
+    max_verify_gap_seconds: int = Field(default=4, ge=0, validation_alias="MAX_VERIFY_GAP_SECONDS")
+    min_action_gap_seconds: int = Field(default=10, ge=0, validation_alias="MIN_ACTION_GAP_SECONDS")
+    max_action_gap_seconds: int = Field(default=25, ge=0, validation_alias="MAX_ACTION_GAP_SECONDS")
+    max_mutations_per_10_minutes: int = Field(default=30, ge=1, le=500, validation_alias="MAX_MUTATIONS_PER_10_MINUTES")
+    min_session_warmup_seconds: int = Field(default=1, ge=0, validation_alias="MIN_SESSION_WARMUP_SECONDS")
+    max_session_warmup_seconds: int = Field(default=5, ge=0, validation_alias="MAX_SESSION_WARMUP_SECONDS")
+    pass_cooldown_min_seconds: int = Field(default=5, ge=0, validation_alias="PASS_COOLDOWN_MIN_SECONDS")
+    pass_cooldown_max_seconds: int = Field(default=20, ge=0, validation_alias="PASS_COOLDOWN_MAX_SECONDS")
     pacing_soft_degrade_cooldown_seconds: int = Field(
         default=180,
         ge=0,
@@ -317,6 +387,8 @@ class AppSettings(BaseSettings):
     @field_validator(
         "bio_keywords_raw",
         "discovery_seed_users_raw",
+        "default_growth_sources_raw",
+        "pre_follow_comment_templates_raw",
         "challenge_status_codes_raw",
         "challenge_tokens_raw",
         "session_expiry_status_codes_raw",
@@ -366,6 +438,19 @@ class AppSettings(BaseSettings):
             raise ValueError("RETRY_MAX_DELAY_SECONDS must be greater than or equal to RETRY_BASE_DELAY_SECONDS.")
         return value
 
+    @field_validator("candidate_max_followers", "candidate_max_following")
+    @classmethod
+    def validate_optional_maximums(cls, value: int) -> int:
+        return max(0, value)
+
+    @field_validator("max_following_follower_ratio")
+    @classmethod
+    def validate_ratio_band(cls, value: float, info: ValidationInfo) -> float:
+        minimum = info.data.get("min_following_follower_ratio")
+        if minimum is not None and value < minimum:
+            raise ValueError("MAX_FOLLOWING_FOLLOWER_RATIO must be greater than or equal to MIN_FOLLOWING_FOLLOWER_RATIO.")
+        return value
+
     @computed_field
     @property
     def bio_keywords(self) -> list[str]:
@@ -375,6 +460,39 @@ class AppSettings(BaseSettings):
     @property
     def discovery_seed_users(self) -> list[str]:
         return [item.strip() for item in self.discovery_seed_users_raw.split(",") if item.strip()]
+
+    @computed_field
+    @property
+    def default_growth_sources(self) -> list[GrowthSource]:
+        parsed: list[GrowthSource] = []
+        for item in self.default_growth_sources_raw.split(","):
+            raw_value = item.strip().lower()
+            if not raw_value:
+                continue
+            try:
+                source = GrowthSource(raw_value)
+            except ValueError as exc:
+                raise ValueError(f"DEFAULT_GROWTH_SOURCES contains unsupported value: {raw_value}") from exc
+            if source not in parsed:
+                parsed.append(source)
+        if not parsed:
+            return [GrowthSource.TOPIC_RECOMMENDED]
+        return parsed
+
+    @property
+    def default_growth_mode(self) -> GrowthMode:
+        if self.default_growth_policy == GrowthPolicy.FOLLOW_ONLY:
+            return GrowthMode.SIMPLE
+        return GrowthMode.SMART
+
+    @computed_field
+    @property
+    def pre_follow_comment_templates(self) -> list[str]:
+        return [
+            item.strip()
+            for item in self.pre_follow_comment_templates_raw.split("||")
+            if item.strip()
+        ]
 
     @computed_field
     @property
@@ -395,6 +513,17 @@ class AppSettings(BaseSettings):
     @property
     def session_expiry_tokens(self) -> list[str]:
         return [item.strip().lower() for item in self.session_expiry_tokens_raw.split(",") if item.strip()]
+
+    @model_validator(mode="after")
+    def reconcile_legacy_growth_defaults(self) -> "AppSettings":
+        if self.legacy_default_growth_mode is not None:
+            if self.default_growth_policy == GrowthPolicy.WARM_ENGAGE:
+                self.default_growth_policy = (
+                    GrowthPolicy.FOLLOW_ONLY
+                    if self.legacy_default_growth_mode == GrowthMode.SIMPLE
+                    else GrowthPolicy.WARM_ENGAGE_RARE_COMMENT
+                )
+        return self
 
     @staticmethod
     def _parse_status_codes(raw: str) -> set[int]:
