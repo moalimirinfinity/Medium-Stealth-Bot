@@ -82,6 +82,40 @@
       ]
     },
     {
+      "operationName": "TopicCuratedListQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "itemLimit",
+          "tagSlug"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/tag/programming"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ],
+      "classification": [
+        "read"
+      ],
+      "riskLevel": "low",
+      "requiredVariableKeys": [
+        "itemLimit",
+        "tagSlug"
+      ],
+      "optionalVariableKeys": [],
+      "expectedTopLevelResponseFields": [
+        "tagFromSlug.curatedLists.edges"
+      ]
+    },
+    {
       "operationName": "TopicWhoToFollowPubishersQuery",
       "hits": 1,
       "stubbedHits": 0,
@@ -222,6 +256,43 @@
       "optionalVariableKeys": [],
       "expectedTopLevelResponseFields": [
         "user.viewerEdge.isFollowing"
+      ]
+    },
+    {
+      "operationName": "PostResponsesQuery",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_ui_observed",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "paging",
+          "postId",
+          "sortType"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/post/redacted"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ],
+      "classification": [
+        "read"
+      ],
+      "riskLevel": "low",
+      "requiredVariableKeys": [
+        "paging",
+        "postId"
+      ],
+      "optionalVariableKeys": [
+        "sortType"
+      ],
+      "expectedTopLevelResponseFields": [
+        "post.threadedPostResponses.posts"
       ]
     },
     {
