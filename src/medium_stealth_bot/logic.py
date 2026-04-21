@@ -3,20 +3,23 @@ import math
 import random
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import structlog
 
 from medium_stealth_bot import operations
 from medium_stealth_bot.client import MediumAsyncClient
+from medium_stealth_bot.comment_templates import build_comment_template_pool
 from medium_stealth_bot.graph_sync import GraphSyncService
 from medium_stealth_bot.models import (
     CandidateDecision,
     CandidateSource,
     CandidateUser,
-    GrowthDiscoveryMode,
     DailyRunOutcome,
+    GrowthDiscoveryMode,
     GrowthMode,
+    GrowthPolicy,
+    GrowthSource,
     GraphSyncOutcome,
     GraphQLError,
     GraphQLResult,
@@ -34,15 +37,19 @@ from medium_stealth_bot.typed_payloads import (
     UserNode,
     parse_clap_count,
     parse_delete_response_success,
-    parse_latest_post_id,
+    parse_latest_post_preview,
+    parse_post_response_creators,
     parse_publish_threaded_response_id,
     parse_recommended_publishers_users,
     parse_topic_latest_story_creators,
+    parse_topic_curated_list_users,
     parse_user_followers_next_from,
     parse_user_followers_users,
-    parse_viewer_clap_count,
+    parse_user_viewer_last_post_created_at,
+    parse_user_viewer_user_node,
     parse_user_viewer_follower_count,
     parse_user_viewer_is_following,
+    parse_viewer_clap_count,
 )
 
 ACTION_SUBSCRIBE = "follow_subscribe_attempt"
@@ -54,6 +61,11 @@ ACTION_COMMENT_SKIPPED = "comment_pre_follow_skipped"
 ACTION_UNDO_CLAP = "cleanup_undo_clap"
 ACTION_DELETE_COMMENT = "cleanup_delete_comment"
 ACTION_FOLLOW_VERIFIED = "follow_verified"
+FOLLOW_COOLDOWN_ACTION_TYPES: tuple[str, ...] = (
+    ACTION_SUBSCRIBE,
+    ACTION_FOLLOW_VERIFIED,
+    ACTION_UNFOLLOW,
+)
 TRACKED_DAILY_ACTION_TYPES: tuple[str, ...] = (
     ACTION_SUBSCRIBE,
     ACTION_UNFOLLOW,
@@ -74,6 +86,7 @@ class DailyRunner:
         self._session_follow_cap_override: int | None = None
         self._session_mutations_enabled_override: bool | None = None
         self._mutations_suspended_until_monotonic = 0.0
+        self._comment_mutation_supported = True
         self._normalize_pacing_configuration()
 
     async def probe(self, tag_slug: str = "programming") -> ProbeSnapshot:
@@ -128,21 +141,28 @@ class DailyRunner:
         tag_slug: str = "programming",
         dry_run: bool = True,
         seed_user_refs: list[str] | None = None,
+        growth_policy: GrowthPolicy | None = None,
+        growth_sources: list[GrowthSource] | None = None,
         growth_mode: GrowthMode | None = None,
         discovery_mode: GrowthDiscoveryMode | None = None,
         target_user_refs: list[str] | None = None,
         target_user_scan_limit: int | None = None,
     ) -> DailyRunOutcome:
         self._assert_operator_not_stopped(task_name="run_daily_cycle")
-        resolved_growth_mode = self._resolve_growth_mode(growth_mode)
-        resolved_discovery_mode = self._resolve_discovery_mode(discovery_mode)
+        resolved_growth_policy = self._resolve_growth_policy(growth_policy=growth_policy, growth_mode=growth_mode)
+        resolved_growth_sources = self._resolve_growth_sources(
+            growth_sources=growth_sources,
+            discovery_mode=discovery_mode,
+        )
+        resolved_growth_mode = self._legacy_growth_mode_for_policy(resolved_growth_policy)
+        resolved_discovery_mode = self._legacy_discovery_mode_for_sources(resolved_growth_sources)
         resolved_target_user_refs = target_user_refs or []
         resolved_target_user_scan_limit = (
             self._resolve_target_user_scan_limit(target_user_scan_limit)
-            if resolved_discovery_mode == GrowthDiscoveryMode.TARGET_USER_FOLLOWERS
+            if GrowthSource.TARGET_USER_FOLLOWERS in resolved_growth_sources
             else None
         )
-        if resolved_discovery_mode == GrowthDiscoveryMode.TARGET_USER_FOLLOWERS and not resolved_target_user_refs:
+        if GrowthSource.TARGET_USER_FOLLOWERS in resolved_growth_sources and not resolved_target_user_refs:
             raise ValueError("target_user_refs are required for target-user-followers discovery.")
         if not self._in_live_session:
             self.timing.reset_session_state()
@@ -173,6 +193,8 @@ class DailyRunner:
                 actions_today=actions_today_start,
                 max_actions_per_day=max_actions,
                 cleanup_only_mode=False,
+                growth_policy=resolved_growth_policy,
+                growth_sources=resolved_growth_sources,
                 growth_mode=resolved_growth_mode,
                 discovery_mode=resolved_discovery_mode,
                 target_user_refs=resolved_target_user_refs,
@@ -185,52 +207,75 @@ class DailyRunner:
                 client_metrics=self.client.metrics_snapshot(),
             )
 
-        probe = (
-            await self.probe(tag_slug=tag_slug)
-            if resolved_discovery_mode == GrowthDiscoveryMode.GENERAL
-            else None
-        )
-
-        seed_refs = (
-            (seed_user_refs or []) + self.settings.discovery_seed_users
-            if resolved_discovery_mode == GrowthDiscoveryMode.GENERAL
-            else []
-        )
-        candidates = await self._build_candidates(
-            probe=probe,
-            seed_user_refs=seed_refs,
-            discovery_mode=resolved_discovery_mode,
-            target_user_refs=resolved_target_user_refs,
-            target_user_scan_limit=resolved_target_user_scan_limit,
-        )
-        candidates = candidates[: self._candidate_limit_for_discovery(
-            discovery_mode=resolved_discovery_mode,
-            target_user_scan_limit=resolved_target_user_scan_limit,
-            target_user_refs=resolved_target_user_refs,
-        )]
-
         decisions: list[CandidateDecision] = []
-        eligible = await self._evaluate_candidates(
-            candidates,
-            decisions=decisions,
-            persist_observations=not dry_run,
-        )
-
-        source_candidate_counts = self._source_counts(candidates)
-
         remaining_budget = max(0, max_actions - actions_today_start)
         follow_limit_for_cycle = self._resolved_follow_limit_for_cycle()
         mutations_enabled = self._mutations_enabled_for_cycle(dry_run=dry_run)
         if not mutations_enabled and not dry_run:
             self.log.info("pacing_mutations_suspended_for_cycle")
-        follow_slots = min(
+        max_follow_attempts_for_cycle = min(
             follow_limit_for_cycle,
             remaining_budget,
-            len(eligible),
             action_remaining[ACTION_SUBSCRIBE],
         )
         if not mutations_enabled and not dry_run:
-            follow_slots = 0
+            max_follow_attempts_for_cycle = 0
+
+        probe: ProbeSnapshot | None = None
+        candidates: list[CandidateUser] = []
+        source_candidate_counts: dict[str, int] = {}
+        discovery_buffered: list[CandidateUser] = []
+        discovery_target = self._discovery_buffer_target(
+            growth_sources=resolved_growth_sources,
+            target_user_scan_limit=resolved_target_user_scan_limit,
+            target_user_refs=resolved_target_user_refs,
+        )
+        queue_ready_before = 0 if dry_run else self.repository.growth_queue_ready_count()
+        queue_ready_after = queue_ready_before
+        discovery_enqueued = 0
+        discovery_replenished = False
+
+        if dry_run or queue_ready_before < discovery_target:
+            probe = await self.probe(tag_slug=tag_slug) if self._growth_sources_need_probe(resolved_growth_sources) else None
+            seed_refs = (seed_user_refs or []) + self.settings.discovery_seed_users
+            candidates = await self._build_candidates(
+                tag_slug=tag_slug,
+                probe=probe,
+                seed_user_refs=seed_refs,
+                growth_sources=resolved_growth_sources,
+                target_user_refs=resolved_target_user_refs,
+                target_user_scan_limit=resolved_target_user_scan_limit,
+            )
+            candidates = candidates[:discovery_target]
+            source_candidate_counts = self._source_counts(candidates)
+            discovery_buffered = self._screen_discovery_candidates(
+                candidates,
+                decisions=decisions,
+            )
+            discovery_enqueued = len(discovery_buffered)
+            discovery_replenished = True
+            if not dry_run:
+                discovery_enqueued = self.repository.upsert_growth_candidate_buffer(
+                    discovery_buffered,
+                    queue_reason="queued:discovery_buffered",
+                )
+                queue_ready_after = self.repository.growth_queue_ready_count()
+            else:
+                queue_ready_after = len(discovery_buffered)
+
+        execution_pool_limit = self._execution_queue_fetch_limit(max_follow_attempts_for_cycle)
+        execution_pool = (
+            discovery_buffered[:execution_pool_limit]
+            if dry_run
+            else self.repository.queued_growth_candidates(limit=execution_pool_limit)
+        )
+        eligible = await self._evaluate_candidates(
+            execution_pool,
+            decisions=decisions,
+            persist_observations=not dry_run,
+        ) if execution_pool_limit > 0 else []
+
+        follow_slots = min(max_follow_attempts_for_cycle, len(eligible))
         (
             follow_attempted,
             follow_verified,
@@ -247,7 +292,7 @@ class DailyRunner:
                 comment_budget_remaining=action_remaining[ACTION_COMMENT],
                 dry_run=dry_run,
                 decisions=decisions,
-                growth_mode=resolved_growth_mode,
+                growth_policy=resolved_growth_policy,
             )
         )
         action_counts[ACTION_SUBSCRIBE] += follow_attempted
@@ -279,6 +324,19 @@ class DailyRunner:
             comment_verified=comment_verified,
         )
         kpis.update(self.repository.follow_cycle_kpis())
+        (
+            conversion_by_source,
+            conversion_by_policy,
+            conversion_by_source_policy,
+        ) = self.repository.follow_cycle_conversion_breakdowns()
+        kpis["selected_growth_sources_count"] = len(resolved_growth_sources)
+        kpis["selected_growth_policy_follow_verified"] = follow_verified
+        kpis["growth_queue_ready_before_discovery"] = queue_ready_before
+        kpis["growth_queue_ready_after_discovery"] = queue_ready_after
+        kpis["growth_queue_discovery_target"] = discovery_target
+        kpis["growth_queue_discovery_enqueued"] = discovery_enqueued
+        kpis["growth_queue_execution_pool"] = len(execution_pool)
+        kpis["growth_queue_replenished"] = 1 if discovery_replenished else 0
         kpis.update(self.timing.metrics_snapshot())
         kpis["pacing_mutations_enabled"] = 1 if mutations_enabled else 0
         client_metrics = self.client.metrics_snapshot()
@@ -288,6 +346,10 @@ class DailyRunner:
             dry_run=dry_run,
             considered_candidates=len(candidates),
             eligible_candidates=len(eligible),
+            queue_ready_before=queue_ready_before,
+            queue_ready_after=queue_ready_after,
+            discovery_enqueued=discovery_enqueued,
+            execution_pool=len(execution_pool),
             follow_attempted=follow_attempted,
             follow_verified=follow_verified,
             clap_attempted=clap_attempted,
@@ -304,6 +366,8 @@ class DailyRunner:
             source_candidate_counts=source_candidate_counts,
             source_follow_verified_counts=source_follow_verified_counts,
             follow_limit_for_cycle=follow_limit_for_cycle,
+            growth_policy=resolved_growth_policy.value,
+            growth_sources=[source.value for source in resolved_growth_sources],
             growth_mode=resolved_growth_mode.value,
             discovery_mode=resolved_discovery_mode.value,
             target_user_refs=resolved_target_user_refs,
@@ -320,6 +384,8 @@ class DailyRunner:
             actions_today=actions_today_end,
             max_actions_per_day=max_actions,
             cleanup_only_mode=False,
+            growth_policy=resolved_growth_policy,
+            growth_sources=resolved_growth_sources,
             growth_mode=resolved_growth_mode,
             discovery_mode=resolved_discovery_mode,
             target_user_refs=resolved_target_user_refs,
@@ -340,6 +406,10 @@ class DailyRunner:
             cleanup_actions_verified=cleanup_verified,
             source_candidate_counts=source_candidate_counts,
             source_follow_verified_counts=source_follow_verified_counts,
+            policy_follow_verified_counts={resolved_growth_policy.value: follow_verified},
+            conversion_by_source=conversion_by_source,
+            conversion_by_policy=conversion_by_policy,
+            conversion_by_source_policy=conversion_by_source_policy,
             kpis=kpis,
             client_metrics=client_metrics,
             decision_log=[
@@ -359,21 +429,28 @@ class DailyRunner:
         target_follow_attempts: int | None = None,
         max_duration_minutes: int | None = None,
         max_passes: int | None = None,
+        growth_policy: GrowthPolicy | None = None,
+        growth_sources: list[GrowthSource] | None = None,
         growth_mode: GrowthMode | None = None,
         discovery_mode: GrowthDiscoveryMode | None = None,
         target_user_refs: list[str] | None = None,
         target_user_scan_limit: int | None = None,
     ) -> DailyRunOutcome:
         self._assert_operator_not_stopped(task_name="run_live_session")
-        resolved_growth_mode = self._resolve_growth_mode(growth_mode)
-        resolved_discovery_mode = self._resolve_discovery_mode(discovery_mode)
+        resolved_growth_policy = self._resolve_growth_policy(growth_policy=growth_policy, growth_mode=growth_mode)
+        resolved_growth_sources = self._resolve_growth_sources(
+            growth_sources=growth_sources,
+            discovery_mode=discovery_mode,
+        )
+        resolved_growth_mode = self._legacy_growth_mode_for_policy(resolved_growth_policy)
+        resolved_discovery_mode = self._legacy_discovery_mode_for_sources(resolved_growth_sources)
         resolved_target_user_refs = target_user_refs or []
         resolved_target_user_scan_limit = (
             self._resolve_target_user_scan_limit(target_user_scan_limit)
-            if resolved_discovery_mode == GrowthDiscoveryMode.TARGET_USER_FOLLOWERS
+            if GrowthSource.TARGET_USER_FOLLOWERS in resolved_growth_sources
             else None
         )
-        if resolved_discovery_mode == GrowthDiscoveryMode.TARGET_USER_FOLLOWERS and not resolved_target_user_refs:
+        if GrowthSource.TARGET_USER_FOLLOWERS in resolved_growth_sources and not resolved_target_user_refs:
             raise ValueError("target_user_refs are required for target-user-followers discovery.")
 
         resolved_target_follows = max(1, target_follow_attempts or self.settings.live_session_target_follow_attempts)
@@ -452,6 +529,8 @@ class DailyRunner:
                     max_passes=resolved_max_passes,
                     elapsed_seconds=round(elapsed_before_pass, 3),
                     follow_cap_this_pass=follow_cap_this_pass,
+                    growth_policy=resolved_growth_policy.value,
+                    growth_sources=[source.value for source in resolved_growth_sources],
                     growth_mode=resolved_growth_mode.value,
                     discovery_mode=resolved_discovery_mode.value,
                     target_user_refs=resolved_target_user_refs,
@@ -462,6 +541,8 @@ class DailyRunner:
                     tag_slug=tag_slug,
                     dry_run=False,
                     seed_user_refs=seed_user_refs,
+                    growth_policy=resolved_growth_policy,
+                    growth_sources=resolved_growth_sources,
                     growth_mode=resolved_growth_mode,
                     discovery_mode=resolved_discovery_mode,
                     target_user_refs=resolved_target_user_refs,
@@ -575,6 +656,11 @@ class DailyRunner:
                 comment_verified=0,
             )
             kpis.update(self.repository.follow_cycle_kpis())
+            (
+                conversion_by_source,
+                conversion_by_policy,
+                conversion_by_source_policy,
+            ) = self.repository.follow_cycle_conversion_breakdowns()
             kpis.update(
                 {
                     "session_passes": pass_count,
@@ -594,6 +680,8 @@ class DailyRunner:
                 actions_today=actions_today,
                 max_actions_per_day=self.settings.max_actions_per_day,
                 cleanup_only_mode=False,
+                growth_policy=resolved_growth_policy,
+                growth_sources=resolved_growth_sources,
                 growth_mode=resolved_growth_mode,
                 discovery_mode=resolved_discovery_mode,
                 target_user_refs=resolved_target_user_refs,
@@ -602,6 +690,9 @@ class DailyRunner:
                 action_limits_per_day=action_limits,
                 action_remaining_per_day=action_remaining,
                 dry_run=False,
+                conversion_by_source=conversion_by_source,
+                conversion_by_policy=conversion_by_policy,
+                conversion_by_source_policy=conversion_by_source_policy,
                 kpis=kpis,
                 client_metrics=self.client.metrics_snapshot(),
                 session_passes=pass_count,
@@ -623,6 +714,11 @@ class DailyRunner:
             comment_verified=total_comment_verified,
         )
         kpis.update(self.repository.follow_cycle_kpis())
+        (
+            conversion_by_source,
+            conversion_by_policy,
+            conversion_by_source_policy,
+        ) = self.repository.follow_cycle_conversion_breakdowns()
         kpis.update(
             {
                 "session_passes": pass_count,
@@ -643,6 +739,8 @@ class DailyRunner:
             actions_today=last_outcome.actions_today,
             max_actions_per_day=last_outcome.max_actions_per_day,
             cleanup_only_mode=False,
+            growth_policy=resolved_growth_policy,
+            growth_sources=resolved_growth_sources,
             growth_mode=resolved_growth_mode,
             discovery_mode=resolved_discovery_mode,
             target_user_refs=resolved_target_user_refs,
@@ -663,6 +761,10 @@ class DailyRunner:
             cleanup_actions_verified=total_cleanup_verified,
             source_candidate_counts=total_source_candidate_counts,
             source_follow_verified_counts=total_source_follow_verified_counts,
+            policy_follow_verified_counts={resolved_growth_policy.value: total_follow_verified},
+            conversion_by_source=conversion_by_source,
+            conversion_by_policy=conversion_by_policy,
+            conversion_by_source_policy=conversion_by_source_policy,
             kpis=kpis,
             client_metrics=self.client.metrics_snapshot(),
             decision_log=decision_log_sample,
@@ -686,6 +788,8 @@ class DailyRunner:
             comment_attempted=total_comment_attempted,
             comment_verified=total_comment_verified,
             follow_target_min=resolved_min_follows,
+            growth_policy=resolved_growth_policy.value,
+            growth_sources=[source.value for source in resolved_growth_sources],
             growth_mode=resolved_growth_mode.value,
             discovery_mode=resolved_discovery_mode.value,
             target_user_refs=resolved_target_user_refs,
@@ -1082,26 +1186,32 @@ class DailyRunner:
     async def _build_candidates(
         self,
         *,
+        tag_slug: str,
         probe: ProbeSnapshot | None,
         seed_user_refs: list[str],
-        discovery_mode: GrowthDiscoveryMode,
+        growth_sources: list[GrowthSource],
         target_user_refs: list[str],
         target_user_scan_limit: int | None,
     ) -> list[CandidateUser]:
         pool: dict[str, CandidateUser] = {}
 
-        if discovery_mode == GrowthDiscoveryMode.GENERAL:
+        if GrowthSource.TOPIC_RECOMMENDED in growth_sources:
             if probe is not None:
                 self._extract_topic_latest_candidates(probe, pool)
                 self._extract_topic_who_to_follow_candidates(probe, pool)
                 self._extract_who_to_follow_module_candidates(probe, pool)
+        if GrowthSource.SEED_FOLLOWERS in growth_sources:
             await self._extract_seed_followers_candidates(seed_user_refs, pool)
-        else:
+        if GrowthSource.TARGET_USER_FOLLOWERS in growth_sources:
             await self._extract_target_user_followers_candidates(
                 target_user_refs=target_user_refs,
                 pool=pool,
                 per_target_scan_limit=self._resolve_target_user_scan_limit(target_user_scan_limit),
             )
+        if GrowthSource.PUBLICATION_ADJACENT in growth_sources:
+            await self._extract_topic_curated_candidates(tag_slug=tag_slug, pool=pool)
+        if GrowthSource.RESPONDERS in growth_sources:
+            await self._extract_topic_responder_candidates(tag_slug=tag_slug, probe=probe, pool=pool)
 
         for candidate in pool.values():
             candidate.matched_keywords = self._match_keywords(candidate.bio)
@@ -1120,7 +1230,7 @@ class DailyRunner:
         self.log.info(
             "candidates_built",
             count=len(ordered),
-            discovery_mode=discovery_mode.value,
+            growth_sources=[source.value for source in growth_sources],
             seed_sources=len(seed_user_refs),
             target_sources=len(target_user_refs),
             target_user_scan_limit=target_user_scan_limit,
@@ -1131,11 +1241,12 @@ class DailyRunner:
         result = probe.results.get("topic_latest_stories")
         if not result:
             return
-        for creator, latest_post_id in parse_topic_latest_story_creators(result):
+        for creator, latest_post_id, latest_post_title in parse_topic_latest_story_creators(result):
             candidate = self._candidate_from_user_node(
                 creator,
                 source=CandidateSource.TOPIC_LATEST_STORIES,
                 latest_post_id=latest_post_id,
+                latest_post_title=latest_post_title,
             )
             if candidate:
                 self._merge_candidate(pool, candidate)
@@ -1197,6 +1308,69 @@ class DailyRunner:
                     candidate = self._candidate_from_user_node(node, source=CandidateSource.SEED_FOLLOWERS)
                     if candidate:
                         self._merge_candidate(pool, candidate)
+
+    async def _extract_topic_curated_candidates(
+        self,
+        *,
+        tag_slug: str,
+        pool: dict[str, CandidateUser],
+    ) -> None:
+        result = await self._execute_with_retry(
+            "topic_curated_list",
+            operations.topic_curated_list(
+                tag_slug,
+                item_limit=self.settings.topic_curated_list_item_limit,
+            ),
+        )
+        for creator, latest_post_id, latest_post_title in parse_topic_curated_list_users(result):
+            candidate = self._candidate_from_user_node(
+                creator,
+                source=CandidateSource.TOPIC_CURATED_LIST,
+                latest_post_id=latest_post_id,
+                latest_post_title=latest_post_title,
+            )
+            if candidate:
+                self._merge_candidate(pool, candidate)
+
+    async def _extract_topic_responder_candidates(
+        self,
+        *,
+        tag_slug: str,
+        probe: ProbeSnapshot | None,
+        pool: dict[str, CandidateUser],
+    ) -> None:
+        post_ids: list[str] = []
+        if probe is not None:
+            result = probe.results.get("topic_latest_stories")
+            if result is not None:
+                post_ids = [
+                    post_id
+                    for _, post_id, _ in parse_topic_latest_story_creators(result)
+                    if isinstance(post_id, str) and post_id
+                ]
+        if not post_ids:
+            fallback = await self._execute_with_retry(
+                "responder_topic_latest",
+                operations.topic_latest_stories(tag_slug),
+            )
+            post_ids = [
+                post_id
+                for _, post_id, _ in parse_topic_latest_story_creators(fallback)
+                if isinstance(post_id, str) and post_id
+            ]
+
+        for post_id in post_ids[: self.settings.responder_posts_per_run]:
+            result = await self._execute_with_retry(
+                "post_responses",
+                operations.post_responses(
+                    post_id=post_id,
+                    limit=self.settings.responder_candidates_per_post,
+                ),
+            )
+            for creator in parse_post_response_creators(result):
+                candidate = self._candidate_from_user_node(creator, source=CandidateSource.POST_RESPONDERS)
+                if candidate:
+                    self._merge_candidate(pool, candidate)
 
     async def _extract_target_user_followers_candidates(
         self,
@@ -1279,6 +1453,7 @@ class DailyRunner:
         *,
         source: CandidateSource,
         latest_post_id: str | None = None,
+        latest_post_title: str | None = None,
     ) -> CandidateUser | None:
         user_id = node.id
         if not user_id:
@@ -1295,6 +1470,7 @@ class DailyRunner:
             follower_count=follower_count,
             following_count=following_count,
             latest_post_id=latest_post_id,
+            latest_post_title=latest_post_title,
             sources=[source],
         )
 
@@ -1319,47 +1495,22 @@ class DailyRunner:
             existing.following_count = candidate.following_count
         if not existing.latest_post_id and candidate.latest_post_id:
             existing.latest_post_id = candidate.latest_post_id
+        if not existing.latest_post_title and candidate.latest_post_title:
+            existing.latest_post_title = candidate.latest_post_title
+        if not existing.last_post_created_at and candidate.last_post_created_at:
+            existing.last_post_created_at = candidate.last_post_created_at
         for source in candidate.sources:
             if source not in existing.sources:
                 existing.sources.append(source)
 
-    async def _evaluate_candidates(
+    def _screen_discovery_candidates(
         self,
         candidates: list[CandidateUser],
         *,
         decisions: list[CandidateDecision],
-        persist_observations: bool,
     ) -> list[CandidateUser]:
-        eligible: list[CandidateUser] = []
+        buffered: list[CandidateUser] = []
         for candidate in candidates:
-            ratio = self._following_follower_ratio(candidate)
-            if ratio < self.settings.min_following_follower_ratio:
-                self._append_decision(
-                    decisions,
-                    candidate,
-                    eligible=False,
-                    reason=f"skip:ratio_below_threshold ratio={ratio:.2f}",
-                )
-                continue
-
-            if self.settings.require_bio_keyword_match and not candidate.matched_keywords:
-                self._append_decision(
-                    decisions,
-                    candidate,
-                    eligible=False,
-                    reason="skip:no_keyword_match",
-                )
-                continue
-
-            if not candidate.newsletter_v3_id:
-                self._append_decision(
-                    decisions,
-                    candidate,
-                    eligible=False,
-                    reason="skip:no_newsletter_v3_id",
-                )
-                continue
-
             if self.repository.is_blacklisted(candidate.user_id):
                 self._append_decision(
                     decisions,
@@ -1372,7 +1523,7 @@ class DailyRunner:
             if self.repository.has_recent_action(
                 candidate.user_id,
                 within_hours=self.settings.follow_cooldown_hours,
-                action_types=(ACTION_SUBSCRIBE, ACTION_FOLLOW_VERIFIED, ACTION_UNFOLLOW),
+                action_types=FOLLOW_COOLDOWN_ACTION_TYPES,
             ):
                 self._append_decision(
                     decisions,
@@ -1393,10 +1544,156 @@ class DailyRunner:
                 )
                 continue
 
+            ratio = self._following_follower_ratio(candidate)
+            if ratio < self.settings.min_following_follower_ratio:
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason=f"skip:ratio_below_threshold ratio={ratio:.2f}",
+                )
+                continue
+            if ratio > self.settings.max_following_follower_ratio:
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason=f"skip:ratio_above_threshold ratio={ratio:.2f}",
+                )
+                continue
+
+            volume_filter_reason = self._candidate_volume_filter_reason(candidate)
+            if volume_filter_reason:
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason=volume_filter_reason,
+                )
+                continue
+
+            if self.settings.require_candidate_bio and not (candidate.bio or "").strip():
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason="skip:no_bio",
+                )
+                continue
+
+            candidate.matched_keywords = self._match_keywords(candidate.bio)
+            if self.settings.require_bio_keyword_match and not candidate.matched_keywords:
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason="skip:no_keyword_match",
+                )
+                continue
+
+            if not candidate.newsletter_v3_id:
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason="skip:no_newsletter_v3_id",
+                )
+                continue
+
+            if (
+                self.settings.candidate_recent_activity_days > 0
+                and candidate.last_post_created_at
+                and not self._candidate_has_recent_activity(candidate)
+            ):
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason="skip:inactive_author",
+                )
+                continue
+
+            buffered.append(candidate)
+            self._append_decision(
+                decisions,
+                candidate,
+                eligible=True,
+                reason="queued:discovery_buffered",
+            )
+
+        return buffered
+
+    async def _evaluate_candidates(
+        self,
+        candidates: list[CandidateUser],
+        *,
+        decisions: list[CandidateDecision],
+        persist_observations: bool,
+    ) -> list[CandidateUser]:
+        eligible: list[CandidateUser] = []
+        for candidate in candidates:
+            if self.repository.is_blacklisted(candidate.user_id):
+                if persist_observations:
+                    self.repository.mark_growth_candidate_queue_state(
+                        candidate.user_id,
+                        queue_state="rejected",
+                        reason="skip:blacklisted",
+                        candidate=candidate,
+                    )
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason="skip:blacklisted",
+                )
+                continue
+
+            cooldown_retry_after = self.repository.recent_action_retry_after(
+                candidate.user_id,
+                within_hours=self.settings.follow_cooldown_hours,
+                action_types=FOLLOW_COOLDOWN_ACTION_TYPES,
+            )
+            if cooldown_retry_after is not None:
+                if persist_observations:
+                    self.repository.mark_growth_candidate_queue_state(
+                        candidate.user_id,
+                        queue_state="deferred",
+                        reason="skip:cooldown_active",
+                        candidate=candidate,
+                        retry_after_at=cooldown_retry_after,
+                    )
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason="skip:cooldown_active",
+                )
+                continue
+
+            local_state = self.repository.get_relationship_state(candidate.user_id)
+            if local_state and local_state.user_follow_state == UserFollowState.FOLLOWING:
+                if persist_observations:
+                    self.repository.mark_growth_candidate_queue_state(
+                        candidate.user_id,
+                        queue_state="rejected",
+                        reason="skip:already_following_local_state",
+                        candidate=candidate,
+                        observed_follow_state=UserFollowState.FOLLOWING,
+                    )
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason="skip:already_following_local_state",
+                    needs_reconcile=False,
+                )
+                continue
+
             edge_result = await self._execute_with_retry(
                 "candidate_user_viewer_edge",
                 operations.user_viewer_edge(candidate.user_id),
             )
+            self._hydrate_candidate_from_user_viewer_edge(candidate, edge_result)
             is_following = parse_user_viewer_is_following(edge_result)
             if is_following is True:
                 if persist_observations:
@@ -1409,6 +1706,13 @@ class DailyRunner:
                         verified_now=True,
                     )
                     self.repository.mark_candidate_reconciled(candidate.user_id, UserFollowState.FOLLOWING)
+                    self.repository.mark_growth_candidate_queue_state(
+                        candidate.user_id,
+                        queue_state="rejected",
+                        reason="skip:already_following_live_check",
+                        candidate=candidate,
+                        observed_follow_state=UserFollowState.FOLLOWING,
+                    )
                 self._append_decision(
                     decisions,
                     candidate,
@@ -1418,6 +1722,17 @@ class DailyRunner:
                 )
                 continue
             if is_following is None:
+                if persist_observations:
+                    self.repository.mark_growth_candidate_queue_state(
+                        candidate.user_id,
+                        queue_state="deferred",
+                        reason="skip:live_check_unavailable",
+                        candidate=candidate,
+                        retry_after_at=self._growth_queue_deferred_retry_at(
+                            user_id=candidate.user_id,
+                            reason="skip:live_check_unavailable",
+                        ),
+                    )
                 self._append_decision(
                     decisions,
                     candidate,
@@ -1426,12 +1741,171 @@ class DailyRunner:
                 )
                 continue
 
+            if persist_observations:
+                self.repository.upsert_relationship_state(
+                    candidate.user_id,
+                    newsletter_state=NewsletterState.UNKNOWN,
+                    user_follow_state=UserFollowState.NOT_FOLLOWING,
+                    confidence=RelationshipConfidence.OBSERVED,
+                    source_operation="UserViewerEdge",
+                    verified_now=True,
+                )
+                self.repository.mark_candidate_reconciled(candidate.user_id, UserFollowState.NOT_FOLLOWING)
+
+            ratio = self._following_follower_ratio(candidate)
+            if ratio < self.settings.min_following_follower_ratio:
+                if persist_observations:
+                    self.repository.mark_growth_candidate_queue_state(
+                        candidate.user_id,
+                        queue_state="rejected",
+                        reason=f"skip:ratio_below_threshold ratio={ratio:.2f}",
+                        candidate=candidate,
+                        observed_follow_state=UserFollowState.NOT_FOLLOWING,
+                    )
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason=f"skip:ratio_below_threshold ratio={ratio:.2f}",
+                )
+                continue
+            if ratio > self.settings.max_following_follower_ratio:
+                if persist_observations:
+                    self.repository.mark_growth_candidate_queue_state(
+                        candidate.user_id,
+                        queue_state="rejected",
+                        reason=f"skip:ratio_above_threshold ratio={ratio:.2f}",
+                        candidate=candidate,
+                        observed_follow_state=UserFollowState.NOT_FOLLOWING,
+                    )
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason=f"skip:ratio_above_threshold ratio={ratio:.2f}",
+                )
+                continue
+
+            volume_filter_reason = self._candidate_volume_filter_reason(candidate)
+            if volume_filter_reason:
+                if persist_observations:
+                    self.repository.mark_growth_candidate_queue_state(
+                        candidate.user_id,
+                        queue_state="rejected",
+                        reason=volume_filter_reason,
+                        candidate=candidate,
+                        observed_follow_state=UserFollowState.NOT_FOLLOWING,
+                    )
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason=volume_filter_reason,
+                )
+                continue
+
+            if self.settings.require_candidate_bio and not (candidate.bio or "").strip():
+                if persist_observations:
+                    self.repository.mark_growth_candidate_queue_state(
+                        candidate.user_id,
+                        queue_state="rejected",
+                        reason="skip:no_bio",
+                        candidate=candidate,
+                        observed_follow_state=UserFollowState.NOT_FOLLOWING,
+                    )
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason="skip:no_bio",
+                )
+                continue
+
+            candidate.matched_keywords = self._match_keywords(candidate.bio)
+            if self.settings.require_bio_keyword_match and not candidate.matched_keywords:
+                if persist_observations:
+                    self.repository.mark_growth_candidate_queue_state(
+                        candidate.user_id,
+                        queue_state="rejected",
+                        reason="skip:no_keyword_match",
+                        candidate=candidate,
+                        observed_follow_state=UserFollowState.NOT_FOLLOWING,
+                    )
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason="skip:no_keyword_match",
+                )
+                continue
+
+            if not candidate.newsletter_v3_id:
+                if persist_observations:
+                    self.repository.mark_growth_candidate_queue_state(
+                        candidate.user_id,
+                        queue_state="rejected",
+                        reason="skip:no_newsletter_v3_id",
+                        candidate=candidate,
+                        observed_follow_state=UserFollowState.NOT_FOLLOWING,
+                    )
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason="skip:no_newsletter_v3_id",
+                )
+                continue
+
+            if self.settings.require_candidate_latest_post:
+                post_id = await self._resolve_candidate_latest_post_id(candidate)
+                if not post_id:
+                    if persist_observations:
+                        self.repository.mark_growth_candidate_queue_state(
+                            candidate.user_id,
+                            queue_state="rejected",
+                            reason="skip:no_latest_post",
+                            candidate=candidate,
+                            observed_follow_state=UserFollowState.NOT_FOLLOWING,
+                        )
+                    self._append_decision(
+                        decisions,
+                        candidate,
+                        eligible=False,
+                        reason="skip:no_latest_post",
+                    )
+                    continue
+
+            if not self._candidate_has_recent_activity(candidate):
+                if persist_observations:
+                    self.repository.mark_growth_candidate_queue_state(
+                        candidate.user_id,
+                        queue_state="rejected",
+                        reason="skip:inactive_author",
+                        candidate=candidate,
+                        observed_follow_state=UserFollowState.NOT_FOLLOWING,
+                    )
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason="skip:inactive_author",
+                )
+                continue
+
             eligible.append(candidate)
+            if persist_observations:
+                self.repository.mark_growth_candidate_queue_state(
+                    candidate.user_id,
+                    queue_state="queued",
+                    reason="eligible:execution_ready",
+                    candidate=candidate,
+                    observed_follow_state=UserFollowState.NOT_FOLLOWING,
+                )
             self._append_decision(
                 decisions,
                 candidate,
                 eligible=True,
-                reason="eligible",
+                reason="eligible:execution_ready",
             )
 
         return eligible
@@ -1445,7 +1919,7 @@ class DailyRunner:
         comment_budget_remaining: int,
         dry_run: bool,
         decisions: list[CandidateDecision],
-        growth_mode: GrowthMode,
+        growth_policy: GrowthPolicy,
     ) -> tuple[int, int, int, int, int, int, dict[str, int]]:
         attempted = 0
         verified = 0
@@ -1454,8 +1928,8 @@ class DailyRunner:
         comment_attempted = 0
         comment_verified = 0
         source_follow_verified_counts: dict[str, int] = {}
-        clap_enabled = self._pre_follow_clap_enabled(growth_mode)
-        comment_enabled = self._pre_follow_comment_enabled(growth_mode)
+        clap_enabled = self._pre_follow_clap_enabled(growth_policy)
+        comment_enabled = self._pre_follow_comment_enabled(growth_policy)
         for candidate in eligible_candidates[:max_to_run]:
             self._assert_operator_not_stopped(task_name="follow_pipeline")
             attempted += 1
@@ -1492,6 +1966,18 @@ class DailyRunner:
                 newsletter_id=candidate.newsletter_v3_id,
                 bio=candidate.bio,
             )
+            self.repository.mark_growth_candidate_queue_state(
+                candidate.user_id,
+                queue_state="deferred",
+                reason="follow_attempt:started",
+                candidate=candidate,
+                observed_follow_state=UserFollowState.NOT_FOLLOWING,
+                attempted=True,
+                retry_after_at=self._growth_queue_deferred_retry_at(
+                    user_id=candidate.user_id,
+                    reason="follow_attempt:started",
+                ),
+            )
 
             (
                 clap_used,
@@ -1500,7 +1986,7 @@ class DailyRunner:
                 comment_is_verified,
             ) = await self._execute_pre_follow_engagement(
                 candidate,
-                growth_mode=growth_mode,
+                growth_policy=growth_policy,
                 clap_budget_remaining=clap_budget_remaining,
                 comment_budget_remaining=comment_budget_remaining,
             )
@@ -1535,6 +2021,17 @@ class DailyRunner:
                     eligible=True,
                     reason="follow_failed:mutation_error",
                 )
+                self.repository.mark_growth_candidate_queue_state(
+                    candidate.user_id,
+                    queue_state="deferred",
+                    reason="follow_failed:mutation_error",
+                    candidate=candidate,
+                    observed_follow_state=UserFollowState.NOT_FOLLOWING,
+                    retry_after_at=self._growth_queue_deferred_retry_at(
+                        user_id=candidate.user_id,
+                        reason="follow_failed:mutation_error",
+                    ),
+                )
                 continue
 
             verify = await self._execute_with_retry(
@@ -1556,8 +2053,10 @@ class DailyRunner:
                 self.repository.mark_follow_cycle_started(
                     user_id=candidate.user_id,
                     username=candidate.username,
-                    source="SubscribeNewsletterV3Mutation",
+                    source=self._primary_growth_source_value(candidate),
                     grace_days=self.settings.unfollow_nonreciprocal_after_days,
+                    growth_policy=growth_policy.value,
+                    growth_sources=self._candidate_growth_source_values(candidate),
                 )
                 self.repository.mark_candidate_reconciled(candidate.user_id, UserFollowState.FOLLOWING)
                 self.repository.record_action(
@@ -1573,8 +2072,15 @@ class DailyRunner:
                     reason="follow_success:verified_following",
                     needs_reconcile=False,
                 )
-                for source in candidate.sources:
-                    key = source.value
+                self.repository.mark_growth_candidate_queue_state(
+                    candidate.user_id,
+                    queue_state="followed",
+                    reason="follow_success:verified_following",
+                    candidate=candidate,
+                    observed_follow_state=UserFollowState.FOLLOWING,
+                    followed=True,
+                )
+                for key in self._candidate_growth_source_values(candidate):
                     source_follow_verified_counts[key] = source_follow_verified_counts.get(key, 0) + 1
             else:
                 self.repository.upsert_relationship_state(
@@ -1599,6 +2105,17 @@ class DailyRunner:
                     eligible=True,
                     reason="follow_failed:verification_failed",
                 )
+                self.repository.mark_growth_candidate_queue_state(
+                    candidate.user_id,
+                    queue_state="deferred",
+                    reason="follow_failed:verification_failed",
+                    candidate=candidate,
+                    observed_follow_state=UserFollowState.NOT_FOLLOWING if is_following is False else None,
+                    retry_after_at=self._growth_queue_deferred_retry_at(
+                        user_id=candidate.user_id,
+                        reason="follow_failed:verification_failed",
+                    ),
+                )
 
         return (
             attempted,
@@ -1614,12 +2131,12 @@ class DailyRunner:
         self,
         candidate: CandidateUser,
         *,
-        growth_mode: GrowthMode,
+        growth_policy: GrowthPolicy,
         clap_budget_remaining: int,
         comment_budget_remaining: int,
     ) -> tuple[bool, bool, bool, bool]:
-        clap_enabled = self._pre_follow_clap_enabled(growth_mode)
-        comment_enabled = self._pre_follow_comment_enabled(growth_mode)
+        clap_enabled = self._pre_follow_clap_enabled(growth_policy)
+        comment_enabled = self._pre_follow_comment_enabled(growth_policy)
         if not clap_enabled and not comment_enabled:
             return False, False, False, False
 
@@ -1638,10 +2155,12 @@ class DailyRunner:
         if comment_enabled:
             if comment_budget_remaining <= 0:
                 self.repository.record_action(ACTION_COMMENT_SKIPPED, candidate.user_id, "budget_exhausted")
+            elif not self._comment_mutation_supported:
+                self.repository.record_action(ACTION_COMMENT_SKIPPED, candidate.user_id, "api_drift_detected")
             elif not self._should_attempt_pre_follow_comment():
                 self.repository.record_action(ACTION_COMMENT_SKIPPED, candidate.user_id, "probability_gate")
             else:
-                comment_text = self._select_pre_follow_comment_text()
+                comment_text = self._select_pre_follow_comment_text(candidate)
                 if not comment_text:
                     self.repository.record_action(ACTION_COMMENT_SKIPPED, candidate.user_id, "no_template")
                 else:
@@ -1681,9 +2200,11 @@ class DailyRunner:
             "pre_follow_latest_post",
             operations.user_latest_post(user_id=candidate.user_id, username=candidate.username),
         )
-        post_id = parse_latest_post_id(latest_post)
+        post_id, post_title = parse_latest_post_preview(latest_post)
         if post_id:
             candidate.latest_post_id = post_id
+        if post_title:
+            candidate.latest_post_title = post_title
         return post_id
 
     async def _perform_pre_follow_clap(self, candidate: CandidateUser, *, post_id: str) -> bool:
@@ -1732,9 +2253,22 @@ class DailyRunner:
             operations.publish_threaded_response(post_id, comment_text),
         )
         comment_id = parse_publish_threaded_response_id(comment_result)
+        drift_detected = self._comment_api_drift_detected(comment_result)
+        if drift_detected:
+            self._comment_mutation_supported = False
+            self.log.warning(
+                "comment_mutation_api_drift_detected",
+                status_code=comment_result.status_code,
+                error_messages=[error.message for error in comment_result.errors],
+            )
         comment_verified = comment_result.status_code == 200 and not comment_result.has_errors and bool(comment_id)
         comment_action_key = self._daily_action_key(ACTION_COMMENT, candidate.user_id, extra=post_id)
-        status_label = f"verified:{comment_id}" if comment_verified else "failed"
+        if comment_verified:
+            status_label = f"verified:{comment_id}"
+        elif drift_detected:
+            status_label = "failed:api_drift"
+        else:
+            status_label = "failed"
         self.repository.record_action(
             ACTION_COMMENT,
             candidate.user_id,
@@ -1743,46 +2277,241 @@ class DailyRunner:
         )
         return comment_verified
 
-    def _resolve_growth_mode(self, growth_mode: GrowthMode | None) -> GrowthMode:
-        return growth_mode or self.settings.default_growth_mode
+    def _resolve_growth_policy(
+        self,
+        *,
+        growth_policy: GrowthPolicy | None,
+        growth_mode: GrowthMode | None,
+    ) -> GrowthPolicy:
+        if growth_policy is not None:
+            return growth_policy
+        if growth_mode == GrowthMode.SIMPLE:
+            return GrowthPolicy.FOLLOW_ONLY
+        if growth_mode == GrowthMode.SMART:
+            return GrowthPolicy.WARM_ENGAGE_RARE_COMMENT
+        return self.settings.default_growth_policy
+
+    def _resolve_growth_sources(
+        self,
+        *,
+        growth_sources: list[GrowthSource] | None,
+        discovery_mode: GrowthDiscoveryMode | None,
+    ) -> list[GrowthSource]:
+        if growth_sources:
+            deduped: list[GrowthSource] = []
+            for source in growth_sources:
+                if source not in deduped:
+                    deduped.append(source)
+            return deduped
+        if discovery_mode == GrowthDiscoveryMode.TARGET_USER_FOLLOWERS:
+            return [GrowthSource.TARGET_USER_FOLLOWERS]
+        return list(self.settings.default_growth_sources)
 
     @staticmethod
-    def _resolve_discovery_mode(discovery_mode: GrowthDiscoveryMode | None) -> GrowthDiscoveryMode:
-        return discovery_mode or GrowthDiscoveryMode.GENERAL
+    def _legacy_growth_mode_for_policy(growth_policy: GrowthPolicy) -> GrowthMode:
+        return GrowthMode.SIMPLE if growth_policy == GrowthPolicy.FOLLOW_ONLY else GrowthMode.SMART
+
+    @staticmethod
+    def _legacy_discovery_mode_for_sources(growth_sources: list[GrowthSource]) -> GrowthDiscoveryMode:
+        if growth_sources == [GrowthSource.TARGET_USER_FOLLOWERS]:
+            return GrowthDiscoveryMode.TARGET_USER_FOLLOWERS
+        return GrowthDiscoveryMode.GENERAL
+
+    @staticmethod
+    def _growth_sources_need_probe(growth_sources: list[GrowthSource]) -> bool:
+        return any(source in {GrowthSource.TOPIC_RECOMMENDED, GrowthSource.RESPONDERS} for source in growth_sources)
 
     def _resolve_target_user_scan_limit(self, target_user_scan_limit: int | None) -> int:
         resolved = target_user_scan_limit or self.settings.target_user_followers_scan_limit
         return max(1, resolved)
 
-    def _candidate_limit_for_discovery(
+    def _candidate_limit_for_sources(
         self,
         *,
-        discovery_mode: GrowthDiscoveryMode,
+        growth_sources: list[GrowthSource],
         target_user_scan_limit: int | None,
         target_user_refs: list[str],
     ) -> int:
-        if discovery_mode == GrowthDiscoveryMode.TARGET_USER_FOLLOWERS:
+        if growth_sources == [GrowthSource.TARGET_USER_FOLLOWERS]:
             return self._resolve_target_user_scan_limit(target_user_scan_limit) * max(1, len(target_user_refs))
         return self.settings.follow_candidate_limit
 
+    def _discovery_buffer_target(
+        self,
+        *,
+        growth_sources: list[GrowthSource],
+        target_user_scan_limit: int | None,
+        target_user_refs: list[str],
+    ) -> int:
+        base_limit = self._candidate_limit_for_sources(
+            growth_sources=growth_sources,
+            target_user_scan_limit=target_user_scan_limit,
+            target_user_refs=target_user_refs,
+        )
+        return max(base_limit, min(250, max(60, self.settings.follow_candidate_limit * 4)))
+
     @staticmethod
-    def _smart_growth_enabled(growth_mode: GrowthMode) -> bool:
-        return growth_mode == GrowthMode.SMART
+    def _execution_queue_fetch_limit(max_follow_attempts_for_cycle: int) -> int:
+        if max_follow_attempts_for_cycle <= 0:
+            return 0
+        return min(200, max(25, max_follow_attempts_for_cycle * 5))
 
-    def _pre_follow_clap_enabled(self, growth_mode: GrowthMode) -> bool:
-        return self._smart_growth_enabled(growth_mode) and self.settings.enable_pre_follow_clap
+    def _growth_queue_deferred_retry_at(self, *, user_id: str, reason: str) -> str:
+        if reason == "skip:cooldown_active":
+            retry_after = self.repository.recent_action_retry_after(
+                user_id,
+                within_hours=self.settings.follow_cooldown_hours,
+                action_types=FOLLOW_COOLDOWN_ACTION_TYPES,
+            )
+            if retry_after is not None:
+                return retry_after
 
-    def _pre_follow_comment_enabled(self, growth_mode: GrowthMode) -> bool:
-        return self._smart_growth_enabled(growth_mode) and self.settings.enable_pre_follow_comment
+        retry_seconds = self._growth_queue_deferred_retry_seconds(reason)
+        scheduled = datetime.now(timezone.utc) + timedelta(seconds=retry_seconds)
+        return scheduled.strftime("%Y-%m-%d %H:%M:%S")
+
+    def _growth_queue_deferred_retry_seconds(self, reason: str) -> int:
+        pass_cooldown_max = max(
+            self.settings.pass_cooldown_min_seconds,
+            self.settings.pass_cooldown_max_seconds,
+        )
+        short_retry = max(5 * 60, pass_cooldown_max * 6)
+        medium_retry = max(15 * 60, pass_cooldown_max * 12)
+        long_retry = max(30 * 60, pass_cooldown_max * 18)
+
+        if reason == "follow_attempt:started":
+            return max(2 * 60, pass_cooldown_max * 3)
+        if reason == "skip:live_check_unavailable":
+            return short_retry
+        if reason == "follow_failed:mutation_error":
+            return medium_retry
+        if reason == "follow_failed:verification_failed":
+            return long_retry
+        return short_retry
+
+    def _pre_follow_clap_enabled(self, growth_policy: GrowthPolicy) -> bool:
+        return (
+            growth_policy in {GrowthPolicy.WARM_ENGAGE, GrowthPolicy.WARM_ENGAGE_RARE_COMMENT}
+            and self.settings.enable_pre_follow_clap
+        )
+
+    def _pre_follow_comment_enabled(self, growth_policy: GrowthPolicy) -> bool:
+        return growth_policy == GrowthPolicy.WARM_ENGAGE_RARE_COMMENT and self.settings.enable_pre_follow_comment
 
     def _should_attempt_pre_follow_comment(self) -> bool:
         return random.random() < self.settings.pre_follow_comment_probability
 
-    def _select_pre_follow_comment_text(self) -> str | None:
-        templates = self.settings.pre_follow_comment_templates
+    def _select_pre_follow_comment_text(self, candidate: CandidateUser) -> str | None:
+        templates = build_comment_template_pool(
+            candidate_title=candidate.latest_post_title,
+            candidate_bio=candidate.bio,
+            base_templates=self.settings.pre_follow_comment_templates,
+        )
         if not templates:
             return None
         return random.choice(templates)
+
+    @staticmethod
+    def _comment_api_drift_detected(result: GraphQLResult) -> bool:
+        if not result.errors:
+            return False
+        drift_tokens = (
+            'unknown argument "sorttype"',
+            'field "insert" is not defined by type "delta"',
+            'value "public" does not exist in "responsedistributiontype" enum',
+            "malformed deltas",
+        )
+        return any(
+            any(token in error.message.lower() for token in drift_tokens)
+            for error in result.errors
+        )
+
+    def _hydrate_candidate_from_user_viewer_edge(self, candidate: CandidateUser, result: GraphQLResult) -> None:
+        user_node = parse_user_viewer_user_node(result)
+        if user_node is not None:
+            enriched = self._candidate_from_user_node(
+                user_node,
+                source=candidate.sources[0] if candidate.sources else CandidateSource.TOPIC_LATEST_STORIES,
+                latest_post_id=candidate.latest_post_id,
+                latest_post_title=candidate.latest_post_title,
+            )
+            if enriched is not None:
+                self._merge_candidate({candidate.user_id: candidate}, enriched)
+        last_post_created_at = parse_user_viewer_last_post_created_at(result)
+        if last_post_created_at:
+            candidate.last_post_created_at = last_post_created_at
+
+    def _candidate_volume_filter_reason(self, candidate: CandidateUser) -> str | None:
+        follower_count = candidate.follower_count
+        following_count = candidate.following_count
+        if follower_count is not None and follower_count < self.settings.candidate_min_followers:
+            return "skip:followers_below_min"
+        if (
+            self.settings.candidate_max_followers > 0
+            and follower_count is not None
+            and follower_count > self.settings.candidate_max_followers
+        ):
+            return "skip:followers_above_max"
+        if following_count is not None and following_count < self.settings.candidate_min_following:
+            return "skip:following_below_min"
+        if (
+            self.settings.candidate_max_following > 0
+            and following_count is not None
+            and following_count > self.settings.candidate_max_following
+        ):
+            return "skip:following_above_max"
+        return None
+
+    def _candidate_has_recent_activity(self, candidate: CandidateUser) -> bool:
+        if self.settings.candidate_recent_activity_days <= 0:
+            return True
+        timestamp = self._parse_iso_datetime(candidate.last_post_created_at)
+        if timestamp is None:
+            return False
+        threshold = datetime.now(timezone.utc) - timedelta(days=self.settings.candidate_recent_activity_days)
+        return timestamp >= threshold
+
+    @staticmethod
+    def _parse_iso_datetime(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if normalized.isdigit():
+            raw = int(normalized)
+            if raw > 10_000_000_000:
+                raw = raw / 1000
+            return datetime.fromtimestamp(raw, tz=timezone.utc)
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    @staticmethod
+    def _growth_source_for_candidate_source(source: CandidateSource) -> GrowthSource:
+        mapping = {
+            CandidateSource.TOPIC_LATEST_STORIES: GrowthSource.TOPIC_RECOMMENDED,
+            CandidateSource.TOPIC_WHO_TO_FOLLOW: GrowthSource.TOPIC_RECOMMENDED,
+            CandidateSource.WHO_TO_FOLLOW_MODULE: GrowthSource.TOPIC_RECOMMENDED,
+            CandidateSource.TOPIC_CURATED_LIST: GrowthSource.PUBLICATION_ADJACENT,
+            CandidateSource.SEED_FOLLOWERS: GrowthSource.SEED_FOLLOWERS,
+            CandidateSource.TARGET_USER_FOLLOWERS: GrowthSource.TARGET_USER_FOLLOWERS,
+            CandidateSource.POST_RESPONDERS: GrowthSource.RESPONDERS,
+        }
+        return mapping[source]
+
+    def _candidate_growth_source_values(self, candidate: CandidateUser) -> list[str]:
+        return self._candidate_growth_source_values_static(candidate)
+
+    def _primary_growth_source_value(self, candidate: CandidateUser) -> str:
+        values = self._candidate_growth_source_values(candidate)
+        return values[0] if values else "unknown"
 
     async def _execute_cleanup_pipeline(
         self,
@@ -2288,10 +3017,28 @@ class DailyRunner:
     def _source_counts(candidates: list[CandidateUser]) -> dict[str, int]:
         counts: dict[str, int] = {}
         for candidate in candidates:
-            for source in candidate.sources:
-                key = source.value
+            for source in DailyRunner._candidate_growth_source_values_static(candidate):
+                key = source
                 counts[key] = counts.get(key, 0) + 1
         return counts
+
+    @staticmethod
+    def _candidate_growth_source_values_static(candidate: CandidateUser) -> list[str]:
+        mapping = {
+            CandidateSource.TOPIC_LATEST_STORIES: GrowthSource.TOPIC_RECOMMENDED.value,
+            CandidateSource.TOPIC_WHO_TO_FOLLOW: GrowthSource.TOPIC_RECOMMENDED.value,
+            CandidateSource.WHO_TO_FOLLOW_MODULE: GrowthSource.TOPIC_RECOMMENDED.value,
+            CandidateSource.TOPIC_CURATED_LIST: GrowthSource.PUBLICATION_ADJACENT.value,
+            CandidateSource.SEED_FOLLOWERS: GrowthSource.SEED_FOLLOWERS.value,
+            CandidateSource.TARGET_USER_FOLLOWERS: GrowthSource.TARGET_USER_FOLLOWERS.value,
+            CandidateSource.POST_RESPONDERS: GrowthSource.RESPONDERS.value,
+        }
+        values: list[str] = []
+        for source in candidate.sources:
+            resolved = mapping.get(source)
+            if resolved and resolved not in values:
+                values.append(resolved)
+        return values
 
     @staticmethod
     def _merge_int_counts(target: dict[str, int], incoming: dict[str, int]) -> None:
