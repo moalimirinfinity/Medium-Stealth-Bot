@@ -1,6 +1,7 @@
 from medium_stealth_bot.models import GraphQLOperation
 
 USER_FOLLOWERS_MAX_LIMIT = 25
+POST_RESPONSES_MAX_LIMIT = 25
 
 USE_BASE_CACHE_CONTROL_QUERY = """
 query UseBaseCacheControlQuery {
@@ -161,13 +162,83 @@ query UserViewerEdge($userId: ID!) {
   user(id: $userId) {
     ... on User {
       id
+      name
       username
+      bio
+      newsletterV3 {
+        id
+      }
       socialStats {
         followerCount
+        followingCount
       }
       viewerEdge {
         id
         isFollowing
+        lastPostCreatedAt
+      }
+    }
+  }
+}
+""".strip()
+
+TOPIC_CURATED_LIST_QUERY = """
+query TopicCuratedListQuery($tagSlug: String!, $itemLimit: Int!) {
+  tagFromSlug(tagSlug: $tagSlug) {
+    curatedLists(first: 1) {
+      edges {
+        node {
+          id
+          name
+          itemsConnection(pagingOptions: {limit: $itemLimit}) {
+            items {
+              catalogItemId
+              entity {
+                ... on Post {
+                  id
+                  title
+                  creator {
+                    id
+                    name
+                    username
+                    bio
+                    socialStats {
+                      followerCount
+                      followingCount
+                    }
+                    newsletterV3 {
+                      id
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+""".strip()
+
+POST_RESPONSES_QUERY = """
+query PostResponsesQuery($postId: ID!, $paging: PagingOptions, $sortType: ResponseSortType) {
+  post(id: $postId) {
+    id
+    threadedPostResponses(paging: $paging, sortType: $sortType) {
+      posts {
+        id
+        creator {
+          id
+          name
+          username
+        }
+      }
+      pagingInfo {
+        next {
+          limit
+          to
+        }
       }
     }
   }
@@ -231,13 +302,11 @@ mutation ClapMutation($targetPostId: ID!, $userId: ID!, $numClaps: Int!) {
 """.strip()
 
 PUBLISH_POST_THREADED_RESPONSE_MUTATION = """
-mutation PublishPostThreadedResponse($inResponseToPostId: ID!, $deltas: [Delta!]!, $inResponseToQuoteId: ID, $responseDistribution: ResponseDistributionType, $sortType: ResponseSortType) {
+mutation PublishPostThreadedResponse($inResponseToPostId: ID!, $deltas: [Delta!]!, $inResponseToQuoteId: ID) {
   publishPostThreadedResponse(
     inResponseToPostId: $inResponseToPostId
     deltas: $deltas
     inResponseToQuoteId: $inResponseToQuoteId
-    responseDistribution: $responseDistribution
-    sortType: $sortType
   ) {
     __typename
     id
@@ -324,6 +393,36 @@ def user_viewer_edge(user_id: str) -> GraphQLOperation:
     )
 
 
+def topic_curated_list(tag_slug: str, *, item_limit: int = 6) -> GraphQLOperation:
+    return GraphQLOperation(
+        operationName="TopicCuratedListQuery",
+        query=TOPIC_CURATED_LIST_QUERY,
+        variables={"tagSlug": tag_slug, "itemLimit": max(1, min(25, int(item_limit)))},
+    )
+
+
+def post_responses(
+    *,
+    post_id: str,
+    limit: int = 10,
+    paging_to: str | None = None,
+    sort_type: str = "NEWEST",
+) -> GraphQLOperation:
+    resolved_limit = max(1, min(POST_RESPONSES_MAX_LIMIT, int(limit)))
+    return GraphQLOperation(
+        operationName="PostResponsesQuery",
+        query=POST_RESPONSES_QUERY,
+        variables={
+            "postId": post_id,
+            "paging": {
+                "limit": resolved_limit,
+                "to": paging_to or "",
+            },
+            "sortType": sort_type,
+        },
+    )
+
+
 def newsletter_v3_viewer_edge(
     newsletter_slug: str,
     username: str | None = None,
@@ -386,8 +485,6 @@ def undo_clap_post(target_post_id: str, user_id: str, num_claps: int) -> GraphQL
 def publish_threaded_response(
     in_response_to_post_id: str,
     text: str,
-    response_distribution: str = "PUBLIC",
-    sort_type: str = "NEWEST",
 ) -> GraphQLOperation:
     return GraphQLOperation(
         operationName="PublishPostThreadedResponse",
@@ -396,8 +493,6 @@ def publish_threaded_response(
             "inResponseToPostId": in_response_to_post_id,
             "deltas": [{"insert": text}],
             "inResponseToQuoteId": None,
-            "responseDistribution": response_distribution,
-            "sortType": sort_type,
         },
     )
 
