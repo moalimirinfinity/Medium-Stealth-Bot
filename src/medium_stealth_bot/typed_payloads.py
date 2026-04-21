@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from medium_stealth_bot.models import GraphQLResult
@@ -29,6 +31,7 @@ class UserNode(_Model):
 
 class TagPostNode(_Model):
     id: str | None = None
+    title: str | None = None
     creator: UserNode | None = None
 
 
@@ -106,11 +109,16 @@ class UserLatestPostData(_Model):
 
 class ViewerEdge(_Model):
     is_following: bool | None = Field(default=None, alias="isFollowing")
+    last_post_created_at: Any = Field(default=None, alias="lastPostCreatedAt")
 
 
 class UserForViewerEdge(_Model):
+    id: str | None = None
+    name: str | None = None
     username: str | None = None
+    bio: str | None = None
     social_stats: SocialStats | None = Field(default=None, alias="socialStats")
+    newsletter_v3: NewsletterV3 | None = Field(default=None, alias="newsletterV3")
     viewer_edge: ViewerEdge | None = Field(default=None, alias="viewerEdge")
 
 
@@ -158,14 +166,68 @@ class DeleteResponseMutationData(_Model):
     delete_post: bool | None = Field(default=None, alias="deletePost")
 
 
-def parse_topic_latest_story_creators(result: GraphQLResult) -> list[tuple[UserNode, str | None]]:
+class CatalogItemEntityPost(_Model):
+    id: str | None = None
+    title: str | None = None
+    creator: UserNode | None = None
+
+
+class TopicCuratedItem(_Model):
+    entity: CatalogItemEntityPost | None = None
+
+
+class TopicCuratedItemsConnection(_Model):
+    items: list[TopicCuratedItem] = Field(default_factory=list)
+
+
+class TopicCuratedListNode(_Model):
+    items_connection: TopicCuratedItemsConnection | None = Field(default=None, alias="itemsConnection")
+
+
+class TopicCuratedListEdge(_Model):
+    node: TopicCuratedListNode | None = None
+
+
+class TopicCuratedLists(_Model):
+    edges: list[TopicCuratedListEdge] = Field(default_factory=list)
+
+
+class TopicCuratedListTag(_Model):
+    curated_lists: TopicCuratedLists | None = Field(default=None, alias="curatedLists")
+
+
+class TopicCuratedListData(_Model):
+    tag_from_slug: TopicCuratedListTag | None = Field(default=None, alias="tagFromSlug")
+
+
+class ResponsePost(_Model):
+    id: str | None = None
+    creator: UserNode | None = None
+
+
+class ThreadedPostResponsesConnection(_Model):
+    posts: list[ResponsePost] = Field(default_factory=list)
+
+
+class PostResponsesPost(_Model):
+    threaded_post_responses: ThreadedPostResponsesConnection | None = Field(
+        default=None,
+        alias="threadedPostResponses",
+    )
+
+
+class PostResponsesData(_Model):
+    post: PostResponsesPost | None = None
+
+
+def parse_topic_latest_story_creators(result: GraphQLResult) -> list[tuple[UserNode, str | None, str | None]]:
     payload = TopicLatestStoriesData.model_validate(result.data or {})
-    creators: list[tuple[UserNode, str | None]] = []
+    creators: list[tuple[UserNode, str | None, str | None]] = []
     edges = payload.tag_from_slug.posts.edges if payload.tag_from_slug and payload.tag_from_slug.posts else []
     for edge in edges:
         if not edge.node or not edge.node.creator:
             continue
-        creators.append((edge.node.creator, edge.node.id))
+        creators.append((edge.node.creator, edge.node.id, edge.node.title))
     return creators
 
 
@@ -215,6 +277,17 @@ def parse_latest_post_id(result: GraphQLResult) -> str | None:
     return posts[0].id
 
 
+def parse_latest_post_preview(result: GraphQLResult) -> tuple[str | None, str | None]:
+    payload = UserLatestPostData.model_validate(result.data or {})
+    if not payload.user_result or not payload.user_result.homepage_posts_connection:
+        return None, None
+    posts = payload.user_result.homepage_posts_connection.posts
+    if not posts:
+        return None, None
+    post = posts[0]
+    return post.id, post.title
+
+
 def parse_user_viewer_is_following(result: GraphQLResult) -> bool | None:
     payload = UserViewerEdgeData.model_validate(result.data or {})
     if not payload.user or not payload.user.viewer_edge:
@@ -227,6 +300,31 @@ def parse_user_viewer_follower_count(result: GraphQLResult) -> int | None:
     if not payload.user or not payload.user.social_stats:
         return None
     return payload.user.social_stats.follower_count
+
+
+def parse_user_viewer_user_node(result: GraphQLResult) -> UserNode | None:
+    payload = UserViewerEdgeData.model_validate(result.data or {})
+    if not payload.user or not payload.user.id:
+        return None
+    return UserNode(
+        id=payload.user.id,
+        username=payload.user.username,
+        name=payload.user.name,
+        bio=payload.user.bio,
+        socialStats=payload.user.social_stats.model_dump(by_alias=True) if payload.user.social_stats else None,
+        newsletterV3=payload.user.newsletter_v3.model_dump(by_alias=True) if payload.user.newsletter_v3 else None,
+    )
+
+
+def parse_user_viewer_last_post_created_at(result: GraphQLResult) -> str | None:
+    payload = UserViewerEdgeData.model_validate(result.data or {})
+    if not payload.user or not payload.user.viewer_edge:
+        return None
+    value = payload.user.viewer_edge.last_post_created_at
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def parse_newsletter_is_subscribed(result: GraphQLResult) -> bool | None:
@@ -260,3 +358,30 @@ def parse_publish_threaded_response_id(result: GraphQLResult) -> str | None:
 def parse_delete_response_success(result: GraphQLResult) -> bool | None:
     payload = DeleteResponseMutationData.model_validate(result.data or {})
     return payload.delete_post
+
+
+def parse_topic_curated_list_users(result: GraphQLResult) -> list[tuple[UserNode, str | None, str | None]]:
+    payload = TopicCuratedListData.model_validate(result.data or {})
+    if not payload.tag_from_slug or not payload.tag_from_slug.curated_lists:
+        return []
+    users: list[tuple[UserNode, str | None, str | None]] = []
+    for edge in payload.tag_from_slug.curated_lists.edges:
+        if not edge.node or not edge.node.items_connection:
+            continue
+        for item in edge.node.items_connection.items:
+            if not item.entity or not item.entity.creator:
+                continue
+            users.append((item.entity.creator, item.entity.id, item.entity.title))
+    return users
+
+
+def parse_post_response_creators(result: GraphQLResult) -> list[UserNode]:
+    payload = PostResponsesData.model_validate(result.data or {})
+    if not payload.post or not payload.post.threaded_post_responses:
+        return []
+    users: list[UserNode] = []
+    for post in payload.post.threaded_post_responses.posts:
+        if not post.creator:
+            continue
+        users.append(post.creator)
+    return users
