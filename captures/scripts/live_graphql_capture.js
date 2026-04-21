@@ -290,13 +290,11 @@ async function main() {
       {
         operationName: "PublishPostThreadedResponse",
         query:
-          "mutation PublishPostThreadedResponse($inResponseToPostId: ID!, $deltas: [Delta!]!, $inResponseToQuoteId: ID, $responseDistribution: ResponseDistributionType, $sortType: ResponseSortType) { publishPostThreadedResponse(inResponseToPostId: $inResponseToPostId, deltas: $deltas, inResponseToQuoteId: $inResponseToQuoteId, responseDistribution: $responseDistribution, sortType: $sortType) { __typename } }",
+          "mutation PublishPostThreadedResponse($inResponseToPostId: ID!, $deltas: [Delta!]!, $inResponseToQuoteId: ID) { publishPostThreadedResponse(inResponseToPostId: $inResponseToPostId, deltas: $deltas, inResponseToQuoteId: $inResponseToQuoteId) { __typename } }",
         variables: {
           inResponseToPostId: "7d66cfdfa301",
           deltas: [{ insert: "Probe response from capture harness." }],
           inResponseToQuoteId: null,
-          responseDistribution: "PUBLIC",
-          sortType: "NEWEST",
         },
       },
       {
