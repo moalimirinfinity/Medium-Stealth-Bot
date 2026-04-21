@@ -13,8 +13,10 @@ This project turns manual follower discovery, scoring, follow/reconcile cycles, 
 
 ## Feature Highlights
 
-- Interactive CLI menu (`bot start`) with grouped actions (Execution, Maintenance, Diagnostics, Observability, Config, Auth, System).
+- Interactive CLI menu (`bot start`) with section-first navigation (Growth, Unfollow, Maintenance, Diagnostics, Observability, Settings/Auth).
 - Quick-live mode (`bot start --quick-live`) for automation and scheduler use.
+- Grouped command aliases for phase-oriented workflows (`bot growth ...`, `bot unfollow ...`, `bot maintenance ...`, `bot diagnostics ...`, `bot observe ...`).
+- Growth and cleanup now run as separate workflows; growth commands no longer execute cleanup inline.
 - Live session mode for multi-cycle execution (target duration + follow target) with `LIVE_SESSION_MAX_PASSES` as a hard session cap.
 - Cleanup whitelist guard (`CLEANUP_UNFOLLOW_WHITELIST_MIN_FOLLOWERS`) to keep high-follower accounts.
 - Cleanup pipeline is cache-first and unfollows only users present in `own_following_cache`; stale pending rows are marked skipped.
@@ -83,6 +85,19 @@ uv run bot auth-import --cookie-header "sid=...; uid=...; xsrf=..."
 uv run bot start
 uv run bot start --quick-live
 uv run bot start --quick-live --dry-run-first --tag programming
+uv run bot start --quick-live --policy follow-only --source topic-recommended --tag programming
+uv run bot growth session --tag programming
+uv run bot growth session --policy warm-engage --source topic-recommended --tag programming
+uv run bot growth cycle --dry-run --tag programming
+uv run bot growth cycle --policy follow-only --source seed-followers --seed-user @username --dry-run --tag programming
+uv run bot growth preflight --policy warm-engage-plus-rare-comment --source responders --tag programming
+uv run bot growth followers --target-user @username --dry-run --single-cycle
+uv run bot unfollow cleanup --live --limit 50
+uv run bot maintenance sync --force
+uv run bot maintenance reconcile --dry-run --limit 200 --page-size 50
+uv run bot diagnostics probe --tag programming
+uv run bot diagnostics contracts --tag programming --no-execute-reads
+uv run bot observe status
 uv run bot run --tag programming
 uv run bot run --tag programming --session --session-minutes 60 --target-follows 100
 uv run bot run --tag programming --single-cycle
@@ -129,43 +144,63 @@ uv run bot auth-import --cookie-file /path/to/medium-cookie-header.txt
 
 You can copy a Cookie header from browser DevTools Network tab for a signed-in `https://medium.com` request.
 
-## Start Menu Options (`uv run bot start`)
+## Start Menu (`uv run bot start`)
 
-<img width="645" height="409" alt="image" src="https://github.com/user-attachments/assets/650bf8cf-bd0e-4140-9918-0cd72be6e7e3" />
+The interactive menu now opens into a small set of sections first, then shows growth as 3 explicit axes:
+- source
+- policy
+- runtime
 
+The growth source menu supports topic/recommended discovery, seed followers, target-user followers, publication/adjacency discovery, and responders.
+The policy menu separates follow-only from warm-engage and warm-engage-plus-rare-comment behavior.
 
-| Option | Group | Action | What it does |
-| --- | --- | --- | --- |
-| 1 | Execution | Run live growth session (multi-cycle) | Runs repeated live cycles until session pacing targets are hit (`LIVE_SESSION_DURATION_MINUTES`, `LIVE_SESSION_TARGET_FOLLOW_ATTEMPTS`, `LIVE_SESSION_MIN_FOLLOW_ATTEMPTS`, `LIVE_SESSION_MAX_PASSES`). |
-| 2 | Execution | Run live growth cycle (single pass) | Runs one live cycle only (discovery, scoring, follow, cleanup). |
-| 3 | Execution | Run growth cycle (dry-run) | Preview-only cycle with no live mutations. |
-| 4 | Execution | Run dry-run preflight then live growth session | Executes option 3 first, then option 1 if preflight completes. |
-| 5 | Maintenance | Cleanup-only unfollow (live) | Runs overdue non-followback unfollows immediately (with per-run limit prompt). |
-| 6 | Maintenance | Cleanup-only unfollow (dry-run) | Previews overdue cleanup unfollows without mutation. |
-| 7 | Maintenance | Reconcile follow states (live) | Calls live follow-state checks and writes reconciliation updates locally. |
-| 8 | Maintenance | Reconcile follow states (dry-run) | Runs reconciliation checks without writes. |
-| 9 | Maintenance | Sync social graph cache | Forces a full cache refresh (ignores freshness window), fetches full pagination, and imports unknown-timestamp following rows into cleanup tracking. |
-| 10 | Diagnostics | Probe GraphQL reads | Executes read-only probe tasks for connectivity/contract health checks. |
-| 11 | Diagnostics | Validate operation contracts (parity only) | Validates implementation vs registry parity without live read execution. |
-| 12 | Diagnostics | Validate contracts + execute live read checks | Runs option 11 plus live read/state checks against Medium. |
-| 13 | Observability | Show latest run status | Displays health and summary from the latest run artifact. |
-| 14 | Observability | Validate latest run artifact schema | Validates latest run artifact JSON schema/shape. |
-| 15 | Config | Edit defaults | Edits menu defaults (tag, seed users, session targets, pacing defaults, cleanup/reconcile defaults, newsletter defaults). |
-| 16 | Config | Run setup wizard | Launches setup wizard to write/update runtime defaults in `.env`. |
-| 17 | Auth | Refresh auth session | Runs interactive auth capture and updates session values in `.env`. |
-| 18 | System | Exit | Exits the interactive start menu. |
+### Top-Level Sections
 
-### Start Menu Group Index
-
-| Group | Options | Purpose |
+| Option | Section | Purpose |
 | --- | --- | --- |
-| Execution | `1-4` | Run live/dry cycles and preflight+live session flow. |
-| Maintenance | `5-9` | Cleanup, reconcile, and full social-graph sync. |
-| Diagnostics | `10-12` | Probe reads and validate contracts (with optional live read checks). |
-| Observability | `13-14` | Inspect latest run state and artifact schema. |
-| Config | `15-16` | Edit defaults and run setup wizard. |
-| Auth | `17` | Refresh session credentials. |
-| System | `18` | Exit menu. |
+| 1 | Growth | Run follower-growth workflows. |
+| 2 | Unfollow | Run cleanup-only unfollow workflows. |
+| 3 | Maintenance | Reconcile local follow state and sync the social graph cache. |
+| 4 | Diagnostics | Probe Medium reads and validate operation contracts. |
+| 5 | Observability | Inspect latest run status and validate artifacts. |
+| 6 | Settings/Auth | Edit defaults, run setup, or refresh auth. |
+| 7 | Exit | Leave the interactive start menu. |
+
+### Section Workflows
+
+| Section | Options |
+| --- | --- |
+| Growth | choose source, choose policy, then run live growth session, live single cycle, dry-run cycle, or preflight then live session |
+| Unfollow | live cleanup-only unfollow, dry-run cleanup-only unfollow |
+| Maintenance | reconcile live, reconcile dry-run, sync social graph cache |
+| Diagnostics | probe reads, contract parity validation, contract validation with live reads |
+| Observability | show latest run status, validate latest run artifact |
+| Settings/Auth | edit defaults, run setup wizard, refresh auth session |
+
+### Grouped Command Aliases
+
+The original top-level commands are still supported. The new grouped aliases make the CLI structure match the start menu:
+
+```bash
+uv run bot growth session --tag programming
+uv run bot growth session --policy warm-engage --source topic-recommended --tag programming
+uv run bot growth cycle --dry-run --tag programming
+uv run bot growth cycle --policy follow-only --source seed-followers --seed-user @username --dry-run --tag programming
+uv run bot growth preflight --policy warm-engage-plus-rare-comment --source responders --tag programming
+uv run bot growth followers --target-user @username --dry-run --single-cycle
+uv run bot growth followers --target-user @username --live --session --target-follows 50 --scan-limit 100
+uv run bot unfollow cleanup --live --limit 50
+uv run bot maintenance sync --force
+uv run bot maintenance reconcile --dry-run --limit 200 --page-size 50
+uv run bot diagnostics probe --tag programming
+uv run bot diagnostics contracts --tag programming --no-execute-reads
+uv run bot observe status
+uv run bot observe validate-artifact
+```
+
+Growth execution is now growth-only. Use `uv run bot cleanup ...` or `uv run bot unfollow cleanup ...` when you want cleanup/unfollow behavior.
+If `--policy` / `--source` are omitted, growth commands fall back to `DEFAULT_GROWTH_POLICY` and `DEFAULT_GROWTH_SOURCES` from `.env`.
+`uv run bot growth followers ...` remains the dedicated follow-only alias for harvesting candidates from a supplied user’s followers.
 
 ## Safety and Guardrails
 
@@ -178,7 +213,7 @@ You can copy a Cookie header from browser DevTools Network tab for a signed-in `
 - Cleanup treats missing follow timestamps as overdue by default (so legacy rows are not stuck pending forever).
 - Cleanup candidate selection is constrained by local following cache membership to avoid stale unfollows.
 - Cleanup unfollow pacing uses a dedicated short gap range, clamped to an effective `1-4s` window per action.
-- Options 2-8 can auto-sync cached social graph state before action execution using freshness-window controls.
+- Growth, unfollow, and reconcile flows can auto-sync cached social graph state before action execution using freshness-window controls.
 - Live can halt on:
   - challenge detections/status codes
   - session-expiry/auth failure signatures
@@ -197,6 +232,9 @@ Start from `.env.example` and tune:
   - `PLAYWRIGHT_AUTH_BROWSER_CHANNEL`
 - budgets:
   - `MAX_ACTIONS_PER_DAY`
+  - `DEFAULT_GROWTH_POLICY`
+  - `DEFAULT_GROWTH_SOURCES`
+  - `TARGET_USER_FOLLOWERS_SCAN_LIMIT`
   - `LIVE_SESSION_DURATION_MINUTES`
   - `LIVE_SESSION_TARGET_FOLLOW_ATTEMPTS`
   - `LIVE_SESSION_MIN_FOLLOW_ATTEMPTS`
@@ -205,6 +243,7 @@ Start from `.env.example` and tune:
   - `MAX_SUBSCRIBE_ACTIONS_PER_DAY`
   - `MAX_UNFOLLOW_ACTIONS_PER_DAY`
   - `MAX_CLAP_ACTIONS_PER_DAY`
+  - `MAX_COMMENT_ACTIONS_PER_DAY`
 - cleanup:
   - `UNFOLLOW_NONRECIPROCAL_AFTER_DAYS`
   - `CLEANUP_UNFOLLOW_LIMIT`
@@ -218,7 +257,25 @@ Start from `.env.example` and tune:
   - `GRAPH_SYNC_ENABLE_GRAPHQL_FOLLOWING`
   - `GRAPH_SYNC_ENABLE_SCRAPE_FALLBACK`
   - `GRAPH_SYNC_SCRAPE_PAGE_TIMEOUT_SECONDS`
+- candidate filters:
+  - `MIN_FOLLOWING_FOLLOWER_RATIO`
+  - `MAX_FOLLOWING_FOLLOWER_RATIO`
+  - `CANDIDATE_MIN_FOLLOWERS`
+  - `CANDIDATE_MAX_FOLLOWERS`
+  - `CANDIDATE_MIN_FOLLOWING`
+  - `CANDIDATE_MAX_FOLLOWING`
+  - `REQUIRE_CANDIDATE_BIO`
+  - `REQUIRE_CANDIDATE_LATEST_POST`
+  - `CANDIDATE_RECENT_ACTIVITY_DAYS`
+  - `TOPIC_CURATED_LIST_ITEM_LIMIT`
+  - `RESPONDER_POSTS_PER_RUN`
+  - `RESPONDER_CANDIDATES_PER_POST`
 - pacing:
+  - `ENABLE_PRE_FOLLOW_CLAP`
+  - `ENABLE_PRE_FOLLOW_COMMENT`
+  - `PRE_FOLLOW_COMMENT_PROBABILITY`
+  - `PRE_FOLLOW_COMMENT_TEMPLATES`
+  - `PRE_FOLLOW_READ_WAIT_SECONDS`
   - `MIN_READ_WAIT_SECONDS`
   - `MIN_VERIFY_GAP_SECONDS`
   - `MAX_VERIFY_GAP_SECONDS`
