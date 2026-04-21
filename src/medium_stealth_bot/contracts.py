@@ -100,10 +100,12 @@ def _sample_operation_builders(tag_slug: str, actor_user_id: str | None) -> dict
     return {
         "UseBaseCacheControlQuery": operations.use_base_cache_control(),
         "TopicLatestStorieQuery": operations.topic_latest_stories(tag_slug),
+        "TopicCuratedListQuery": operations.topic_curated_list(tag_slug),
         "TopicWhoToFollowPubishersQuery": operations.topic_who_to_follow_publishers(tag_slug=tag_slug),
         "WhoToFollowModuleQuery": operations.who_to_follow_module(),
         "UserFollowers": operations.user_followers(user_id=user_id, limit=8),
         "UserViewerEdge": operations.user_viewer_edge(user_id),
+        "PostResponsesQuery": operations.post_responses(post_id=FALLBACK_POST_ID, limit=5),
         "NewsletterV3ViewerEdge": operations.newsletter_v3_viewer_edge(FALLBACK_NEWSLETTER_SLUG),
         "UserLatestPostQuery": operations.user_latest_post(user_id=user_id),
         "SubscribeNewsletterV3Mutation": operations.subscribe_newsletter_v3(FALLBACK_NEWSLETTER_V3_ID),
@@ -125,6 +127,7 @@ def _live_read_operation_builders(
     builders: dict[str, GraphQLOperation] = {
         "UseBaseCacheControlQuery": operations.use_base_cache_control(),
         "TopicLatestStorieQuery": operations.topic_latest_stories(tag_slug),
+        "TopicCuratedListQuery": operations.topic_curated_list(tag_slug),
         "TopicWhoToFollowPubishersQuery": operations.topic_who_to_follow_publishers(tag_slug=tag_slug),
         "WhoToFollowModuleQuery": operations.who_to_follow_module(),
     }
