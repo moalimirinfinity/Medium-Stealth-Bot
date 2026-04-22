@@ -101,6 +101,13 @@ _GROWTH_SOURCE_MENU_OPTIONS: tuple[tuple[str, str, str], ...] = (
     ("5", "Responders", "Discover users leaving responses on recent tag posts."),
     ("6", "Back", "Return to the start sections"),
 )
+_GROWTH_SOURCE_MENU_CHOICE_MAP: dict[str, GrowthSource] = {
+    "1": GrowthSource.TOPIC_RECOMMENDED,
+    "2": GrowthSource.SEED_FOLLOWERS,
+    "3": GrowthSource.TARGET_USER_FOLLOWERS,
+    "4": GrowthSource.PUBLICATION_ADJACENT,
+    "5": GrowthSource.RESPONDERS,
+}
 
 _GROWTH_POLICY_MENU_OPTIONS: tuple[tuple[str, str, str], ...] = (
     ("1", "Follow-Only", "Follow suitable users without pre-follow engagement."),
@@ -149,7 +156,6 @@ _SETTINGS_MENU_OPTIONS: tuple[tuple[str, str, str], ...] = (
     ("3", "Auth", "Refresh auth session"),
     ("4", "Back", "Return to the start sections"),
 )
-_GROWTH_MODE_CHOICES = ", ".join(mode.value for mode in GrowthMode)
 _GROWTH_POLICY_CHOICES = ", ".join(policy.value for policy in GrowthPolicy)
 _GROWTH_SOURCE_CHOICES = ", ".join(source.value for source in GrowthSource)
 
@@ -238,15 +244,6 @@ def _format_discovery_mode(mode: GrowthDiscoveryMode | str | None) -> str:
     return value.replace("-", " ").replace("_", " ").strip().title()
 
 
-def _prompt_growth_mode_choice(prompt_text: str, *, default: GrowthMode) -> GrowthMode:
-    while True:
-        raw_value = str(typer.prompt(prompt_text, default=default.value)).strip().lower()
-        try:
-            return GrowthMode(raw_value)
-        except ValueError:
-            _print_notice(f"Invalid growth mode. Choose one of {_GROWTH_MODE_CHOICES}.", level="warning")
-
-
 def _prompt_growth_policy_choice(prompt_text: str, *, default: GrowthPolicy) -> GrowthPolicy:
     while True:
         raw_value = str(typer.prompt(prompt_text, default=default.value)).strip().lower()
@@ -283,6 +280,42 @@ def _prompt_growth_sources_choice(prompt_text: str, *, default: list[GrowthSourc
             _print_notice("At least one growth source is required.", level="warning")
             continue
         return sources
+
+
+def _prompt_growth_sources_from_menu(*, default: list[GrowthSource]) -> list[GrowthSource] | str | None:
+    menu_sources = _GROWTH_SOURCE_MENU_CHOICE_MAP
+    default_tokens = [key for key, source in menu_sources.items() if source in default]
+    default_value = ",".join(default_tokens) if default_tokens else "1"
+    while True:
+        _render_start_submenu(
+            title="Growth Source",
+            options=_GROWTH_SOURCE_MENU_OPTIONS,
+            style=_START_MENU_SECTION_STYLES.get("Growth Source", "white"),
+        )
+        raw_choice = str(
+            typer.prompt(
+                "Select option(s) (comma-separated)",
+                default=default_value,
+            )
+        ).strip().lower()
+        if raw_choice in {"b", "back", "6"}:
+            return None
+        if raw_choice in {"q", "quit", "exit"}:
+            return "exit"
+        tokens = [token.strip() for token in raw_choice.split(",") if token.strip()]
+        if not tokens:
+            _print_notice("At least one growth source is required.", level="warning")
+            continue
+        invalid = [token for token in tokens if token not in menu_sources]
+        if invalid:
+            _print_notice("Invalid growth source selection. Choose from 1-5, or `b`/`q`.", level="warning")
+            continue
+        deduped_sources: list[GrowthSource] = []
+        for token in tokens:
+            source = menu_sources[token]
+            if source not in deduped_sources:
+                deduped_sources.append(source)
+        return deduped_sources
 
 
 def _quote_env_value(value: str) -> str:
@@ -423,8 +456,16 @@ def _render_daily_run(outcome: DailyRunOutcome) -> None:
         )
         summary_table.add_row("Session Target Duration (m)", str(outcome.session_target_duration_minutes or "-"))
     summary_table.add_row(
-        "Candidates Considered / Eligible",
-        f"{outcome.considered_candidates} / {outcome.eligible_candidates}",
+        "Discovered / Screened",
+        f"{outcome.discovered_candidates} / {outcome.screened_candidates}",
+    )
+    summary_table.add_row(
+        "Screened / Eligible",
+        f"{outcome.screened_candidates} / {outcome.eligible_candidates}",
+    )
+    summary_table.add_row(
+        "Executed / Followed",
+        f"{outcome.executed_candidates} / {outcome.followed_candidates}",
     )
     summary_table.add_row(
         "Follow Attempted / Verified",
@@ -492,7 +533,7 @@ def _render_daily_run(outcome: DailyRunOutcome) -> None:
             )
 
     if outcome.source_candidate_counts:
-        source_table = Table(title="Source Candidate Counts")
+        source_table = Table(title="Source Screened Candidate Counts")
         source_table.add_column("Source")
         source_table.add_column("Candidates")
         source_table.add_column("Verified Follows")
@@ -708,6 +749,10 @@ def _build_run_artifact_payload(
         "session_stop_reason": outcome.session_stop_reason,
         "session_target_follow_attempts": outcome.session_target_follow_attempts,
         "session_target_duration_minutes": outcome.session_target_duration_minutes,
+        "discovered_candidates": outcome.discovered_candidates,
+        "screened_candidates": outcome.screened_candidates,
+        "executed_candidates": outcome.executed_candidates,
+        "followed_candidates": outcome.followed_candidates,
         "considered_candidates": outcome.considered_candidates,
         "eligible_candidates": outcome.eligible_candidates,
         "follow_actions_attempted": outcome.follow_actions_attempted,
@@ -785,7 +830,7 @@ def _build_standard_artifact_payload(
     return payload
 
 
-def _render_status(artifact: dict, *, artifact_path: Path) -> None:
+def _render_status(artifact: dict, *, artifact_path: Path, settings: AppSettings | None = None) -> None:
     dry_run = artifact.get("dry_run")
     mode = "dry-run" if dry_run is True else "live" if dry_run is False else "-"
     table = Table(title="Last Run Health")
@@ -813,11 +858,19 @@ def _render_status(artifact: dict, *, artifact_path: Path) -> None:
             "max_actions_per_day",
             "growth_policy",
             "growth_sources",
+            "growth_mode",
+            "discovery_mode",
+            "target_user_refs",
+            "target_user_scan_limit",
             "session_passes",
             "session_elapsed_seconds",
             "session_stop_reason",
             "session_target_follow_attempts",
             "session_target_duration_minutes",
+            "discovered_candidates",
+            "screened_candidates",
+            "executed_candidates",
+            "followed_candidates",
             "considered_candidates",
             "eligible_candidates",
             "follow_actions_attempted",
@@ -835,6 +888,12 @@ def _render_status(artifact: dict, *, artifact_path: Path) -> None:
                     rendered_value = _format_growth_sources([str(item) for item in value])
                 elif key == "growth_policy":
                     rendered_value = _format_growth_policy(str(value))
+                elif key == "growth_mode":
+                    rendered_value = _format_growth_mode(str(value))
+                elif key == "discovery_mode":
+                    rendered_value = _format_discovery_mode(str(value))
+                elif key == "target_user_refs" and isinstance(value, list):
+                    rendered_value = _seed_refs_summary([str(item) for item in value])
                 else:
                     rendered_value = str(value)
                 summary_table.add_row(_format_metric_key(key), rendered_value)
@@ -846,7 +905,7 @@ def _render_status(artifact: dict, *, artifact_path: Path) -> None:
         ("Decision Reason Counts", "reason_counts"),
         ("KPI Summary", "kpis"),
         ("Client Metrics", "client_metrics"),
-        ("Source Candidate Counts", "source_candidate_counts"),
+        ("Source Screened Candidate Counts", "source_candidate_counts"),
         ("Source Verified Follow Counts", "source_follow_verified_counts"),
         ("Policy Verified Follow Counts", "policy_follow_verified_counts"),
         ("Followback Conversion By Source", "conversion_by_source"),
@@ -891,6 +950,93 @@ def _render_status(artifact: dict, *, artifact_path: Path) -> None:
             if value is not None:
                 error_table.add_row(_format_metric_key(key), str(value))
         console.print(error_table)
+
+    if settings is None:
+        return
+
+    growth_defaults = Table(title="Configured Growth Defaults")
+    growth_defaults.add_column("Key")
+    growth_defaults.add_column("Value")
+    growth_defaults.add_row("Growth Policy", _format_growth_policy(settings.default_growth_policy))
+    growth_defaults.add_row("Growth Sources", _format_growth_sources(settings.default_growth_sources))
+    growth_defaults.add_row("Target-User Followers Scan Limit", str(settings.target_user_followers_scan_limit))
+    growth_defaults.add_row("Follow Candidate Limit", str(settings.follow_candidate_limit))
+    growth_defaults.add_row("Follow Cooldown (h)", str(settings.follow_cooldown_hours))
+    growth_defaults.add_row(
+        "Candidate Followers Range",
+        f"{settings.candidate_min_followers}-{settings.candidate_max_followers if settings.candidate_max_followers > 0 else 'unbounded'}",
+    )
+    growth_defaults.add_row(
+        "Candidate Following Range",
+        f"{settings.candidate_min_following}-{settings.candidate_max_following if settings.candidate_max_following > 0 else 'unbounded'}",
+    )
+    growth_defaults.add_row("Max Following/Follower Ratio", str(settings.max_following_follower_ratio))
+    growth_defaults.add_row("Require Candidate Bio", "true" if settings.require_candidate_bio else "false")
+    growth_defaults.add_row("Require Candidate Latest Post", "true" if settings.require_candidate_latest_post else "false")
+    growth_defaults.add_row("Candidate Recent Activity (d)", str(settings.candidate_recent_activity_days))
+    growth_defaults.add_row("Discovery Followers Depth", str(settings.discovery_followers_depth))
+    growth_defaults.add_row("Discovery Seed Followers Limit", str(settings.discovery_seed_followers_limit))
+    growth_defaults.add_row("Discovery Second-Hop Seed Limit", str(settings.discovery_second_hop_seed_limit))
+    growth_defaults.add_row(
+        "Queue Buffer Target",
+        (
+            f"min={settings.growth_queue_buffer_target_min}, "
+            f"max={settings.growth_queue_buffer_target_max}, "
+            f"x{settings.growth_queue_buffer_target_multiplier}"
+        ),
+    )
+    growth_defaults.add_row(
+        "Queue Fetch Limit",
+        (
+            f"min={settings.growth_queue_fetch_limit_min}, "
+            f"max={settings.growth_queue_fetch_limit_max}, "
+            f"x{settings.growth_queue_fetch_limit_multiplier}"
+        ),
+    )
+    growth_defaults.add_row("Queue Due Deferred Reserve", str(round(settings.growth_queue_due_deferred_reserve_ratio, 3)))
+    growth_defaults.add_row(
+        "Queue Retry Started (s)",
+        (
+            f"floor={settings.growth_queue_retry_started_floor_seconds}, "
+            f"x{settings.growth_queue_retry_started_cooldown_multiplier}"
+        ),
+    )
+    growth_defaults.add_row(
+        "Queue Retry Short (s)",
+        f"floor={settings.growth_queue_retry_short_floor_seconds}, x{settings.growth_queue_retry_short_cooldown_multiplier}",
+    )
+    growth_defaults.add_row(
+        "Queue Retry Medium (s)",
+        f"floor={settings.growth_queue_retry_medium_floor_seconds}, x{settings.growth_queue_retry_medium_cooldown_multiplier}",
+    )
+    growth_defaults.add_row(
+        "Queue Retry Long (s)",
+        f"floor={settings.growth_queue_retry_long_floor_seconds}, x{settings.growth_queue_retry_long_cooldown_multiplier}",
+    )
+    growth_defaults.add_row(
+        "Queue Prune TTL (d)",
+        (
+            f"followed={settings.growth_queue_prune_followed_after_days}, "
+            f"rejected={settings.growth_queue_prune_rejected_after_days}, "
+            f"stale={settings.growth_queue_prune_stale_after_days}"
+        ),
+    )
+    growth_defaults.add_row("Pre-Follow Clap", "true" if settings.enable_pre_follow_clap else "false")
+    growth_defaults.add_row("Pre-Follow Comment", "true" if settings.enable_pre_follow_comment else "false")
+    growth_defaults.add_row("Pre-Follow Comment Probability", str(round(settings.pre_follow_comment_probability, 3)))
+    growth_defaults.add_row("Live Session Duration (m)", str(settings.live_session_duration_minutes))
+    growth_defaults.add_row("Live Session Target Follows", str(settings.live_session_target_follow_attempts))
+    growth_defaults.add_row("Live Session Min Follows", str(settings.live_session_min_follow_attempts))
+    growth_defaults.add_row("Live Session Max Passes", str(settings.live_session_max_passes))
+    growth_defaults.add_row("Max Follow Actions Per Cycle", str(settings.max_follow_actions_per_run))
+    growth_defaults.add_row("Max Subscribe Actions Per Day", str(settings.max_subscribe_actions_per_day))
+    growth_defaults.add_row("Max Comment Actions Per Day", str(settings.max_comment_actions_per_day))
+    growth_defaults.add_row("Max Mutations / 10m", str(settings.max_mutations_per_10_minutes))
+    growth_defaults.add_row("Verify Gap (s)", f"{settings.min_verify_gap_seconds}-{settings.max_verify_gap_seconds}")
+    growth_defaults.add_row("Pass Cooldown (s)", f"{settings.pass_cooldown_min_seconds}-{settings.pass_cooldown_max_seconds}")
+    growth_defaults.add_row("Soft-Degrade Cooldown (s)", str(settings.pacing_soft_degrade_cooldown_seconds))
+    growth_defaults.add_row("Pacing Auto-Clamp", "true" if settings.enable_pacing_auto_clamp else "false")
+    console.print(growth_defaults)
 
 
 @app.command("version")
@@ -1206,6 +1352,133 @@ def setup_command(
     follow_candidate_limit = int(
         typer.prompt("Follow candidate limit per run", default=settings.follow_candidate_limit, type=int)
     )
+    growth_queue_buffer_target_min = int(
+        typer.prompt(
+            "Queue buffer target min",
+            default=settings.growth_queue_buffer_target_min,
+            type=int,
+        )
+    )
+    growth_queue_buffer_target_max = int(
+        typer.prompt(
+            "Queue buffer target max",
+            default=settings.growth_queue_buffer_target_max,
+            type=int,
+        )
+    )
+    growth_queue_buffer_target_multiplier = int(
+        typer.prompt(
+            "Queue buffer target multiplier",
+            default=settings.growth_queue_buffer_target_multiplier,
+            type=int,
+        )
+    )
+    growth_queue_fetch_limit_min = int(
+        typer.prompt(
+            "Queue fetch limit min",
+            default=settings.growth_queue_fetch_limit_min,
+            type=int,
+        )
+    )
+    growth_queue_fetch_limit_max = int(
+        typer.prompt(
+            "Queue fetch limit max",
+            default=settings.growth_queue_fetch_limit_max,
+            type=int,
+        )
+    )
+    growth_queue_fetch_limit_multiplier = int(
+        typer.prompt(
+            "Queue fetch limit multiplier",
+            default=settings.growth_queue_fetch_limit_multiplier,
+            type=int,
+        )
+    )
+    growth_queue_due_deferred_reserve_ratio = float(
+        typer.prompt(
+            "Queue due-deferred reserve ratio (0.0-0.9)",
+            default=settings.growth_queue_due_deferred_reserve_ratio,
+            type=float,
+        )
+    )
+    growth_queue_due_deferred_reserve_ratio = max(0.0, min(0.9, growth_queue_due_deferred_reserve_ratio))
+    growth_queue_retry_started_floor_seconds = int(
+        typer.prompt(
+            "Queue retry started floor seconds",
+            default=settings.growth_queue_retry_started_floor_seconds,
+            type=int,
+        )
+    )
+    growth_queue_retry_started_cooldown_multiplier = int(
+        typer.prompt(
+            "Queue retry started cooldown multiplier",
+            default=settings.growth_queue_retry_started_cooldown_multiplier,
+            type=int,
+        )
+    )
+    growth_queue_retry_short_floor_seconds = int(
+        typer.prompt(
+            "Queue retry short floor seconds",
+            default=settings.growth_queue_retry_short_floor_seconds,
+            type=int,
+        )
+    )
+    growth_queue_retry_short_cooldown_multiplier = int(
+        typer.prompt(
+            "Queue retry short cooldown multiplier",
+            default=settings.growth_queue_retry_short_cooldown_multiplier,
+            type=int,
+        )
+    )
+    growth_queue_retry_medium_floor_seconds = int(
+        typer.prompt(
+            "Queue retry medium floor seconds",
+            default=settings.growth_queue_retry_medium_floor_seconds,
+            type=int,
+        )
+    )
+    growth_queue_retry_medium_cooldown_multiplier = int(
+        typer.prompt(
+            "Queue retry medium cooldown multiplier",
+            default=settings.growth_queue_retry_medium_cooldown_multiplier,
+            type=int,
+        )
+    )
+    growth_queue_retry_long_floor_seconds = int(
+        typer.prompt(
+            "Queue retry long floor seconds",
+            default=settings.growth_queue_retry_long_floor_seconds,
+            type=int,
+        )
+    )
+    growth_queue_retry_long_cooldown_multiplier = int(
+        typer.prompt(
+            "Queue retry long cooldown multiplier",
+            default=settings.growth_queue_retry_long_cooldown_multiplier,
+            type=int,
+        )
+    )
+    growth_queue_prune_followed_after_days = int(
+        typer.prompt(
+            "Queue prune followed-after days (0 keeps none)",
+            default=settings.growth_queue_prune_followed_after_days,
+            type=int,
+        )
+    )
+    growth_queue_prune_rejected_after_days = int(
+        typer.prompt(
+            "Queue prune rejected-after days (0 keeps none)",
+            default=settings.growth_queue_prune_rejected_after_days,
+            type=int,
+        )
+    )
+    growth_queue_prune_stale_after_days = int(
+        typer.prompt(
+            "Queue prune stale queued/deferred-after days (0 keeps none)",
+            default=settings.growth_queue_prune_stale_after_days,
+            type=int,
+        )
+    )
     target_user_followers_scan_limit = int(
         typer.prompt(
             "Target-user followers scan limit per source user",
@@ -1369,9 +1642,35 @@ def setup_command(
             min(max(1, live_session_min_follow_attempts), max(1, live_session_target_follow_attempts))
         ),
         "LIVE_SESSION_MAX_PASSES": str(max(1, live_session_max_passes)),
-        "FOLLOW_CANDIDATE_LIMIT": str(follow_candidate_limit),
+        "FOLLOW_CANDIDATE_LIMIT": str(max(1, follow_candidate_limit)),
+        "GROWTH_QUEUE_BUFFER_TARGET_MIN": str(max(1, growth_queue_buffer_target_min)),
+        "GROWTH_QUEUE_BUFFER_TARGET_MAX": str(
+            max(max(1, growth_queue_buffer_target_min), max(1, growth_queue_buffer_target_max))
+        ),
+        "GROWTH_QUEUE_BUFFER_TARGET_MULTIPLIER": str(max(1, growth_queue_buffer_target_multiplier)),
+        "GROWTH_QUEUE_FETCH_LIMIT_MIN": str(max(1, growth_queue_fetch_limit_min)),
+        "GROWTH_QUEUE_FETCH_LIMIT_MAX": str(
+            max(max(1, growth_queue_fetch_limit_min), max(1, growth_queue_fetch_limit_max))
+        ),
+        "GROWTH_QUEUE_FETCH_LIMIT_MULTIPLIER": str(max(1, growth_queue_fetch_limit_multiplier)),
+        "GROWTH_QUEUE_DUE_DEFERRED_RESERVE_RATIO": str(max(0.0, min(0.9, growth_queue_due_deferred_reserve_ratio))),
+        "GROWTH_QUEUE_RETRY_STARTED_FLOOR_SECONDS": str(max(0, growth_queue_retry_started_floor_seconds)),
+        "GROWTH_QUEUE_RETRY_STARTED_COOLDOWN_MULTIPLIER": str(max(0, growth_queue_retry_started_cooldown_multiplier)),
+        "GROWTH_QUEUE_RETRY_SHORT_FLOOR_SECONDS": str(max(0, growth_queue_retry_short_floor_seconds)),
+        "GROWTH_QUEUE_RETRY_SHORT_COOLDOWN_MULTIPLIER": str(max(0, growth_queue_retry_short_cooldown_multiplier)),
+        "GROWTH_QUEUE_RETRY_MEDIUM_FLOOR_SECONDS": str(
+            max(max(0, growth_queue_retry_short_floor_seconds), max(0, growth_queue_retry_medium_floor_seconds))
+        ),
+        "GROWTH_QUEUE_RETRY_MEDIUM_COOLDOWN_MULTIPLIER": str(max(0, growth_queue_retry_medium_cooldown_multiplier)),
+        "GROWTH_QUEUE_RETRY_LONG_FLOOR_SECONDS": str(
+            max(max(0, growth_queue_retry_medium_floor_seconds), max(0, growth_queue_retry_long_floor_seconds))
+        ),
+        "GROWTH_QUEUE_RETRY_LONG_COOLDOWN_MULTIPLIER": str(max(0, growth_queue_retry_long_cooldown_multiplier)),
+        "GROWTH_QUEUE_PRUNE_FOLLOWED_AFTER_DAYS": str(max(0, growth_queue_prune_followed_after_days)),
+        "GROWTH_QUEUE_PRUNE_REJECTED_AFTER_DAYS": str(max(0, growth_queue_prune_rejected_after_days)),
+        "GROWTH_QUEUE_PRUNE_STALE_AFTER_DAYS": str(max(0, growth_queue_prune_stale_after_days)),
         "TARGET_USER_FOLLOWERS_SCAN_LIMIT": str(max(1, target_user_followers_scan_limit)),
-        "FOLLOW_COOLDOWN_HOURS": str(follow_cooldown_hours),
+        "FOLLOW_COOLDOWN_HOURS": str(max(1, follow_cooldown_hours)),
         "CANDIDATE_MIN_FOLLOWERS": str(max(0, candidate_min_followers)),
         "CANDIDATE_MAX_FOLLOWERS": str(max(0, candidate_max_followers)),
         "CANDIDATE_MIN_FOLLOWING": str(max(0, candidate_min_following)),
@@ -1455,6 +1754,9 @@ def _render_start_menu(
     live_session_min_follows: int,
     live_session_max_passes: int,
     max_mutations_per_10_minutes: int,
+    max_follow_actions_per_run: int,
+    max_subscribe_actions_per_day: int,
+    max_comment_actions_per_day: int,
     min_verify_gap_seconds: int,
     max_verify_gap_seconds: int,
     pass_cooldown_min_seconds: int,
@@ -1464,6 +1766,41 @@ def _render_start_menu(
     growth_policy: GrowthPolicy,
     growth_sources: list[GrowthSource],
     target_user_followers_scan_limit: int,
+    follow_candidate_limit: int,
+    follow_cooldown_hours: int,
+    candidate_min_followers: int,
+    candidate_max_followers: int,
+    candidate_min_following: int,
+    candidate_max_following: int,
+    max_following_follower_ratio: float,
+    require_candidate_bio: bool,
+    require_candidate_latest_post: bool,
+    candidate_recent_activity_days: int,
+    discovery_followers_depth: int,
+    discovery_seed_followers_limit: int,
+    discovery_second_hop_seed_limit: int,
+    growth_queue_buffer_target_min: int,
+    growth_queue_buffer_target_max: int,
+    growth_queue_buffer_target_multiplier: int,
+    growth_queue_fetch_limit_min: int,
+    growth_queue_fetch_limit_max: int,
+    growth_queue_fetch_limit_multiplier: int,
+    growth_queue_due_deferred_reserve_ratio: float,
+    growth_queue_retry_started_floor_seconds: int,
+    growth_queue_retry_started_cooldown_multiplier: int,
+    growth_queue_retry_short_floor_seconds: int,
+    growth_queue_retry_short_cooldown_multiplier: int,
+    growth_queue_retry_medium_floor_seconds: int,
+    growth_queue_retry_medium_cooldown_multiplier: int,
+    growth_queue_retry_long_floor_seconds: int,
+    growth_queue_retry_long_cooldown_multiplier: int,
+    growth_queue_prune_followed_after_days: int,
+    growth_queue_prune_rejected_after_days: int,
+    growth_queue_prune_stale_after_days: int,
+    enable_pre_follow_clap: bool,
+    enable_pre_follow_comment: bool,
+    pre_follow_comment_probability: float,
+    pre_follow_comment_templates_raw: str,
     graph_sync_auto_enabled: bool,
     graph_sync_freshness_window_minutes: int,
     graph_sync_full_pagination: bool,
@@ -1495,10 +1832,84 @@ def _render_start_menu(
     defaults.add_row("Growth Policy", _format_growth_policy(growth_policy))
     defaults.add_row("Growth Sources", _format_growth_sources(growth_sources))
     defaults.add_row("Target-User Followers Scan Limit", str(target_user_followers_scan_limit))
+    defaults.add_row("Follow Candidate Limit", str(follow_candidate_limit))
+    defaults.add_row("Follow Cooldown (h)", str(follow_cooldown_hours))
+    defaults.add_row(
+        "Candidate Followers Range",
+        f"{candidate_min_followers}-{candidate_max_followers if candidate_max_followers > 0 else 'unbounded'}",
+    )
+    defaults.add_row(
+        "Candidate Following Range",
+        f"{candidate_min_following}-{candidate_max_following if candidate_max_following > 0 else 'unbounded'}",
+    )
+    defaults.add_row("Max Following/Follower Ratio", str(max_following_follower_ratio))
+    defaults.add_row("Require Candidate Bio", "true" if require_candidate_bio else "false")
+    defaults.add_row("Require Candidate Latest Post", "true" if require_candidate_latest_post else "false")
+    defaults.add_row("Candidate Recent Activity (d)", str(candidate_recent_activity_days))
+    defaults.add_row("Discovery Followers Depth", str(discovery_followers_depth))
+    defaults.add_row("Discovery Seed Followers Limit", str(discovery_seed_followers_limit))
+    defaults.add_row("Discovery Second-Hop Seed Limit", str(discovery_second_hop_seed_limit))
+    defaults.add_row("Pre-Follow Clap", "true" if enable_pre_follow_clap else "false")
+    defaults.add_row("Pre-Follow Comment", "true" if enable_pre_follow_comment else "false")
+    defaults.add_row("Pre-Follow Comment Probability", str(round(pre_follow_comment_probability, 3)))
+    defaults.add_row(
+        "Pre-Follow Comment Templates",
+        str(len([item for item in pre_follow_comment_templates_raw.split("||") if item.strip()])),
+    )
+    defaults.add_row(
+        "Queue Buffer Target",
+        (
+            f"min={growth_queue_buffer_target_min}, "
+            f"max={growth_queue_buffer_target_max}, "
+            f"x{growth_queue_buffer_target_multiplier}"
+        ),
+    )
+    defaults.add_row(
+        "Queue Fetch Limit",
+        (
+            f"min={growth_queue_fetch_limit_min}, "
+            f"max={growth_queue_fetch_limit_max}, "
+            f"x{growth_queue_fetch_limit_multiplier}"
+        ),
+    )
+    defaults.add_row(
+        "Queue Due Deferred Reserve",
+        str(round(growth_queue_due_deferred_reserve_ratio, 3)),
+    )
+    defaults.add_row(
+        "Queue Retry Started (s)",
+        (
+            f"floor={growth_queue_retry_started_floor_seconds}, "
+            f"x{growth_queue_retry_started_cooldown_multiplier}"
+        ),
+    )
+    defaults.add_row(
+        "Queue Retry Short (s)",
+        f"floor={growth_queue_retry_short_floor_seconds}, x{growth_queue_retry_short_cooldown_multiplier}",
+    )
+    defaults.add_row(
+        "Queue Retry Medium (s)",
+        f"floor={growth_queue_retry_medium_floor_seconds}, x{growth_queue_retry_medium_cooldown_multiplier}",
+    )
+    defaults.add_row(
+        "Queue Retry Long (s)",
+        f"floor={growth_queue_retry_long_floor_seconds}, x{growth_queue_retry_long_cooldown_multiplier}",
+    )
+    defaults.add_row(
+        "Queue Prune TTL (d)",
+        (
+            f"followed={growth_queue_prune_followed_after_days}, "
+            f"rejected={growth_queue_prune_rejected_after_days}, "
+            f"stale={growth_queue_prune_stale_after_days}"
+        ),
+    )
     defaults.add_row("Live Session Duration (m)", str(live_session_minutes))
     defaults.add_row("Live Session Target Follows", str(live_session_target_follows))
     defaults.add_row("Live Session Min Follows", str(live_session_min_follows))
     defaults.add_row("Live Session Max Passes", str(live_session_max_passes))
+    defaults.add_row("Max Follow Actions Per Cycle", str(max_follow_actions_per_run))
+    defaults.add_row("Max Subscribe Actions Per Day", str(max_subscribe_actions_per_day))
+    defaults.add_row("Max Comment Actions Per Day", str(max_comment_actions_per_day))
     defaults.add_row("Max Mutations / 10m", str(max_mutations_per_10_minutes))
     defaults.add_row("Verify Gap (s)", f"{min_verify_gap_seconds}-{max_verify_gap_seconds}")
     defaults.add_row("Pass Cooldown (s)", f"{pass_cooldown_min_seconds}-{pass_cooldown_max_seconds}")
@@ -1570,6 +1981,41 @@ def _run_start_menu(
     initial_growth_policy: GrowthPolicy,
     initial_growth_sources: list[GrowthSource],
     initial_target_user_followers_scan_limit: int,
+    initial_follow_candidate_limit: int,
+    initial_follow_cooldown_hours: int,
+    initial_candidate_min_followers: int,
+    initial_candidate_max_followers: int,
+    initial_candidate_min_following: int,
+    initial_candidate_max_following: int,
+    initial_max_following_follower_ratio: float,
+    initial_require_candidate_bio: bool,
+    initial_require_candidate_latest_post: bool,
+    initial_candidate_recent_activity_days: int,
+    initial_discovery_followers_depth: int,
+    initial_discovery_seed_followers_limit: int,
+    initial_discovery_second_hop_seed_limit: int,
+    initial_growth_queue_buffer_target_min: int,
+    initial_growth_queue_buffer_target_max: int,
+    initial_growth_queue_buffer_target_multiplier: int,
+    initial_growth_queue_fetch_limit_min: int,
+    initial_growth_queue_fetch_limit_max: int,
+    initial_growth_queue_fetch_limit_multiplier: int,
+    initial_growth_queue_due_deferred_reserve_ratio: float,
+    initial_growth_queue_retry_started_floor_seconds: int,
+    initial_growth_queue_retry_started_cooldown_multiplier: int,
+    initial_growth_queue_retry_short_floor_seconds: int,
+    initial_growth_queue_retry_short_cooldown_multiplier: int,
+    initial_growth_queue_retry_medium_floor_seconds: int,
+    initial_growth_queue_retry_medium_cooldown_multiplier: int,
+    initial_growth_queue_retry_long_floor_seconds: int,
+    initial_growth_queue_retry_long_cooldown_multiplier: int,
+    initial_growth_queue_prune_followed_after_days: int,
+    initial_growth_queue_prune_rejected_after_days: int,
+    initial_growth_queue_prune_stale_after_days: int,
+    initial_enable_pre_follow_clap: bool,
+    initial_enable_pre_follow_comment: bool,
+    initial_pre_follow_comment_probability: float,
+    initial_pre_follow_comment_templates_raw: str,
     initial_graph_sync_auto_enabled: bool,
     initial_graph_sync_freshness_window_minutes: int,
     initial_graph_sync_full_pagination: bool,
@@ -1599,6 +2045,47 @@ def _run_start_menu(
     growth_policy = initial_growth_policy
     growth_sources = list(initial_growth_sources)
     target_user_followers_scan_limit = max(1, initial_target_user_followers_scan_limit)
+    follow_candidate_limit = max(1, initial_follow_candidate_limit)
+    follow_cooldown_hours = max(1, initial_follow_cooldown_hours)
+    candidate_min_followers = max(0, initial_candidate_min_followers)
+    candidate_max_followers = max(0, initial_candidate_max_followers)
+    candidate_min_following = max(0, initial_candidate_min_following)
+    candidate_max_following = max(0, initial_candidate_max_following)
+    max_following_follower_ratio = max(0.0, initial_max_following_follower_ratio)
+    require_candidate_bio = initial_require_candidate_bio
+    require_candidate_latest_post = initial_require_candidate_latest_post
+    candidate_recent_activity_days = max(0, initial_candidate_recent_activity_days)
+    discovery_followers_depth = 2 if initial_discovery_followers_depth == 2 else 1
+    discovery_seed_followers_limit = max(1, initial_discovery_seed_followers_limit)
+    discovery_second_hop_seed_limit = max(1, initial_discovery_second_hop_seed_limit)
+    growth_queue_buffer_target_min = max(1, initial_growth_queue_buffer_target_min)
+    growth_queue_buffer_target_max = max(growth_queue_buffer_target_min, initial_growth_queue_buffer_target_max)
+    growth_queue_buffer_target_multiplier = max(1, initial_growth_queue_buffer_target_multiplier)
+    growth_queue_fetch_limit_min = max(1, initial_growth_queue_fetch_limit_min)
+    growth_queue_fetch_limit_max = max(growth_queue_fetch_limit_min, initial_growth_queue_fetch_limit_max)
+    growth_queue_fetch_limit_multiplier = max(1, initial_growth_queue_fetch_limit_multiplier)
+    growth_queue_due_deferred_reserve_ratio = max(0.0, min(0.9, initial_growth_queue_due_deferred_reserve_ratio))
+    growth_queue_retry_started_floor_seconds = max(0, initial_growth_queue_retry_started_floor_seconds)
+    growth_queue_retry_started_cooldown_multiplier = max(0, initial_growth_queue_retry_started_cooldown_multiplier)
+    growth_queue_retry_short_floor_seconds = max(0, initial_growth_queue_retry_short_floor_seconds)
+    growth_queue_retry_short_cooldown_multiplier = max(0, initial_growth_queue_retry_short_cooldown_multiplier)
+    growth_queue_retry_medium_floor_seconds = max(
+        growth_queue_retry_short_floor_seconds,
+        initial_growth_queue_retry_medium_floor_seconds,
+    )
+    growth_queue_retry_medium_cooldown_multiplier = max(0, initial_growth_queue_retry_medium_cooldown_multiplier)
+    growth_queue_retry_long_floor_seconds = max(
+        growth_queue_retry_medium_floor_seconds,
+        initial_growth_queue_retry_long_floor_seconds,
+    )
+    growth_queue_retry_long_cooldown_multiplier = max(0, initial_growth_queue_retry_long_cooldown_multiplier)
+    growth_queue_prune_followed_after_days = max(0, initial_growth_queue_prune_followed_after_days)
+    growth_queue_prune_rejected_after_days = max(0, initial_growth_queue_prune_rejected_after_days)
+    growth_queue_prune_stale_after_days = max(0, initial_growth_queue_prune_stale_after_days)
+    enable_pre_follow_clap = initial_enable_pre_follow_clap
+    enable_pre_follow_comment = initial_enable_pre_follow_comment
+    pre_follow_comment_probability = max(0.0, min(1.0, initial_pre_follow_comment_probability))
+    pre_follow_comment_templates_raw = initial_pre_follow_comment_templates_raw
     target_user_refs_for_growth: list[str] | None = None
     graph_sync_auto_enabled = initial_graph_sync_auto_enabled
     graph_sync_freshness_window_minutes = max(0, initial_graph_sync_freshness_window_minutes)
@@ -1629,6 +2116,9 @@ def _run_start_menu(
             live_session_min_follows=live_session_min_follows,
             live_session_max_passes=live_session_max_passes,
             max_mutations_per_10_minutes=max_mutations_per_10_minutes,
+            max_follow_actions_per_run=settings.max_follow_actions_per_run,
+            max_subscribe_actions_per_day=settings.max_subscribe_actions_per_day,
+            max_comment_actions_per_day=settings.max_comment_actions_per_day,
             min_verify_gap_seconds=min_verify_gap_seconds,
             max_verify_gap_seconds=max_verify_gap_seconds,
             pass_cooldown_min_seconds=pass_cooldown_min_seconds,
@@ -1638,6 +2128,41 @@ def _run_start_menu(
             growth_policy=growth_policy,
             growth_sources=growth_sources,
             target_user_followers_scan_limit=target_user_followers_scan_limit,
+            follow_candidate_limit=follow_candidate_limit,
+            follow_cooldown_hours=follow_cooldown_hours,
+            candidate_min_followers=candidate_min_followers,
+            candidate_max_followers=candidate_max_followers,
+            candidate_min_following=candidate_min_following,
+            candidate_max_following=candidate_max_following,
+            max_following_follower_ratio=max_following_follower_ratio,
+            require_candidate_bio=require_candidate_bio,
+            require_candidate_latest_post=require_candidate_latest_post,
+            candidate_recent_activity_days=candidate_recent_activity_days,
+            discovery_followers_depth=discovery_followers_depth,
+            discovery_seed_followers_limit=discovery_seed_followers_limit,
+            discovery_second_hop_seed_limit=discovery_second_hop_seed_limit,
+            growth_queue_buffer_target_min=growth_queue_buffer_target_min,
+            growth_queue_buffer_target_max=growth_queue_buffer_target_max,
+            growth_queue_buffer_target_multiplier=growth_queue_buffer_target_multiplier,
+            growth_queue_fetch_limit_min=growth_queue_fetch_limit_min,
+            growth_queue_fetch_limit_max=growth_queue_fetch_limit_max,
+            growth_queue_fetch_limit_multiplier=growth_queue_fetch_limit_multiplier,
+            growth_queue_due_deferred_reserve_ratio=growth_queue_due_deferred_reserve_ratio,
+            growth_queue_retry_started_floor_seconds=growth_queue_retry_started_floor_seconds,
+            growth_queue_retry_started_cooldown_multiplier=growth_queue_retry_started_cooldown_multiplier,
+            growth_queue_retry_short_floor_seconds=growth_queue_retry_short_floor_seconds,
+            growth_queue_retry_short_cooldown_multiplier=growth_queue_retry_short_cooldown_multiplier,
+            growth_queue_retry_medium_floor_seconds=growth_queue_retry_medium_floor_seconds,
+            growth_queue_retry_medium_cooldown_multiplier=growth_queue_retry_medium_cooldown_multiplier,
+            growth_queue_retry_long_floor_seconds=growth_queue_retry_long_floor_seconds,
+            growth_queue_retry_long_cooldown_multiplier=growth_queue_retry_long_cooldown_multiplier,
+            growth_queue_prune_followed_after_days=growth_queue_prune_followed_after_days,
+            growth_queue_prune_rejected_after_days=growth_queue_prune_rejected_after_days,
+            growth_queue_prune_stale_after_days=growth_queue_prune_stale_after_days,
+            enable_pre_follow_clap=enable_pre_follow_clap,
+            enable_pre_follow_comment=enable_pre_follow_comment,
+            pre_follow_comment_probability=pre_follow_comment_probability,
+            pre_follow_comment_templates_raw=pre_follow_comment_templates_raw,
             graph_sync_auto_enabled=graph_sync_auto_enabled,
             graph_sync_freshness_window_minutes=graph_sync_freshness_window_minutes,
             graph_sync_full_pagination=graph_sync_full_pagination,
@@ -1706,6 +2231,41 @@ def _run_start_menu(
             nonlocal growth_policy
             nonlocal growth_sources
             nonlocal target_user_followers_scan_limit
+            nonlocal follow_candidate_limit
+            nonlocal follow_cooldown_hours
+            nonlocal candidate_min_followers
+            nonlocal candidate_max_followers
+            nonlocal candidate_min_following
+            nonlocal candidate_max_following
+            nonlocal max_following_follower_ratio
+            nonlocal require_candidate_bio
+            nonlocal require_candidate_latest_post
+            nonlocal candidate_recent_activity_days
+            nonlocal discovery_followers_depth
+            nonlocal discovery_seed_followers_limit
+            nonlocal discovery_second_hop_seed_limit
+            nonlocal growth_queue_buffer_target_min
+            nonlocal growth_queue_buffer_target_max
+            nonlocal growth_queue_buffer_target_multiplier
+            nonlocal growth_queue_fetch_limit_min
+            nonlocal growth_queue_fetch_limit_max
+            nonlocal growth_queue_fetch_limit_multiplier
+            nonlocal growth_queue_due_deferred_reserve_ratio
+            nonlocal growth_queue_retry_started_floor_seconds
+            nonlocal growth_queue_retry_started_cooldown_multiplier
+            nonlocal growth_queue_retry_short_floor_seconds
+            nonlocal growth_queue_retry_short_cooldown_multiplier
+            nonlocal growth_queue_retry_medium_floor_seconds
+            nonlocal growth_queue_retry_medium_cooldown_multiplier
+            nonlocal growth_queue_retry_long_floor_seconds
+            nonlocal growth_queue_retry_long_cooldown_multiplier
+            nonlocal growth_queue_prune_followed_after_days
+            nonlocal growth_queue_prune_rejected_after_days
+            nonlocal growth_queue_prune_stale_after_days
+            nonlocal enable_pre_follow_clap
+            nonlocal enable_pre_follow_comment
+            nonlocal pre_follow_comment_probability
+            nonlocal pre_follow_comment_templates_raw
             nonlocal graph_sync_auto_enabled
             nonlocal graph_sync_freshness_window_minutes
             nonlocal graph_sync_full_pagination
@@ -1717,7 +2277,7 @@ def _run_start_menu(
             nonlocal newsletter_slug
             nonlocal newsletter_username
 
-            seed_user_refs = seed_user_refs or refreshed_settings.discovery_seed_users
+            seed_user_refs = _normalize_seed_user_refs(refreshed_settings.discovery_seed_users)
             live_session_minutes = refreshed_settings.live_session_duration_minutes
             live_session_target_follows = refreshed_settings.live_session_target_follow_attempts
             live_session_min_follows = refreshed_settings.live_session_min_follow_attempts
@@ -1732,6 +2292,45 @@ def _run_start_menu(
             growth_policy = refreshed_settings.default_growth_policy
             growth_sources = list(refreshed_settings.default_growth_sources)
             target_user_followers_scan_limit = refreshed_settings.target_user_followers_scan_limit
+            follow_candidate_limit = refreshed_settings.follow_candidate_limit
+            follow_cooldown_hours = refreshed_settings.follow_cooldown_hours
+            candidate_min_followers = refreshed_settings.candidate_min_followers
+            candidate_max_followers = refreshed_settings.candidate_max_followers
+            candidate_min_following = refreshed_settings.candidate_min_following
+            candidate_max_following = refreshed_settings.candidate_max_following
+            max_following_follower_ratio = refreshed_settings.max_following_follower_ratio
+            require_candidate_bio = refreshed_settings.require_candidate_bio
+            require_candidate_latest_post = refreshed_settings.require_candidate_latest_post
+            candidate_recent_activity_days = refreshed_settings.candidate_recent_activity_days
+            discovery_followers_depth = refreshed_settings.discovery_followers_depth
+            discovery_seed_followers_limit = refreshed_settings.discovery_seed_followers_limit
+            discovery_second_hop_seed_limit = refreshed_settings.discovery_second_hop_seed_limit
+            growth_queue_buffer_target_min = refreshed_settings.growth_queue_buffer_target_min
+            growth_queue_buffer_target_max = refreshed_settings.growth_queue_buffer_target_max
+            growth_queue_buffer_target_multiplier = refreshed_settings.growth_queue_buffer_target_multiplier
+            growth_queue_fetch_limit_min = refreshed_settings.growth_queue_fetch_limit_min
+            growth_queue_fetch_limit_max = refreshed_settings.growth_queue_fetch_limit_max
+            growth_queue_fetch_limit_multiplier = refreshed_settings.growth_queue_fetch_limit_multiplier
+            growth_queue_due_deferred_reserve_ratio = refreshed_settings.growth_queue_due_deferred_reserve_ratio
+            growth_queue_retry_started_floor_seconds = refreshed_settings.growth_queue_retry_started_floor_seconds
+            growth_queue_retry_started_cooldown_multiplier = (
+                refreshed_settings.growth_queue_retry_started_cooldown_multiplier
+            )
+            growth_queue_retry_short_floor_seconds = refreshed_settings.growth_queue_retry_short_floor_seconds
+            growth_queue_retry_short_cooldown_multiplier = refreshed_settings.growth_queue_retry_short_cooldown_multiplier
+            growth_queue_retry_medium_floor_seconds = refreshed_settings.growth_queue_retry_medium_floor_seconds
+            growth_queue_retry_medium_cooldown_multiplier = (
+                refreshed_settings.growth_queue_retry_medium_cooldown_multiplier
+            )
+            growth_queue_retry_long_floor_seconds = refreshed_settings.growth_queue_retry_long_floor_seconds
+            growth_queue_retry_long_cooldown_multiplier = refreshed_settings.growth_queue_retry_long_cooldown_multiplier
+            growth_queue_prune_followed_after_days = refreshed_settings.growth_queue_prune_followed_after_days
+            growth_queue_prune_rejected_after_days = refreshed_settings.growth_queue_prune_rejected_after_days
+            growth_queue_prune_stale_after_days = refreshed_settings.growth_queue_prune_stale_after_days
+            enable_pre_follow_clap = refreshed_settings.enable_pre_follow_clap
+            enable_pre_follow_comment = refreshed_settings.enable_pre_follow_comment
+            pre_follow_comment_probability = refreshed_settings.pre_follow_comment_probability
+            pre_follow_comment_templates_raw = refreshed_settings.pre_follow_comment_templates_raw
             graph_sync_auto_enabled = refreshed_settings.graph_sync_auto_enabled
             graph_sync_freshness_window_minutes = refreshed_settings.graph_sync_freshness_window_minutes
             graph_sync_full_pagination = refreshed_settings.graph_sync_full_pagination
@@ -1786,6 +2385,41 @@ def _run_start_menu(
             nonlocal growth_policy
             nonlocal growth_sources
             nonlocal target_user_followers_scan_limit
+            nonlocal follow_candidate_limit
+            nonlocal follow_cooldown_hours
+            nonlocal candidate_min_followers
+            nonlocal candidate_max_followers
+            nonlocal candidate_min_following
+            nonlocal candidate_max_following
+            nonlocal max_following_follower_ratio
+            nonlocal require_candidate_bio
+            nonlocal require_candidate_latest_post
+            nonlocal candidate_recent_activity_days
+            nonlocal discovery_followers_depth
+            nonlocal discovery_seed_followers_limit
+            nonlocal discovery_second_hop_seed_limit
+            nonlocal growth_queue_buffer_target_min
+            nonlocal growth_queue_buffer_target_max
+            nonlocal growth_queue_buffer_target_multiplier
+            nonlocal growth_queue_fetch_limit_min
+            nonlocal growth_queue_fetch_limit_max
+            nonlocal growth_queue_fetch_limit_multiplier
+            nonlocal growth_queue_due_deferred_reserve_ratio
+            nonlocal growth_queue_retry_started_floor_seconds
+            nonlocal growth_queue_retry_started_cooldown_multiplier
+            nonlocal growth_queue_retry_short_floor_seconds
+            nonlocal growth_queue_retry_short_cooldown_multiplier
+            nonlocal growth_queue_retry_medium_floor_seconds
+            nonlocal growth_queue_retry_medium_cooldown_multiplier
+            nonlocal growth_queue_retry_long_floor_seconds
+            nonlocal growth_queue_retry_long_cooldown_multiplier
+            nonlocal growth_queue_prune_followed_after_days
+            nonlocal growth_queue_prune_rejected_after_days
+            nonlocal growth_queue_prune_stale_after_days
+            nonlocal enable_pre_follow_clap
+            nonlocal enable_pre_follow_comment
+            nonlocal pre_follow_comment_probability
+            nonlocal pre_follow_comment_templates_raw
             nonlocal graph_sync_auto_enabled
             nonlocal graph_sync_freshness_window_minutes
             nonlocal graph_sync_full_pagination
@@ -1836,6 +2470,150 @@ def _run_start_menu(
             else:
                 target_user_followers_scan_limit = target_user_scan_limit_value
 
+            follow_candidate_limit_value = int(
+                typer.prompt(
+                    "Follow candidate limit per run",
+                    default=follow_candidate_limit,
+                    type=int,
+                )
+            )
+            if follow_candidate_limit_value < 1:
+                _print_notice("Follow candidate limit must be >= 1. Keeping previous value.", level="warning")
+            else:
+                follow_candidate_limit = follow_candidate_limit_value
+
+            follow_cooldown_hours_value = int(
+                typer.prompt(
+                    "Follow cooldown hours",
+                    default=follow_cooldown_hours,
+                    type=int,
+                )
+            )
+            if follow_cooldown_hours_value < 1:
+                _print_notice("Follow cooldown hours must be >= 1. Keeping previous value.", level="warning")
+            else:
+                follow_cooldown_hours = follow_cooldown_hours_value
+
+            candidate_min_followers_value = int(
+                typer.prompt(
+                    "Candidate minimum followers",
+                    default=candidate_min_followers,
+                    type=int,
+                )
+            )
+            if candidate_min_followers_value < 0:
+                _print_notice("Candidate minimum followers must be >= 0. Keeping previous value.", level="warning")
+            else:
+                candidate_min_followers = candidate_min_followers_value
+
+            candidate_max_followers_value = int(
+                typer.prompt(
+                    "Candidate maximum followers (0 disables)",
+                    default=candidate_max_followers,
+                    type=int,
+                )
+            )
+            if candidate_max_followers_value < 0:
+                _print_notice("Candidate maximum followers must be >= 0. Keeping previous value.", level="warning")
+            else:
+                candidate_max_followers = candidate_max_followers_value
+
+            candidate_min_following_value = int(
+                typer.prompt(
+                    "Candidate minimum following",
+                    default=candidate_min_following,
+                    type=int,
+                )
+            )
+            if candidate_min_following_value < 0:
+                _print_notice("Candidate minimum following must be >= 0. Keeping previous value.", level="warning")
+            else:
+                candidate_min_following = candidate_min_following_value
+
+            candidate_max_following_value = int(
+                typer.prompt(
+                    "Candidate maximum following (0 disables)",
+                    default=candidate_max_following,
+                    type=int,
+                )
+            )
+            if candidate_max_following_value < 0:
+                _print_notice("Candidate maximum following must be >= 0. Keeping previous value.", level="warning")
+            else:
+                candidate_max_following = candidate_max_following_value
+
+            max_following_follower_ratio_value = float(
+                typer.prompt(
+                    "Candidate maximum following/follower ratio",
+                    default=max_following_follower_ratio,
+                    type=float,
+                )
+            )
+            if max_following_follower_ratio_value < 0:
+                _print_notice(
+                    "Max following/follower ratio must be >= 0. Keeping previous value.",
+                    level="warning",
+                )
+            else:
+                max_following_follower_ratio = max_following_follower_ratio_value
+
+            require_candidate_bio = typer.confirm(
+                "Require candidate bio?",
+                default=require_candidate_bio,
+            )
+            require_candidate_latest_post = typer.confirm(
+                "Require candidate latest post?",
+                default=require_candidate_latest_post,
+            )
+
+            candidate_recent_activity_days_value = int(
+                typer.prompt(
+                    "Candidate recent activity days (0 disables)",
+                    default=candidate_recent_activity_days,
+                    type=int,
+                )
+            )
+            if candidate_recent_activity_days_value < 0:
+                _print_notice("Recent activity days must be >= 0. Keeping previous value.", level="warning")
+            else:
+                candidate_recent_activity_days = candidate_recent_activity_days_value
+
+            discovery_depth_value = int(
+                typer.prompt(
+                    "Discovery followers depth (1 or 2)",
+                    default=discovery_followers_depth,
+                    type=int,
+                )
+            )
+            if discovery_depth_value not in {1, 2}:
+                _print_notice("Discovery depth must be 1 or 2. Keeping previous value.", level="warning")
+            else:
+                discovery_followers_depth = discovery_depth_value
+
+            discovery_seed_followers_limit_value = int(
+                typer.prompt(
+                    "Seed followers fetch limit",
+                    default=discovery_seed_followers_limit,
+                    type=int,
+                )
+            )
+            if discovery_seed_followers_limit_value < 1:
+                _print_notice("Seed followers limit must be >= 1. Keeping previous value.", level="warning")
+            else:
+                discovery_seed_followers_limit = discovery_seed_followers_limit_value
+
+            discovery_second_hop_seed_limit_value = int(
+                typer.prompt(
+                    "Second-hop seed limit",
+                    default=discovery_second_hop_seed_limit,
+                    type=int,
+                )
+            )
+            if discovery_second_hop_seed_limit_value < 1:
+                _print_notice("Second-hop seed limit must be >= 1. Keeping previous value.", level="warning")
+            else:
+                discovery_second_hop_seed_limit = discovery_second_hop_seed_limit_value
+
             session_minutes_value = int(
                 typer.prompt(
                     "Default live session duration (minutes)",
@@ -1883,6 +2661,39 @@ def _run_start_menu(
                 _print_notice("Live session max passes must be >= 1. Keeping previous value.", level="warning")
             else:
                 live_session_max_passes = session_pass_value
+
+            max_follow_actions_per_run_value = int(
+                typer.prompt(
+                    "Max follow actions per cycle",
+                    default=settings.max_follow_actions_per_run,
+                    type=int,
+                )
+            )
+            if max_follow_actions_per_run_value < 0:
+                _print_notice("Max follow actions per cycle must be >= 0. Keeping previous value.", level="warning")
+                max_follow_actions_per_run_value = settings.max_follow_actions_per_run
+
+            max_subscribe_actions_per_day_value = int(
+                typer.prompt(
+                    "Max subscribe actions per day",
+                    default=settings.max_subscribe_actions_per_day,
+                    type=int,
+                )
+            )
+            if max_subscribe_actions_per_day_value < 0:
+                _print_notice("Max subscribe actions per day must be >= 0. Keeping previous value.", level="warning")
+                max_subscribe_actions_per_day_value = settings.max_subscribe_actions_per_day
+
+            max_comment_actions_per_day_value = int(
+                typer.prompt(
+                    "Max comment actions per day",
+                    default=settings.max_comment_actions_per_day,
+                    type=int,
+                )
+            )
+            if max_comment_actions_per_day_value < 0:
+                _print_notice("Max comment actions per day must be >= 0. Keeping previous value.", level="warning")
+                max_comment_actions_per_day_value = settings.max_comment_actions_per_day
 
             mutation_cap_value = int(
                 typer.prompt(
@@ -1966,6 +2777,253 @@ def _run_start_menu(
                 "Enable pacing auto-clamp by default?",
                 default=enable_pacing_auto_clamp,
             )
+
+            enable_pre_follow_clap = typer.confirm(
+                "Enable pre-follow clap?",
+                default=enable_pre_follow_clap,
+            )
+            enable_pre_follow_comment = typer.confirm(
+                "Enable optional pre-follow comment for smart mode?",
+                default=enable_pre_follow_comment,
+            )
+            pre_follow_comment_probability_value = float(
+                typer.prompt(
+                    "Pre-follow comment probability per smart candidate (0.0-1.0)",
+                    default=pre_follow_comment_probability,
+                    type=float,
+                )
+            )
+            if pre_follow_comment_probability_value < 0.0 or pre_follow_comment_probability_value > 1.0:
+                _print_notice("Pre-follow comment probability must be between 0 and 1. Keeping previous value.", level="warning")
+            else:
+                pre_follow_comment_probability = pre_follow_comment_probability_value
+
+            pre_follow_comment_templates_input = str(
+                typer.prompt(
+                    "Pre-follow comment templates (`||` separated, '-' to clear)",
+                    default=pre_follow_comment_templates_raw,
+                )
+            ).strip()
+            if pre_follow_comment_templates_input == "-":
+                pre_follow_comment_templates_raw = ""
+            elif pre_follow_comment_templates_input:
+                pre_follow_comment_templates_raw = pre_follow_comment_templates_input
+
+            queue_buffer_min_value = int(
+                typer.prompt(
+                    "Queue buffer target min",
+                    default=growth_queue_buffer_target_min,
+                    type=int,
+                )
+            )
+            if queue_buffer_min_value < 1:
+                _print_notice("Queue buffer min must be >= 1. Keeping previous value.", level="warning")
+            else:
+                growth_queue_buffer_target_min = queue_buffer_min_value
+
+            queue_buffer_max_value = int(
+                typer.prompt(
+                    "Queue buffer target max",
+                    default=growth_queue_buffer_target_max,
+                    type=int,
+                )
+            )
+            if queue_buffer_max_value < growth_queue_buffer_target_min:
+                _print_notice("Queue buffer max must be >= buffer min. Keeping previous value.", level="warning")
+            else:
+                growth_queue_buffer_target_max = queue_buffer_max_value
+
+            queue_buffer_multiplier_value = int(
+                typer.prompt(
+                    "Queue buffer multiplier",
+                    default=growth_queue_buffer_target_multiplier,
+                    type=int,
+                )
+            )
+            if queue_buffer_multiplier_value < 1:
+                _print_notice("Queue buffer multiplier must be >= 1. Keeping previous value.", level="warning")
+            else:
+                growth_queue_buffer_target_multiplier = queue_buffer_multiplier_value
+
+            queue_fetch_min_value = int(
+                typer.prompt(
+                    "Queue fetch limit min",
+                    default=growth_queue_fetch_limit_min,
+                    type=int,
+                )
+            )
+            if queue_fetch_min_value < 1:
+                _print_notice("Queue fetch min must be >= 1. Keeping previous value.", level="warning")
+            else:
+                growth_queue_fetch_limit_min = queue_fetch_min_value
+
+            queue_fetch_max_value = int(
+                typer.prompt(
+                    "Queue fetch limit max",
+                    default=growth_queue_fetch_limit_max,
+                    type=int,
+                )
+            )
+            if queue_fetch_max_value < growth_queue_fetch_limit_min:
+                _print_notice("Queue fetch max must be >= fetch min. Keeping previous value.", level="warning")
+            else:
+                growth_queue_fetch_limit_max = queue_fetch_max_value
+
+            queue_fetch_multiplier_value = int(
+                typer.prompt(
+                    "Queue fetch multiplier",
+                    default=growth_queue_fetch_limit_multiplier,
+                    type=int,
+                )
+            )
+            if queue_fetch_multiplier_value < 1:
+                _print_notice("Queue fetch multiplier must be >= 1. Keeping previous value.", level="warning")
+            else:
+                growth_queue_fetch_limit_multiplier = queue_fetch_multiplier_value
+
+            due_deferred_reserve_ratio_value = float(
+                typer.prompt(
+                    "Queue due-deferred reserve ratio (0.0-0.9)",
+                    default=growth_queue_due_deferred_reserve_ratio,
+                    type=float,
+                )
+            )
+            if due_deferred_reserve_ratio_value < 0.0 or due_deferred_reserve_ratio_value > 0.9:
+                _print_notice("Queue due-deferred reserve ratio must be between 0.0 and 0.9. Keeping previous value.", level="warning")
+            else:
+                growth_queue_due_deferred_reserve_ratio = due_deferred_reserve_ratio_value
+
+            retry_started_floor_value = int(
+                typer.prompt(
+                    "Queue retry started floor seconds",
+                    default=growth_queue_retry_started_floor_seconds,
+                    type=int,
+                )
+            )
+            if retry_started_floor_value < 0:
+                _print_notice("Queue retry started floor must be >= 0. Keeping previous value.", level="warning")
+            else:
+                growth_queue_retry_started_floor_seconds = retry_started_floor_value
+
+            retry_started_multiplier_value = int(
+                typer.prompt(
+                    "Queue retry started cooldown multiplier",
+                    default=growth_queue_retry_started_cooldown_multiplier,
+                    type=int,
+                )
+            )
+            if retry_started_multiplier_value < 0:
+                _print_notice("Queue retry started multiplier must be >= 0. Keeping previous value.", level="warning")
+            else:
+                growth_queue_retry_started_cooldown_multiplier = retry_started_multiplier_value
+
+            retry_short_floor_value = int(
+                typer.prompt(
+                    "Queue retry short floor seconds",
+                    default=growth_queue_retry_short_floor_seconds,
+                    type=int,
+                )
+            )
+            if retry_short_floor_value < 0:
+                _print_notice("Queue retry short floor must be >= 0. Keeping previous value.", level="warning")
+            else:
+                growth_queue_retry_short_floor_seconds = retry_short_floor_value
+
+            retry_short_multiplier_value = int(
+                typer.prompt(
+                    "Queue retry short cooldown multiplier",
+                    default=growth_queue_retry_short_cooldown_multiplier,
+                    type=int,
+                )
+            )
+            if retry_short_multiplier_value < 0:
+                _print_notice("Queue retry short multiplier must be >= 0. Keeping previous value.", level="warning")
+            else:
+                growth_queue_retry_short_cooldown_multiplier = retry_short_multiplier_value
+
+            retry_medium_floor_value = int(
+                typer.prompt(
+                    "Queue retry medium floor seconds",
+                    default=growth_queue_retry_medium_floor_seconds,
+                    type=int,
+                )
+            )
+            if retry_medium_floor_value < growth_queue_retry_short_floor_seconds:
+                _print_notice("Queue retry medium floor must be >= short floor. Keeping previous value.", level="warning")
+            else:
+                growth_queue_retry_medium_floor_seconds = retry_medium_floor_value
+
+            retry_medium_multiplier_value = int(
+                typer.prompt(
+                    "Queue retry medium cooldown multiplier",
+                    default=growth_queue_retry_medium_cooldown_multiplier,
+                    type=int,
+                )
+            )
+            if retry_medium_multiplier_value < 0:
+                _print_notice("Queue retry medium multiplier must be >= 0. Keeping previous value.", level="warning")
+            else:
+                growth_queue_retry_medium_cooldown_multiplier = retry_medium_multiplier_value
+
+            retry_long_floor_value = int(
+                typer.prompt(
+                    "Queue retry long floor seconds",
+                    default=growth_queue_retry_long_floor_seconds,
+                    type=int,
+                )
+            )
+            if retry_long_floor_value < growth_queue_retry_medium_floor_seconds:
+                _print_notice("Queue retry long floor must be >= medium floor. Keeping previous value.", level="warning")
+            else:
+                growth_queue_retry_long_floor_seconds = retry_long_floor_value
+
+            retry_long_multiplier_value = int(
+                typer.prompt(
+                    "Queue retry long cooldown multiplier",
+                    default=growth_queue_retry_long_cooldown_multiplier,
+                    type=int,
+                )
+            )
+            if retry_long_multiplier_value < 0:
+                _print_notice("Queue retry long multiplier must be >= 0. Keeping previous value.", level="warning")
+            else:
+                growth_queue_retry_long_cooldown_multiplier = retry_long_multiplier_value
+
+            prune_followed_days_value = int(
+                typer.prompt(
+                    "Queue prune followed-after days (0 keeps none)",
+                    default=growth_queue_prune_followed_after_days,
+                    type=int,
+                )
+            )
+            if prune_followed_days_value < 0:
+                _print_notice("Queue prune followed-after days must be >= 0. Keeping previous value.", level="warning")
+            else:
+                growth_queue_prune_followed_after_days = prune_followed_days_value
+
+            prune_rejected_days_value = int(
+                typer.prompt(
+                    "Queue prune rejected-after days (0 keeps none)",
+                    default=growth_queue_prune_rejected_after_days,
+                    type=int,
+                )
+            )
+            if prune_rejected_days_value < 0:
+                _print_notice("Queue prune rejected-after days must be >= 0. Keeping previous value.", level="warning")
+            else:
+                growth_queue_prune_rejected_after_days = prune_rejected_days_value
+
+            prune_stale_days_value = int(
+                typer.prompt(
+                    "Queue prune stale queued/deferred-after days (0 keeps none)",
+                    default=growth_queue_prune_stale_after_days,
+                    type=int,
+                )
+            )
+            if prune_stale_days_value < 0:
+                _print_notice("Queue prune stale days must be >= 0. Keeping previous value.", level="warning")
+            else:
+                growth_queue_prune_stale_after_days = prune_stale_days_value
 
             graph_sync_auto_enabled = typer.confirm(
                 "Enable graph sync auto-run for growth, unfollow, and reconcile flows?",
@@ -2071,7 +3129,97 @@ def _run_start_menu(
             ).strip()
             newsletter_username = "" if username_input == "-" else username_input
 
-            _print_notice("Defaults updated.", level="success")
+            if live_session_min_follows > live_session_target_follows:
+                live_session_min_follows = live_session_target_follows
+            max_verify_gap_seconds = max(min_verify_gap_seconds, max_verify_gap_seconds)
+            pass_cooldown_max_seconds = max(pass_cooldown_min_seconds, pass_cooldown_max_seconds)
+            growth_queue_buffer_target_max = max(growth_queue_buffer_target_min, growth_queue_buffer_target_max)
+            growth_queue_fetch_limit_max = max(growth_queue_fetch_limit_min, growth_queue_fetch_limit_max)
+            growth_queue_due_deferred_reserve_ratio = max(0.0, min(0.9, growth_queue_due_deferred_reserve_ratio))
+            growth_queue_retry_medium_floor_seconds = max(
+                growth_queue_retry_short_floor_seconds,
+                growth_queue_retry_medium_floor_seconds,
+            )
+            growth_queue_retry_long_floor_seconds = max(
+                growth_queue_retry_medium_floor_seconds,
+                growth_queue_retry_long_floor_seconds,
+            )
+            growth_queue_prune_followed_after_days = max(0, growth_queue_prune_followed_after_days)
+            growth_queue_prune_rejected_after_days = max(0, growth_queue_prune_rejected_after_days)
+            growth_queue_prune_stale_after_days = max(0, growth_queue_prune_stale_after_days)
+
+            updates = {
+                "DISCOVERY_SEED_USERS": ",".join(seed_user_refs or []),
+                "DEFAULT_GROWTH_POLICY": growth_policy.value,
+                "DEFAULT_GROWTH_SOURCES": ",".join(source.value for source in growth_sources),
+                "TARGET_USER_FOLLOWERS_SCAN_LIMIT": str(target_user_followers_scan_limit),
+                "FOLLOW_CANDIDATE_LIMIT": str(follow_candidate_limit),
+                "FOLLOW_COOLDOWN_HOURS": str(follow_cooldown_hours),
+                "CANDIDATE_MIN_FOLLOWERS": str(candidate_min_followers),
+                "CANDIDATE_MAX_FOLLOWERS": str(candidate_max_followers),
+                "CANDIDATE_MIN_FOLLOWING": str(candidate_min_following),
+                "CANDIDATE_MAX_FOLLOWING": str(candidate_max_following),
+                "MAX_FOLLOWING_FOLLOWER_RATIO": str(max_following_follower_ratio),
+                "REQUIRE_CANDIDATE_BIO": "true" if require_candidate_bio else "false",
+                "REQUIRE_CANDIDATE_LATEST_POST": "true" if require_candidate_latest_post else "false",
+                "CANDIDATE_RECENT_ACTIVITY_DAYS": str(candidate_recent_activity_days),
+                "DISCOVERY_FOLLOWERS_DEPTH": str(discovery_followers_depth),
+                "DISCOVERY_SEED_FOLLOWERS_LIMIT": str(discovery_seed_followers_limit),
+                "DISCOVERY_SECOND_HOP_SEED_LIMIT": str(discovery_second_hop_seed_limit),
+                "ENABLE_PRE_FOLLOW_CLAP": "true" if enable_pre_follow_clap else "false",
+                "ENABLE_PRE_FOLLOW_COMMENT": "true" if enable_pre_follow_comment else "false",
+                "PRE_FOLLOW_COMMENT_PROBABILITY": str(pre_follow_comment_probability),
+                "PRE_FOLLOW_COMMENT_TEMPLATES": pre_follow_comment_templates_raw,
+                "LIVE_SESSION_DURATION_MINUTES": str(live_session_minutes),
+                "LIVE_SESSION_TARGET_FOLLOW_ATTEMPTS": str(live_session_target_follows),
+                "LIVE_SESSION_MIN_FOLLOW_ATTEMPTS": str(live_session_min_follows),
+                "LIVE_SESSION_MAX_PASSES": str(live_session_max_passes),
+                "MAX_FOLLOW_ACTIONS_PER_RUN": str(max_follow_actions_per_run_value),
+                "MAX_SUBSCRIBE_ACTIONS_PER_DAY": str(max_subscribe_actions_per_day_value),
+                "MAX_COMMENT_ACTIONS_PER_DAY": str(max_comment_actions_per_day_value),
+                "MAX_MUTATIONS_PER_10_MINUTES": str(max_mutations_per_10_minutes),
+                "MIN_VERIFY_GAP_SECONDS": str(min_verify_gap_seconds),
+                "MAX_VERIFY_GAP_SECONDS": str(max_verify_gap_seconds),
+                "PASS_COOLDOWN_MIN_SECONDS": str(pass_cooldown_min_seconds),
+                "PASS_COOLDOWN_MAX_SECONDS": str(pass_cooldown_max_seconds),
+                "PACING_SOFT_DEGRADE_COOLDOWN_SECONDS": str(pacing_soft_degrade_cooldown_seconds),
+                "ENABLE_PACING_AUTO_CLAMP": "true" if enable_pacing_auto_clamp else "false",
+                "GROWTH_QUEUE_BUFFER_TARGET_MIN": str(growth_queue_buffer_target_min),
+                "GROWTH_QUEUE_BUFFER_TARGET_MAX": str(growth_queue_buffer_target_max),
+                "GROWTH_QUEUE_BUFFER_TARGET_MULTIPLIER": str(growth_queue_buffer_target_multiplier),
+                "GROWTH_QUEUE_FETCH_LIMIT_MIN": str(growth_queue_fetch_limit_min),
+                "GROWTH_QUEUE_FETCH_LIMIT_MAX": str(growth_queue_fetch_limit_max),
+                "GROWTH_QUEUE_FETCH_LIMIT_MULTIPLIER": str(growth_queue_fetch_limit_multiplier),
+                "GROWTH_QUEUE_DUE_DEFERRED_RESERVE_RATIO": str(growth_queue_due_deferred_reserve_ratio),
+                "GROWTH_QUEUE_RETRY_STARTED_FLOOR_SECONDS": str(growth_queue_retry_started_floor_seconds),
+                "GROWTH_QUEUE_RETRY_STARTED_COOLDOWN_MULTIPLIER": str(
+                    growth_queue_retry_started_cooldown_multiplier
+                ),
+                "GROWTH_QUEUE_RETRY_SHORT_FLOOR_SECONDS": str(growth_queue_retry_short_floor_seconds),
+                "GROWTH_QUEUE_RETRY_SHORT_COOLDOWN_MULTIPLIER": str(growth_queue_retry_short_cooldown_multiplier),
+                "GROWTH_QUEUE_RETRY_MEDIUM_FLOOR_SECONDS": str(growth_queue_retry_medium_floor_seconds),
+                "GROWTH_QUEUE_RETRY_MEDIUM_COOLDOWN_MULTIPLIER": str(growth_queue_retry_medium_cooldown_multiplier),
+                "GROWTH_QUEUE_RETRY_LONG_FLOOR_SECONDS": str(growth_queue_retry_long_floor_seconds),
+                "GROWTH_QUEUE_RETRY_LONG_COOLDOWN_MULTIPLIER": str(growth_queue_retry_long_cooldown_multiplier),
+                "GROWTH_QUEUE_PRUNE_FOLLOWED_AFTER_DAYS": str(growth_queue_prune_followed_after_days),
+                "GROWTH_QUEUE_PRUNE_REJECTED_AFTER_DAYS": str(growth_queue_prune_rejected_after_days),
+                "GROWTH_QUEUE_PRUNE_STALE_AFTER_DAYS": str(growth_queue_prune_stale_after_days),
+                "GRAPH_SYNC_AUTO_ENABLED": "true" if graph_sync_auto_enabled else "false",
+                "GRAPH_SYNC_FRESHNESS_WINDOW_MINUTES": str(graph_sync_freshness_window_minutes),
+                "GRAPH_SYNC_FULL_PAGINATION": "true" if graph_sync_full_pagination else "false",
+                "GRAPH_SYNC_ENABLE_GRAPHQL_FOLLOWING": "true" if graph_sync_enable_graphql_following else "false",
+                "GRAPH_SYNC_ENABLE_SCRAPE_FALLBACK": "true" if graph_sync_enable_scrape_fallback else "false",
+                "GRAPH_SYNC_SCRAPE_PAGE_TIMEOUT_SECONDS": str(graph_sync_scrape_page_timeout_seconds),
+                "CLEANUP_UNFOLLOW_LIMIT": str(cleanup_unfollow_limit),
+                "CLEANUP_UNFOLLOW_WHITELIST_MIN_FOLLOWERS": str(cleanup_whitelist_min_followers),
+                "RECONCILE_SCAN_LIMIT": str(reconcile_limit),
+                "RECONCILE_PAGE_SIZE": str(reconcile_page_size),
+                "CONTRACT_REGISTRY_LIVE_NEWSLETTER_SLUG": newsletter_slug,
+                "CONTRACT_REGISTRY_LIVE_NEWSLETTER_USERNAME": newsletter_username,
+            }
+            _upsert_env_values(env_path=Path(".env"), updates=updates)
+            _refresh_defaults_from_settings(_bootstrap_settings())
+            _print_notice("Defaults updated and saved to .env.", level="success")
 
         def _prompt_target_user_refs_for_run() -> list[str] | None:
             nonlocal target_user_refs_for_growth
@@ -2206,32 +3354,24 @@ def _run_start_menu(
         }
 
         if choice == "1":
-            growth_source_choice = _select_from_submenu(title="Growth Source", options=_GROWTH_SOURCE_MENU_OPTIONS)
-            if growth_source_choice == "exit":
+            selected_growth_sources_choice = _prompt_growth_sources_from_menu(default=growth_sources)
+            if selected_growth_sources_choice == "exit":
                 _print_notice("Exiting start menu.", level="success")
                 return
-            if growth_source_choice is None:
+            if selected_growth_sources_choice is None:
                 continue
 
-            selected_growth_source_map: dict[str, GrowthSource] = {
-                "1": GrowthSource.TOPIC_RECOMMENDED,
-                "2": GrowthSource.SEED_FOLLOWERS,
-                "3": GrowthSource.TARGET_USER_FOLLOWERS,
-                "4": GrowthSource.PUBLICATION_ADJACENT,
-                "5": GrowthSource.RESPONDERS,
-            }
-            selected_growth_source = selected_growth_source_map[growth_source_choice]
-            selected_growth_sources = [selected_growth_source]
+            selected_growth_sources = list(selected_growth_sources_choice)
             selected_growth_policy = growth_policy
             selected_target_user_refs: list[str] | None = None
             selected_target_user_scan_limit: int | None = None
-            selected_seed_user_refs = seed_user_refs
+            selected_seed_user_refs = seed_user_refs if GrowthSource.SEED_FOLLOWERS in selected_growth_sources else None
 
-            if selected_growth_source == GrowthSource.SEED_FOLLOWERS:
+            if GrowthSource.SEED_FOLLOWERS in selected_growth_sources:
                 selected_seed_user_refs = _prompt_seed_user_refs_for_run()
                 if not selected_seed_user_refs:
                     continue
-            if selected_growth_source == GrowthSource.TARGET_USER_FOLLOWERS:
+            if GrowthSource.TARGET_USER_FOLLOWERS in selected_growth_sources:
                 selected_target_user_refs = _prompt_target_user_refs_for_run()
                 if not selected_target_user_refs:
                     continue
@@ -2275,7 +3415,7 @@ def _run_start_menu(
                 )
 
             growth_label = (
-                f"{_format_growth_source(selected_growth_source)} / "
+                f"{_format_growth_sources(selected_growth_sources)} / "
                 f"{_format_growth_policy(selected_growth_policy)}"
             )
             if growth_runtime_choice == "4":
@@ -2436,6 +3576,41 @@ def start_command(
             initial_growth_policy=resolved_growth_policy,
             initial_growth_sources=resolved_growth_sources,
             initial_target_user_followers_scan_limit=settings.target_user_followers_scan_limit,
+            initial_follow_candidate_limit=settings.follow_candidate_limit,
+            initial_follow_cooldown_hours=settings.follow_cooldown_hours,
+            initial_candidate_min_followers=settings.candidate_min_followers,
+            initial_candidate_max_followers=settings.candidate_max_followers,
+            initial_candidate_min_following=settings.candidate_min_following,
+            initial_candidate_max_following=settings.candidate_max_following,
+            initial_max_following_follower_ratio=settings.max_following_follower_ratio,
+            initial_require_candidate_bio=settings.require_candidate_bio,
+            initial_require_candidate_latest_post=settings.require_candidate_latest_post,
+            initial_candidate_recent_activity_days=settings.candidate_recent_activity_days,
+            initial_discovery_followers_depth=settings.discovery_followers_depth,
+            initial_discovery_seed_followers_limit=settings.discovery_seed_followers_limit,
+            initial_discovery_second_hop_seed_limit=settings.discovery_second_hop_seed_limit,
+            initial_growth_queue_buffer_target_min=settings.growth_queue_buffer_target_min,
+            initial_growth_queue_buffer_target_max=settings.growth_queue_buffer_target_max,
+            initial_growth_queue_buffer_target_multiplier=settings.growth_queue_buffer_target_multiplier,
+            initial_growth_queue_fetch_limit_min=settings.growth_queue_fetch_limit_min,
+            initial_growth_queue_fetch_limit_max=settings.growth_queue_fetch_limit_max,
+            initial_growth_queue_fetch_limit_multiplier=settings.growth_queue_fetch_limit_multiplier,
+            initial_growth_queue_due_deferred_reserve_ratio=settings.growth_queue_due_deferred_reserve_ratio,
+            initial_growth_queue_retry_started_floor_seconds=settings.growth_queue_retry_started_floor_seconds,
+            initial_growth_queue_retry_started_cooldown_multiplier=settings.growth_queue_retry_started_cooldown_multiplier,
+            initial_growth_queue_retry_short_floor_seconds=settings.growth_queue_retry_short_floor_seconds,
+            initial_growth_queue_retry_short_cooldown_multiplier=settings.growth_queue_retry_short_cooldown_multiplier,
+            initial_growth_queue_retry_medium_floor_seconds=settings.growth_queue_retry_medium_floor_seconds,
+            initial_growth_queue_retry_medium_cooldown_multiplier=settings.growth_queue_retry_medium_cooldown_multiplier,
+            initial_growth_queue_retry_long_floor_seconds=settings.growth_queue_retry_long_floor_seconds,
+            initial_growth_queue_retry_long_cooldown_multiplier=settings.growth_queue_retry_long_cooldown_multiplier,
+            initial_growth_queue_prune_followed_after_days=settings.growth_queue_prune_followed_after_days,
+            initial_growth_queue_prune_rejected_after_days=settings.growth_queue_prune_rejected_after_days,
+            initial_growth_queue_prune_stale_after_days=settings.growth_queue_prune_stale_after_days,
+            initial_enable_pre_follow_clap=settings.enable_pre_follow_clap,
+            initial_enable_pre_follow_comment=settings.enable_pre_follow_comment,
+            initial_pre_follow_comment_probability=settings.pre_follow_comment_probability,
+            initial_pre_follow_comment_templates_raw=settings.pre_follow_comment_templates_raw,
             initial_graph_sync_auto_enabled=settings.graph_sync_auto_enabled,
             initial_graph_sync_freshness_window_minutes=settings.graph_sync_freshness_window_minutes,
             initial_graph_sync_full_pagination=settings.graph_sync_full_pagination,
@@ -3457,7 +4632,7 @@ def status_command(
             level="error",
         )
         raise typer.Exit(code=1)
-    _render_status(artifact, artifact_path=source)
+    _render_status(artifact, artifact_path=source, settings=settings)
     if not emit_artifact:
         return
 
