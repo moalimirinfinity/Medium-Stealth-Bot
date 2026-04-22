@@ -5,6 +5,11 @@ from typing import Any
 import structlog
 from playwright.async_api import async_playwright
 
+from medium_stealth_bot.browser_runtime import (
+    build_playwright_persistent_launch_kwargs,
+    parse_cookie_header,
+)
+from medium_stealth_bot.identity import resolve_browser_identity
 from medium_stealth_bot.models import AuthSessionMaterial
 from medium_stealth_bot.settings import AppSettings
 
@@ -20,21 +25,6 @@ def _serialize_cookie_map(cookie_map: dict[str, str]) -> str:
 def _quote_env(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
-
-
-def _parse_cookie_header(cookie_header: str) -> dict[str, str]:
-    cookie_map: dict[str, str] = {}
-    for pair in cookie_header.split(";"):
-        item = pair.strip()
-        if not item or "=" not in item:
-            continue
-        key, value = item.split("=", 1)
-        normalized_key = key.strip()
-        normalized_value = value.strip()
-        if not normalized_key or not normalized_value:
-            continue
-        cookie_map[normalized_key] = normalized_value
-    return cookie_map
 
 
 def extract_session_material(cookies: list[dict[str, Any]]) -> AuthSessionMaterial:
@@ -66,7 +56,7 @@ def import_session_material_from_cookie_header(
     medium_csrf: str | None = None,
     medium_user_ref: str | None = None,
 ) -> AuthSessionMaterial:
-    cookie_map = _parse_cookie_header(cookie_header)
+    cookie_map = parse_cookie_header(cookie_header)
     if "sid" not in cookie_map:
         raise RuntimeError(
             "sid cookie not found in provided Cookie header. "
@@ -84,14 +74,14 @@ def import_session_material_from_cookie_header(
 
 
 def _auth_launch_kwargs(settings: AppSettings, profile_dir: Path) -> dict[str, Any]:
-    kwargs: dict[str, Any] = {
-        "user_data_dir": str(profile_dir),
-        "headless": False,
-        "viewport": {"width": 1366, "height": 900},
-    }
-    if settings.playwright_auth_browser_channel != "chromium":
-        kwargs["channel"] = settings.playwright_auth_browser_channel
-    return kwargs
+    identity = resolve_browser_identity(settings)
+    return build_playwright_persistent_launch_kwargs(
+        profile_dir=profile_dir,
+        headless=False,
+        viewport={"width": 1366, "height": 900},
+        user_agent=identity.user_agent,
+        channel=identity.playwright_channel,
+    )
 
 
 async def interactive_auth(settings: AppSettings, login_url: str = "https://medium.com/m/signin") -> AuthSessionMaterial:
