@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from medium_stealth_bot import operations
@@ -11,16 +12,20 @@ FALLBACK_NEWSLETTER_SLUG = "example-newsletter"
 FALLBACK_NEWSLETTER_V3_ID = "example-newsletter-v3-id"
 FALLBACK_TARGET_USER_ID = "example-target-user-id"
 FALLBACK_POST_ID = "example-post-id"
+FALLBACK_RESPONSE_ID = "example-response-id"
+FALLBACK_IMPLEMENTATION_REGISTRY_PATH = "captures/final/implementation_ops_2026-02-24.json"
 
 
 def sample_operation_builders() -> dict[str, str]:
     samples = {
         "UseBaseCacheControlQuery": operations.use_base_cache_control(),
         "TopicLatestStorieQuery": operations.topic_latest_stories("programming"),
+        "TopicCuratedListQuery": operations.topic_curated_list("programming"),
         "TopicWhoToFollowPubishersQuery": operations.topic_who_to_follow_publishers(tag_slug="programming"),
         "WhoToFollowModuleQuery": operations.who_to_follow_module(),
         "UserFollowers": operations.user_followers(user_id=FALLBACK_USER_ID, limit=8),
         "UserViewerEdge": operations.user_viewer_edge(FALLBACK_USER_ID),
+        "PostResponsesQuery": operations.post_responses(post_id=FALLBACK_POST_ID, limit=5),
         "NewsletterV3ViewerEdge": operations.newsletter_v3_viewer_edge(FALLBACK_NEWSLETTER_SLUG),
         "UserLatestPostQuery": operations.user_latest_post(user_id=FALLBACK_USER_ID),
         "SubscribeNewsletterV3Mutation": operations.subscribe_newsletter_v3(FALLBACK_NEWSLETTER_V3_ID),
@@ -28,13 +33,27 @@ def sample_operation_builders() -> dict[str, str]:
         "UnfollowUserMutation": operations.unfollow_user(FALLBACK_TARGET_USER_ID),
         "ClapMutation": operations.clap_post(FALLBACK_POST_ID, FALLBACK_USER_ID, num_claps=1),
         "PublishPostThreadedResponse": operations.publish_threaded_response(FALLBACK_POST_ID, "hello"),
+        "DeleteResponseMutation": operations.delete_response(FALLBACK_RESPONSE_ID),
     }
     return {name: operation.query for name, operation in samples.items()}
 
 
+def _resolve_registry_path(project_root: Path) -> Path:
+    manifest_path = project_root / "captures" / "manifest.json"
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            candidate = manifest.get("canonicalImplementationOps")
+            if isinstance(candidate, str) and candidate.strip():
+                return project_root / candidate.strip()
+        except (OSError, json.JSONDecodeError):
+            pass
+    return project_root / FALLBACK_IMPLEMENTATION_REGISTRY_PATH
+
+
 def main() -> int:
     project_root = Path(__file__).resolve().parents[1]
-    registry_path = project_root / "captures" / "final" / "implementation_ops_2026-02-24.json"
+    registry_path = _resolve_registry_path(project_root)
     registry = load_operation_contract_registry(path=registry_path, strict=True)
     queries = sample_operation_builders()
 
