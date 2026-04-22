@@ -39,12 +39,15 @@ def main() -> int:
     manifest = _load_json(manifest_path)
     canonical_capture = manifest.get("canonicalCapture")
     canonical_ops = manifest.get("canonicalOps")
+    canonical_implementation = manifest.get("canonicalImplementationOps") or "captures/final/implementation_ops_2026-02-24.json"
     files = manifest.get("files")
 
     if not isinstance(canonical_capture, str):
         errors.append("invalid_manifest_field:canonicalCapture")
     if not isinstance(canonical_ops, str):
         errors.append("invalid_manifest_field:canonicalOps")
+    if not isinstance(canonical_implementation, str):
+        errors.append("invalid_manifest_field:canonicalImplementationOps")
     if not isinstance(files, list):
         errors.append("invalid_manifest_field:files")
         files = []
@@ -73,11 +76,13 @@ def main() -> int:
         if not abs_path.exists():
             errors.append(f"missing_canonical_file:{abs_path}")
 
-    implementation_path = "captures/final/implementation_ops_2026-02-24.json"
-    if implementation_path not in manifest_paths:
-        errors.append(f"manifest_files_missing_implementation_registry:{implementation_path}")
-    if not (repo_root / implementation_path).exists():
-        errors.append(f"missing_implementation_registry:{implementation_path}")
+    if isinstance(canonical_implementation, str):
+        if canonical_implementation not in manifest_paths:
+            errors.append(f"manifest_files_missing_implementation_registry:{canonical_implementation}")
+        if canonical_implementation not in canonical_marked:
+            errors.append(f"manifest_pointer_not_marked_canonical:{canonical_implementation}")
+        if not (repo_root / canonical_implementation).exists():
+            errors.append(f"missing_implementation_registry:{canonical_implementation}")
 
     today = datetime.now(timezone.utc)
     for rel in (canonical_capture, canonical_ops):
