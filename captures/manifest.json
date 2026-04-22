@@ -2,6 +2,7 @@
   "generatedAt": "2026-04-20T08:01:00Z",
   "canonicalCapture": "captures/final/live_capture_2026-02-24.json",
   "canonicalOps": "captures/final/live_ops_2026-02-24.json",
+  "canonicalImplementationOps": "captures/final/implementation_ops_2026-02-24.json",
   "files": [
     {
       "path": "captures/final/implementation_ops_2026-02-24.json",
