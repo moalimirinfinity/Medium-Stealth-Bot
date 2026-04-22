@@ -5,7 +5,7 @@ Release flow is tag-driven and separate from normal quality checks.
 ## Prerequisites
 
 1. Worktree is clean.
-2. Local tests and contract checks pass.
+2. Local quality checks and contract checks pass.
 3. Target version follows semantic versioning (`MAJOR.MINOR.PATCH`).
 
 ## Local One-Command Release
@@ -28,7 +28,6 @@ The script performs:
    - capture integrity
    - capture sanitization check
    - response contract path check
-   - tests
    - contract registry parity
    - production profile template baseline validation
 3. version bump in:
