@@ -222,14 +222,22 @@ class DailyRunner:
             max_follow_attempts_for_cycle = 0
 
         probe: ProbeSnapshot | None = None
-        candidates: list[CandidateUser] = []
+        discovery_candidates: list[CandidateUser] = []
+        discovery_source_candidate_counts: dict[str, int] = {}
         source_candidate_counts: dict[str, int] = {}
         discovery_buffered: list[CandidateUser] = []
+        queue_pruned_counts = {"followed": 0, "rejected": 0, "stale": 0, "total": 0}
         discovery_target = self._discovery_buffer_target(
             growth_sources=resolved_growth_sources,
             target_user_scan_limit=resolved_target_user_scan_limit,
             target_user_refs=resolved_target_user_refs,
         )
+        if not dry_run:
+            queue_pruned_counts = self.repository.prune_growth_candidate_queue(
+                followed_after_days=self.settings.growth_queue_prune_followed_after_days,
+                rejected_after_days=self.settings.growth_queue_prune_rejected_after_days,
+                stale_after_days=self.settings.growth_queue_prune_stale_after_days,
+            )
         queue_ready_before = 0 if dry_run else self.repository.growth_queue_ready_count()
         queue_ready_after = queue_ready_before
         discovery_enqueued = 0
@@ -238,7 +246,7 @@ class DailyRunner:
         if dry_run or queue_ready_before < discovery_target:
             probe = await self.probe(tag_slug=tag_slug) if self._growth_sources_need_probe(resolved_growth_sources) else None
             seed_refs = (seed_user_refs or []) + self.settings.discovery_seed_users
-            candidates = await self._build_candidates(
+            discovery_candidates = await self._build_candidates(
                 tag_slug=tag_slug,
                 probe=probe,
                 seed_user_refs=seed_refs,
@@ -246,10 +254,10 @@ class DailyRunner:
                 target_user_refs=resolved_target_user_refs,
                 target_user_scan_limit=resolved_target_user_scan_limit,
             )
-            candidates = candidates[:discovery_target]
-            source_candidate_counts = self._source_counts(candidates)
+            discovery_candidates = discovery_candidates[:discovery_target]
+            discovery_source_candidate_counts = self._source_counts(discovery_candidates)
             discovery_buffered = self._screen_discovery_candidates(
-                candidates,
+                discovery_candidates,
                 decisions=decisions,
             )
             discovery_enqueued = len(discovery_buffered)
@@ -264,11 +272,19 @@ class DailyRunner:
                 queue_ready_after = len(discovery_buffered)
 
         execution_pool_limit = self._execution_queue_fetch_limit(max_follow_attempts_for_cycle)
-        execution_pool = (
-            discovery_buffered[:execution_pool_limit]
-            if dry_run
-            else self.repository.queued_growth_candidates(limit=execution_pool_limit)
-        )
+        if execution_pool_limit <= 0:
+            execution_pool = []
+        elif dry_run:
+            execution_pool = discovery_buffered[:execution_pool_limit]
+        else:
+            execution_pool = self.repository.queued_growth_candidates(
+                limit=execution_pool_limit,
+                due_deferred_reserve_ratio=self.settings.growth_queue_due_deferred_reserve_ratio,
+            )
+        source_candidate_counts = self._source_counts(execution_pool)
+        discovered_candidates = len(discovery_candidates)
+        screened_candidates = len(execution_pool)
+        considered_candidates = screened_candidates
         eligible = await self._evaluate_candidates(
             execution_pool,
             decisions=decisions,
@@ -295,6 +311,8 @@ class DailyRunner:
                 growth_policy=resolved_growth_policy,
             )
         )
+        executed_candidates = follow_attempted
+        followed_candidates = follow_verified
         action_counts[ACTION_SUBSCRIBE] += follow_attempted
         action_counts[ACTION_CLAP] += clap_attempted
         action_counts[ACTION_COMMENT] += comment_attempted
@@ -333,10 +351,57 @@ class DailyRunner:
         kpis["selected_growth_policy_follow_verified"] = follow_verified
         kpis["growth_queue_ready_before_discovery"] = queue_ready_before
         kpis["growth_queue_ready_after_discovery"] = queue_ready_after
+        kpis["growth_queue_due_deferred_reserve_ratio"] = round(
+            self.settings.growth_queue_due_deferred_reserve_ratio,
+            3,
+        )
         kpis["growth_queue_discovery_target"] = discovery_target
         kpis["growth_queue_discovery_enqueued"] = discovery_enqueued
-        kpis["growth_queue_execution_pool"] = len(execution_pool)
+        kpis["growth_queue_discovery_candidates"] = discovered_candidates
+        kpis["growth_queue_execution_pool"] = screened_candidates
+        kpis["growth_queue_considered_candidates"] = considered_candidates
+        kpis["growth_queue_screened_candidates"] = screened_candidates
+        kpis["growth_queue_executed_candidates"] = executed_candidates
+        kpis["growth_queue_followed_candidates"] = followed_candidates
         kpis["growth_queue_replenished"] = 1 if discovery_replenished else 0
+        kpis["growth_queue_pruned_followed"] = queue_pruned_counts["followed"]
+        kpis["growth_queue_pruned_rejected"] = queue_pruned_counts["rejected"]
+        kpis["growth_queue_pruned_stale"] = queue_pruned_counts["stale"]
+        kpis["growth_queue_pruned_total"] = queue_pruned_counts["total"]
+        kpis["growth_funnel_discovered"] = discovered_candidates
+        kpis["growth_funnel_screened"] = screened_candidates
+        kpis["growth_funnel_eligible"] = len(eligible)
+        kpis["growth_funnel_executed"] = executed_candidates
+        kpis["growth_funnel_followed"] = followed_candidates
+        kpis["growth_funnel_discovered_to_screened_rate"] = round(
+            (screened_candidates / discovered_candidates) if discovered_candidates > 0 else 0.0,
+            4,
+        )
+        kpis["growth_funnel_screened_to_eligible_rate"] = round(
+            (len(eligible) / screened_candidates) if screened_candidates > 0 else 0.0,
+            4,
+        )
+        kpis["growth_funnel_screened_to_executed_rate"] = round(
+            (executed_candidates / screened_candidates) if screened_candidates > 0 else 0.0,
+            4,
+        )
+        kpis["growth_funnel_executed_to_followed_rate"] = round(
+            (followed_candidates / executed_candidates) if executed_candidates > 0 else 0.0,
+            4,
+        )
+        kpis["growth_funnel_screened_to_followed_rate"] = round(
+            (followed_candidates / screened_candidates) if screened_candidates > 0 else 0.0,
+            4,
+        )
+        kpis["growth_funnel_discovered_to_followed_rate"] = round(
+            (followed_candidates / discovered_candidates) if discovered_candidates > 0 else 0.0,
+            4,
+        )
+        for source, count in sorted(discovery_source_candidate_counts.items()):
+            kpis[f"growth_discovery_source_candidates__{source}"] = count
+        for source, count in sorted(source_candidate_counts.items()):
+            kpis[f"growth_execution_source_candidates__{source}"] = count
+            kpis[f"growth_screened_source_candidates__{source}"] = count
         kpis.update(self.timing.metrics_snapshot())
         kpis["pacing_mutations_enabled"] = 1 if mutations_enabled else 0
         client_metrics = self.client.metrics_snapshot()
@@ -344,10 +409,15 @@ class DailyRunner:
         self.log.info(
             "daily_cycle_complete",
             dry_run=dry_run,
-            considered_candidates=len(candidates),
+            discovered_candidates=discovered_candidates,
+            screened_candidates=screened_candidates,
+            executed_candidates=executed_candidates,
+            followed_candidates=followed_candidates,
+            considered_candidates=considered_candidates,
             eligible_candidates=len(eligible),
             queue_ready_before=queue_ready_before,
             queue_ready_after=queue_ready_after,
+            queue_pruned_counts=queue_pruned_counts,
             discovery_enqueued=discovery_enqueued,
             execution_pool=len(execution_pool),
             follow_attempted=follow_attempted,
@@ -363,7 +433,9 @@ class DailyRunner:
             action_counts=action_counts,
             action_limits=action_limits,
             action_remaining=action_remaining,
+            discovery_source_candidate_counts=discovery_source_candidate_counts,
             source_candidate_counts=source_candidate_counts,
+            source_screened_candidate_counts=source_candidate_counts,
             source_follow_verified_counts=source_follow_verified_counts,
             follow_limit_for_cycle=follow_limit_for_cycle,
             growth_policy=resolved_growth_policy.value,
@@ -394,7 +466,11 @@ class DailyRunner:
             action_limits_per_day=action_limits,
             action_remaining_per_day=action_remaining,
             dry_run=dry_run,
-            considered_candidates=len(candidates),
+            discovered_candidates=discovered_candidates,
+            screened_candidates=screened_candidates,
+            executed_candidates=executed_candidates,
+            followed_candidates=followed_candidates,
+            considered_candidates=considered_candidates,
             eligible_candidates=len(eligible),
             follow_actions_attempted=follow_attempted,
             follow_actions_verified=follow_verified,
@@ -467,6 +543,10 @@ class DailyRunner:
         stop_reason: str | None = None
         last_outcome: DailyRunOutcome | None = None
 
+        total_discovered = 0
+        total_screened = 0
+        total_executed = 0
+        total_followed = 0
         total_considered = 0
         total_eligible = 0
         total_follow_attempted = 0
@@ -550,6 +630,10 @@ class DailyRunner:
                 )
                 last_outcome = outcome
 
+                total_discovered += outcome.discovered_candidates
+                total_screened += outcome.screened_candidates
+                total_executed += outcome.executed_candidates
+                total_followed += outcome.followed_candidates
                 total_considered += outcome.considered_candidates
                 total_eligible += outcome.eligible_candidates
                 total_follow_attempted += outcome.follow_actions_attempted
@@ -663,6 +747,11 @@ class DailyRunner:
             ) = self.repository.follow_cycle_conversion_breakdowns()
             kpis.update(
                 {
+                    "growth_funnel_discovered": 0,
+                    "growth_funnel_screened": 0,
+                    "growth_funnel_eligible": 0,
+                    "growth_funnel_executed": 0,
+                    "growth_funnel_followed": 0,
                     "session_passes": pass_count,
                     "session_elapsed_seconds": elapsed_total,
                     "session_target_follow_attempts": resolved_target_follows,
@@ -721,6 +810,35 @@ class DailyRunner:
         ) = self.repository.follow_cycle_conversion_breakdowns()
         kpis.update(
             {
+                "growth_funnel_discovered": total_discovered,
+                "growth_funnel_screened": total_screened,
+                "growth_funnel_eligible": total_eligible,
+                "growth_funnel_executed": total_executed,
+                "growth_funnel_followed": total_followed,
+                "growth_funnel_discovered_to_screened_rate": round(
+                    (total_screened / total_discovered) if total_discovered > 0 else 0.0,
+                    4,
+                ),
+                "growth_funnel_screened_to_eligible_rate": round(
+                    (total_eligible / total_screened) if total_screened > 0 else 0.0,
+                    4,
+                ),
+                "growth_funnel_screened_to_executed_rate": round(
+                    (total_executed / total_screened) if total_screened > 0 else 0.0,
+                    4,
+                ),
+                "growth_funnel_executed_to_followed_rate": round(
+                    (total_followed / total_executed) if total_executed > 0 else 0.0,
+                    4,
+                ),
+                "growth_funnel_screened_to_followed_rate": round(
+                    (total_followed / total_screened) if total_screened > 0 else 0.0,
+                    4,
+                ),
+                "growth_funnel_discovered_to_followed_rate": round(
+                    (total_followed / total_discovered) if total_discovered > 0 else 0.0,
+                    4,
+                ),
                 "session_passes": pass_count,
                 "session_elapsed_seconds": elapsed_total,
                 "session_target_follow_attempts": resolved_target_follows,
@@ -749,6 +867,10 @@ class DailyRunner:
             action_limits_per_day=last_outcome.action_limits_per_day,
             action_remaining_per_day=last_outcome.action_remaining_per_day,
             dry_run=False,
+            discovered_candidates=total_discovered,
+            screened_candidates=total_screened,
+            executed_candidates=total_executed,
+            followed_candidates=total_followed,
             considered_candidates=total_considered,
             eligible_candidates=total_eligible,
             follow_actions_attempted=total_follow_attempted,
@@ -783,6 +905,10 @@ class DailyRunner:
             passes=pass_count,
             elapsed_seconds=elapsed_total,
             stop_reason=stop_reason,
+            discovered_candidates=total_discovered,
+            screened_candidates=total_screened,
+            executed_candidates=total_executed,
+            followed_candidates=total_followed,
             follow_attempted=total_follow_attempted,
             follow_verified=total_follow_verified,
             comment_attempted=total_comment_attempted,
@@ -2348,13 +2474,18 @@ class DailyRunner:
             target_user_scan_limit=target_user_scan_limit,
             target_user_refs=target_user_refs,
         )
-        return max(base_limit, min(250, max(60, self.settings.follow_candidate_limit * 4)))
+        floor = max(1, self.settings.growth_queue_buffer_target_min)
+        ceiling = max(floor, self.settings.growth_queue_buffer_target_max)
+        scaled = self.settings.follow_candidate_limit * max(1, self.settings.growth_queue_buffer_target_multiplier)
+        return max(base_limit, min(ceiling, max(floor, scaled)))
 
-    @staticmethod
-    def _execution_queue_fetch_limit(max_follow_attempts_for_cycle: int) -> int:
+    def _execution_queue_fetch_limit(self, max_follow_attempts_for_cycle: int) -> int:
         if max_follow_attempts_for_cycle <= 0:
             return 0
-        return min(200, max(25, max_follow_attempts_for_cycle * 5))
+        floor = max(1, self.settings.growth_queue_fetch_limit_min)
+        ceiling = max(floor, self.settings.growth_queue_fetch_limit_max)
+        scaled = max_follow_attempts_for_cycle * max(1, self.settings.growth_queue_fetch_limit_multiplier)
+        return min(ceiling, max(floor, scaled))
 
     def _growth_queue_deferred_retry_at(self, *, user_id: str, reason: str) -> str:
         if reason == "skip:cooldown_active":
@@ -2375,12 +2506,24 @@ class DailyRunner:
             self.settings.pass_cooldown_min_seconds,
             self.settings.pass_cooldown_max_seconds,
         )
-        short_retry = max(5 * 60, pass_cooldown_max * 6)
-        medium_retry = max(15 * 60, pass_cooldown_max * 12)
-        long_retry = max(30 * 60, pass_cooldown_max * 18)
+        short_retry = max(
+            self.settings.growth_queue_retry_short_floor_seconds,
+            pass_cooldown_max * self.settings.growth_queue_retry_short_cooldown_multiplier,
+        )
+        medium_retry = max(
+            self.settings.growth_queue_retry_medium_floor_seconds,
+            pass_cooldown_max * self.settings.growth_queue_retry_medium_cooldown_multiplier,
+        )
+        long_retry = max(
+            self.settings.growth_queue_retry_long_floor_seconds,
+            pass_cooldown_max * self.settings.growth_queue_retry_long_cooldown_multiplier,
+        )
 
         if reason == "follow_attempt:started":
-            return max(2 * 60, pass_cooldown_max * 3)
+            return max(
+                self.settings.growth_queue_retry_started_floor_seconds,
+                pass_cooldown_max * self.settings.growth_queue_retry_started_cooldown_multiplier,
+            )
         if reason == "skip:live_check_unavailable":
             return short_retry
         if reason == "follow_failed:mutation_error":
