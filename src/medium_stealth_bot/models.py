@@ -90,6 +90,10 @@ class DailyRunOutcome(BaseModel):
     action_limits_per_day: dict[str, int] = Field(default_factory=dict)
     action_remaining_per_day: dict[str, int] = Field(default_factory=dict)
     dry_run: bool = True
+    discovered_candidates: int = 0
+    screened_candidates: int = 0
+    executed_candidates: int = 0
+    followed_candidates: int = 0
     considered_candidates: int = 0
     eligible_candidates: int = 0
     follow_actions_attempted: int = 0
