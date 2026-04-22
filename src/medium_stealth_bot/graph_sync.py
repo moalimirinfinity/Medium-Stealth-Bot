@@ -11,7 +11,13 @@ import structlog
 from playwright.async_api import BrowserContext, Page, Response, async_playwright
 
 from medium_stealth_bot import operations
-from medium_stealth_bot.client import MediumAsyncClient, parse_cookie_header
+from medium_stealth_bot.browser_runtime import (
+    build_medium_context_cookies,
+    build_playwright_persistent_launch_kwargs,
+    parse_cookie_header,
+)
+from medium_stealth_bot.client import MediumAsyncClient
+from medium_stealth_bot.identity import resolve_browser_identity
 from medium_stealth_bot.contract_registry import load_operation_contract_registry
 from medium_stealth_bot.models import GraphQLError, GraphQLOperation, GraphSyncOutcome, GraphQLResult
 from medium_stealth_bot.repository import ActionRepository
@@ -467,16 +473,16 @@ class GraphSyncService:
         users_by_id: dict[str, dict[str, object]] = {}
         response_tasks: list[asyncio.Task[None]] = []
         timeout_ms = int(self.settings.graph_sync_scrape_page_timeout_seconds * 1000)
+        identity = resolve_browser_identity(self.settings)
 
         async with async_playwright() as playwright:
-            launch_kwargs: dict[str, object] = {
-                "user_data_dir": str(self.settings.playwright_profile_dir),
-                "headless": self.settings.playwright_headless,
-                "viewport": {"width": 1280, "height": 800},
-                "user_agent": self.settings.user_agent,
-            }
-            if self.settings.playwright_auth_browser_channel != "chromium":
-                launch_kwargs["channel"] = self.settings.playwright_auth_browser_channel
+            launch_kwargs = build_playwright_persistent_launch_kwargs(
+                profile_dir=self.settings.playwright_profile_dir,
+                headless=self.settings.playwright_headless,
+                viewport={"width": 1280, "height": 800},
+                user_agent=identity.user_agent,
+                channel=identity.playwright_channel,
+            )
             context: BrowserContext
             try:
                 context = await playwright.chromium.launch_persistent_context(**launch_kwargs)
@@ -486,18 +492,7 @@ class GraphSyncService:
             try:
                 cookie_map = parse_cookie_header(self.settings.medium_session or "")
                 if cookie_map:
-                    await context.add_cookies(
-                        [
-                            {
-                                "name": key,
-                                "value": value,
-                                "domain": ".medium.com",
-                                "path": "/",
-                                "secure": True,
-                            }
-                            for key, value in cookie_map.items()
-                        ]
-                    )
+                    await context.add_cookies(build_medium_context_cookies(cookie_map))
 
                 page: Page = context.pages[0] if context.pages else await context.new_page()
 
@@ -510,14 +505,17 @@ class GraphSyncService:
 
                 page.on("response", _handle_response)
                 await page.goto("https://medium.com/me/following", wait_until="domcontentloaded", timeout=timeout_ms)
-                await page.wait_for_timeout(1000)
+                await self._scrape_prime_page(page)
 
                 stable_rounds = 0
                 last_count = len(users_by_id)
                 max_rounds = 80 if self.settings.graph_sync_full_pagination else 12
-                for _ in range(max_rounds):
-                    await page.mouse.wheel(0, 18000)
-                    await page.wait_for_timeout(700)
+                for round_index in range(max_rounds):
+                    await self._scrape_scroll_step(
+                        page=page,
+                        round_index=round_index,
+                        stable_rounds=stable_rounds,
+                    )
                     count = len(users_by_id)
                     if count <= last_count:
                         stable_rounds += 1
@@ -533,6 +531,71 @@ class GraphSyncService:
                 await context.close()
 
         return list(users_by_id.values())
+
+    async def _scrape_prime_page(self, page: Page) -> None:
+        await page.wait_for_timeout(random.randint(600, 1300))
+        await self._maybe_move_mouse(page)
+
+    async def _scrape_scroll_step(
+        self,
+        *,
+        page: Page,
+        round_index: int,
+        stable_rounds: int,
+    ) -> None:
+        await self._maybe_move_mouse(page)
+        await page.mouse.wheel(0, self._sample_scroll_delta_px(stable_rounds=stable_rounds))
+        await page.wait_for_timeout(
+            self._sample_scroll_pause_ms(
+                stable_rounds=stable_rounds,
+                long_pause_bias=(round_index % 5 == 4),
+            )
+        )
+
+        # Small burst and reverse jitter keeps scrolling less mechanical.
+        if random.random() < 0.28:
+            await page.mouse.wheel(0, random.randint(500, 3200))
+            await page.wait_for_timeout(random.randint(120, 380))
+        if random.random() < 0.14:
+            await page.mouse.wheel(0, -random.randint(180, 950))
+            await page.wait_for_timeout(random.randint(180, 460))
+
+    async def _maybe_move_mouse(self, page: Page) -> None:
+        if random.random() > 0.45:
+            return
+        viewport = page.viewport_size or {"width": 1280, "height": 800}
+        width = max(320, int(viewport.get("width", 1280)))
+        height = max(320, int(viewport.get("height", 800)))
+        target_x = int(width * random.uniform(0.2, 0.8))
+        target_y = int(height * random.uniform(0.2, 0.85))
+        steps = random.randint(7, 20)
+        try:
+            await page.mouse.move(target_x, target_y, steps=steps)
+        except Exception:
+            return
+
+    @staticmethod
+    def _sample_scroll_delta_px(*, stable_rounds: int) -> int:
+        base = random.randint(2200, 6800)
+        if stable_rounds >= 1:
+            base += random.randint(600, 1800)
+        if stable_rounds >= 3:
+            base += random.randint(900, 2600)
+        if random.random() < 0.12:
+            base += random.randint(1400, 3600)
+        return max(700, min(14000, base))
+
+    @staticmethod
+    def _sample_scroll_pause_ms(*, stable_rounds: int, long_pause_bias: bool) -> int:
+        if stable_rounds >= 3:
+            pause = random.randint(850, 1650)
+        elif stable_rounds >= 1:
+            pause = random.randint(520, 1180)
+        else:
+            pause = random.randint(280, 860)
+        if long_pause_bias:
+            pause += random.randint(120, 360)
+        return min(2200, pause)
 
     async def _capture_users_from_graphql_response(
         self,
