@@ -1,7 +1,8 @@
 # Implementation Notes
 
 ## Canonical Capture
-Use `captures/final/live_capture_2026-02-24.json` as primary truth for implementation.
+Use `captures/manifest.json` canonical pointers as primary truth for implementation.
+Current canonical capture is `captures/final/live_capture_2026-02-24.json`.
 Use `captures/final/live_capture_2026-04-20.json` as targeted supplemental evidence for rollback mutations (`DeleteResponseMutation` and negative `ClapMutation`).
 Use `captures/final/implementation_ops_2026-02-24.json` as the focused operation subset for coding.
 The focused subset is runtime-aligned: capture-observed operations plus the runtime helper `UserLatestPostQuery`.
