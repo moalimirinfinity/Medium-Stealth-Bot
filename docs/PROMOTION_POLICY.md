@@ -42,7 +42,7 @@ Requirement:
 
 - active profile passes `bot profile-validate`.
 - action caps align with approved production limits.
-- kill-switch and rollback procedures are documented and tested.
+- kill-switch and rollback procedures are documented and rehearsed.
 
 Outcome:
 
