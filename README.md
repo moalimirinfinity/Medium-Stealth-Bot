@@ -229,6 +229,9 @@ Start from `.env.example` and tune:
   - `CLIENT_MODE`
   - `DAY_BOUNDARY_POLICY`
   - `LOG_FORMAT`
+  - `USER_AGENT`
+  - `CURL_IMPERSONATE`
+  - `HTTP_ACCEPT_LANGUAGE`
   - `PLAYWRIGHT_AUTH_BROWSER_CHANNEL`
 - budgets:
   - `MAX_ACTIONS_PER_DAY`
@@ -306,7 +309,6 @@ uv run python -m compileall -q src
 uv run python scripts/check_capture_integrity.py
 uv run python scripts/check_capture_sanitization.py
 uv run python scripts/check_response_contract_paths.py
-uv run --group dev pytest -q
 uv run bot contracts --tag programming --no-execute-reads
 uv run bot profile-validate --env-path .env.production.example
 ```
@@ -341,7 +343,6 @@ src/medium_stealth_bot/   core application
 scripts/                  checks, scheduler, release helpers
 captures/                 capture corpus + manifest + capture docs
 ops/scheduling/           cron/launchd templates
-tests/                    test suite
 ```
 
 ## References
