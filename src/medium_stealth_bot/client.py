@@ -1,11 +1,9 @@
-import inspect
-import json
 import time
 from typing import Any, Sequence
 
 import structlog
-from curl_cffi import requests as curl_requests
-from playwright.async_api import APIRequestContext, BrowserContext, Playwright, async_playwright
+from medium_stealth_bot.browser_runtime import parse_cookie_header
+from medium_stealth_bot.identity import resolve_browser_identity, resolve_csrf_token
 
 from medium_stealth_bot.contract_registry import (
     OperationContractRegistry,
@@ -13,17 +11,11 @@ from medium_stealth_bot.contract_registry import (
 )
 from medium_stealth_bot.models import GraphQLError, GraphQLOperation, GraphQLResult
 from medium_stealth_bot.settings import AppSettings
-
-
-def parse_cookie_header(cookie_header: str) -> dict[str, str]:
-    cookies: dict[str, str] = {}
-    for pair in cookie_header.split(";"):
-        item = pair.strip()
-        if not item or "=" not in item:
-            continue
-        key, value = item.split("=", 1)
-        cookies[key.strip()] = value.strip()
-    return cookies
+from medium_stealth_bot.transport import (
+    CurlCffiGraphQLTransport,
+    GraphQLTransport,
+    PlaywrightGraphQLTransport,
+)
 
 
 class MediumAsyncClient:
@@ -32,10 +24,7 @@ class MediumAsyncClient:
         self.log = structlog.get_logger(__name__)
         self._contract_registry = self._load_contract_registry()
         self._headers: dict[str, str] = {}
-        self._session: curl_requests.AsyncSession | None = None
-        self._playwright: Playwright | None = None
-        self._browser_context: BrowserContext | None = None
-        self._api_request: APIRequestContext | None = None
+        self._transport: GraphQLTransport | None = None
         self._request_count = 0
         self._request_latency_total_ms = 0.0
         self._result_failures = 0
@@ -49,7 +38,7 @@ class MediumAsyncClient:
         await self.close()
 
     async def open(self) -> None:
-        if self._session is not None or self._api_request is not None:
+        if self._transport is not None:
             return
 
         cookie_map = parse_cookie_header(self.settings.medium_session or "")
@@ -58,90 +47,59 @@ class MediumAsyncClient:
                 "MEDIUM_SESSION is set but missing `sid` cookie. "
                 "Refresh auth with `uv run bot auth`."
             )
-        headers = {
-            "Origin": self.settings.graphql_origin,
-            "Referer": self.settings.graphql_referer,
-            "User-Agent": self.settings.user_agent,
-            "Content-Type": "application/json",
-            "apollographql-client-name": self.settings.apollo_client_name,
-            "apollographql-client-version": self.settings.apollo_client_version,
-        }
-        csrf = self.settings.medium_csrf or cookie_map.get("xsrf") or cookie_map.get("XSRF-TOKEN")
-        if csrf:
-            headers["x-xsrf-token"] = csrf
+        identity = resolve_browser_identity(self.settings)
+        csrf = resolve_csrf_token(self.settings, cookie_map)
+        headers = identity.graphql_headers(csrf_token=csrf)
         self._headers = headers
 
+        transport: GraphQLTransport
         if self.settings.client_mode == "fast":
             if "sid" not in cookie_map:
                 raise RuntimeError(
                     "CLIENT_MODE=fast requires MEDIUM_SESSION with a valid `sid` cookie. "
                     "Run `uv run bot auth` to refresh session cookies."
                 )
-            self._session = curl_requests.AsyncSession(
-                impersonate="chrome142",
-                headers=headers,
-                cookies=cookie_map,
-            )
-            self.log.info(
-                "client_opened",
-                mode=self.settings.client_mode,
+            transport = CurlCffiGraphQLTransport(
                 endpoint=self.settings.graphql_endpoint,
+                impersonate=identity.curl_impersonate,
+                headers=headers,
+                cookie_map=cookie_map,
             )
-            return
+        else:
+            transport = PlaywrightGraphQLTransport(
+                profile_dir=self.settings.playwright_profile_dir,
+                headless=self.settings.playwright_headless,
+                user_agent=identity.user_agent,
+                channel=identity.playwright_channel,
+                endpoint=self.settings.graphql_endpoint,
+                headers=headers,
+                cookie_map=cookie_map,
+            )
 
         try:
-            self._playwright = await async_playwright().start()
-            self._browser_context = await self._playwright.chromium.launch_persistent_context(
-                user_data_dir=str(self.settings.playwright_profile_dir),
-                headless=self.settings.playwright_headless,
-                viewport={"width": 1280, "height": 800},
-                user_agent=self.settings.user_agent,
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(
-                "Failed to launch Playwright persistent profile. "
-                f"Profile path: {self.settings.playwright_profile_dir}. "
-                "If the profile is stale/corrupt, close running browsers and refresh via `uv run bot auth`."
-            ) from exc
-        if cookie_map:
-            cookies = [
-                {
-                    "name": name,
-                    "value": value,
-                    "domain": ".medium.com",
-                    "path": "/",
-                    "secure": True,
-                }
-                for name, value in cookie_map.items()
-            ]
-            await self._browser_context.add_cookies(cookies)
-        stored_cookies = await self._browser_context.cookies("https://medium.com")
-        has_sid = any(cookie.get("name") == "sid" for cookie in stored_cookies)
-        if not has_sid:
-            await self.close()
-            raise RuntimeError(
-                "No Medium `sid` cookie found in Playwright profile/session context. "
-                "Run `uv run bot auth` to refresh login state."
-            )
-        self._api_request = self._browser_context.request
+            await transport.open()
+        except Exception:
+            self._transport = None
+            raise
+        self._transport = transport
+
         self.log.info(
             "client_opened",
             mode=self.settings.client_mode,
             endpoint=self.settings.graphql_endpoint,
-            profile_dir=str(self.settings.playwright_profile_dir),
+            identity_user_agent=identity.user_agent,
+            identity_channel=identity.playwright_channel,
+            **(
+                {"profile_dir": str(self.settings.playwright_profile_dir)}
+                if self.settings.client_mode != "fast"
+                else {}
+            ),
         )
 
     async def close(self) -> None:
-        if self._session is not None:
-            await self._session.close()
-            self._session = None
-        if self._browser_context is not None:
-            await self._browser_context.close()
-            self._browser_context = None
-        if self._playwright is not None:
-            await self._playwright.stop()
-            self._playwright = None
-        self._api_request = None
+        if self._transport is not None:
+            await self._transport.close()
+            self._transport = None
         self.log.info("client_closed", mode=self.settings.client_mode)
 
     async def execute(self, operation: GraphQLOperation) -> GraphQLResult:
@@ -151,9 +109,9 @@ class MediumAsyncClient:
     async def execute_batch(self, operations: Sequence[GraphQLOperation]) -> list[GraphQLResult]:
         if not operations:
             return []
-        if self._session is None and self._api_request is None:
+        if self._transport is None:
             await self.open()
-        if self._session is None and self._api_request is None:
+        if self._transport is None:
             raise RuntimeError("HTTP session is not initialized")
 
         self._validate_outgoing_operations(operations)
@@ -204,51 +162,9 @@ class MediumAsyncClient:
         return results
 
     async def _post_graphql(self, payload: list[dict[str, Any]]) -> tuple[int, dict[str, str], Any]:
-        if self.settings.client_mode == "fast":
-            if self._session is None:
-                raise RuntimeError("Fast client session is not initialized")
-            response = await self._session.post(
-                self.settings.graphql_endpoint,
-                json=payload,
-                timeout=45,
-            )
-            headers = {str(k).lower(): str(v) for k, v in response.headers.items()}
-            try:
-                raw_json = response.json()
-            except Exception:
-                raw_text = ""
-                try:
-                    raw_text = str(response.text or "")
-                except Exception:
-                    raw_text = ""
-                raw_json = {"_raw_text": raw_text[:4000]} if raw_text else {}
-            return response.status_code, headers, raw_json
-
-        if self._api_request is None:
-            raise RuntimeError("Stealth API context is not initialized")
-        response = await self._api_request.post(
-            self.settings.graphql_endpoint,
-            data=json.dumps(payload),
-            headers=self._headers,
-            timeout=45_000,
-        )
-        headers_raw = getattr(response, "headers", {}) or {}
-        if callable(headers_raw):
-            maybe_headers = headers_raw()
-            headers_raw = await maybe_headers if inspect.isawaitable(maybe_headers) else maybe_headers
-        headers = {str(k).lower(): str(v) for k, v in dict(headers_raw).items()}
-        try:
-            maybe_json = response.json()
-            raw_json = await maybe_json if inspect.isawaitable(maybe_json) else maybe_json
-        except Exception:
-            raw_text = ""
-            try:
-                maybe_text = response.text()
-                raw_text = await maybe_text if inspect.isawaitable(maybe_text) else maybe_text
-            except Exception:
-                raw_text = ""
-            raw_json = {"_raw_text": raw_text[:4000]} if isinstance(raw_text, str) and raw_text else {}
-        return response.status, headers, raw_json
+        if self._transport is None:
+            raise RuntimeError("HTTP session is not initialized")
+        return await self._transport.post_graphql(payload)
 
     def _load_contract_registry(self) -> OperationContractRegistry:
         path = self.settings.implementation_ops_registry_path
