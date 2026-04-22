@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Literal
 
@@ -12,6 +13,21 @@ DEFAULT_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/142.0.0.0 Safari/537.36"
 )
+DEFAULT_IMPLEMENTATION_OPS_REGISTRY_PATH = Path("captures/final/implementation_ops_2026-02-24.json")
+
+
+def _default_implementation_ops_registry_path() -> Path:
+    manifest_path = Path("captures/manifest.json")
+    if not manifest_path.exists():
+        return DEFAULT_IMPLEMENTATION_OPS_REGISTRY_PATH
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return DEFAULT_IMPLEMENTATION_OPS_REGISTRY_PATH
+    candidate = payload.get("canonicalImplementationOps")
+    if not isinstance(candidate, str) or not candidate.strip():
+        return DEFAULT_IMPLEMENTATION_OPS_REGISTRY_PATH
+    return Path(candidate.strip())
 
 
 class AppSettings(BaseSettings):
@@ -48,7 +64,7 @@ class AppSettings(BaseSettings):
     graphql_origin: str = Field(default="https://medium.com", validation_alias="GRAPHQL_ORIGIN")
     graphql_referer: str = Field(default="https://medium.com/", validation_alias="GRAPHQL_REFERER")
     implementation_ops_registry_path: Path = Field(
-        default=Path("captures/final/implementation_ops_2026-02-24.json"),
+        default_factory=_default_implementation_ops_registry_path,
         validation_alias="IMPLEMENTATION_OPS_REGISTRY_PATH",
     )
     contract_registry_strict: bool = Field(default=True, validation_alias="CONTRACT_REGISTRY_STRICT")
@@ -73,6 +89,8 @@ class AppSettings(BaseSettings):
         validation_alias="APOLLOGRAPHQL_CLIENT_VERSION",
     )
     user_agent: str = Field(default=DEFAULT_USER_AGENT, validation_alias="USER_AGENT")
+    curl_impersonate: str = Field(default="chrome142", validation_alias="CURL_IMPERSONATE")
+    http_accept_language: str = Field(default="", validation_alias="HTTP_ACCEPT_LANGUAGE")
 
     max_actions_per_day: int = Field(
         default=50,
@@ -164,6 +182,114 @@ class AppSettings(BaseSettings):
         validation_alias="TARGET_USER_FOLLOWERS_SCAN_LIMIT",
     )
     follow_candidate_limit: int = Field(default=30, ge=1, le=500, validation_alias="FOLLOW_CANDIDATE_LIMIT")
+    growth_queue_buffer_target_min: int = Field(
+        default=60,
+        ge=1,
+        le=5000,
+        validation_alias="GROWTH_QUEUE_BUFFER_TARGET_MIN",
+    )
+    growth_queue_buffer_target_max: int = Field(
+        default=250,
+        ge=1,
+        le=10000,
+        validation_alias="GROWTH_QUEUE_BUFFER_TARGET_MAX",
+    )
+    growth_queue_buffer_target_multiplier: int = Field(
+        default=4,
+        ge=1,
+        le=50,
+        validation_alias="GROWTH_QUEUE_BUFFER_TARGET_MULTIPLIER",
+    )
+    growth_queue_fetch_limit_min: int = Field(
+        default=25,
+        ge=1,
+        le=5000,
+        validation_alias="GROWTH_QUEUE_FETCH_LIMIT_MIN",
+    )
+    growth_queue_fetch_limit_max: int = Field(
+        default=200,
+        ge=1,
+        le=10000,
+        validation_alias="GROWTH_QUEUE_FETCH_LIMIT_MAX",
+    )
+    growth_queue_fetch_limit_multiplier: int = Field(
+        default=5,
+        ge=1,
+        le=50,
+        validation_alias="GROWTH_QUEUE_FETCH_LIMIT_MULTIPLIER",
+    )
+    growth_queue_due_deferred_reserve_ratio: float = Field(
+        default=0.25,
+        ge=0.0,
+        le=0.9,
+        validation_alias="GROWTH_QUEUE_DUE_DEFERRED_RESERVE_RATIO",
+    )
+    growth_queue_retry_started_floor_seconds: int = Field(
+        default=120,
+        ge=0,
+        le=24 * 60 * 60,
+        validation_alias="GROWTH_QUEUE_RETRY_STARTED_FLOOR_SECONDS",
+    )
+    growth_queue_retry_started_cooldown_multiplier: int = Field(
+        default=3,
+        ge=0,
+        le=500,
+        validation_alias="GROWTH_QUEUE_RETRY_STARTED_COOLDOWN_MULTIPLIER",
+    )
+    growth_queue_retry_short_floor_seconds: int = Field(
+        default=5 * 60,
+        ge=0,
+        le=24 * 60 * 60,
+        validation_alias="GROWTH_QUEUE_RETRY_SHORT_FLOOR_SECONDS",
+    )
+    growth_queue_retry_short_cooldown_multiplier: int = Field(
+        default=6,
+        ge=0,
+        le=500,
+        validation_alias="GROWTH_QUEUE_RETRY_SHORT_COOLDOWN_MULTIPLIER",
+    )
+    growth_queue_retry_medium_floor_seconds: int = Field(
+        default=15 * 60,
+        ge=0,
+        le=24 * 60 * 60,
+        validation_alias="GROWTH_QUEUE_RETRY_MEDIUM_FLOOR_SECONDS",
+    )
+    growth_queue_retry_medium_cooldown_multiplier: int = Field(
+        default=12,
+        ge=0,
+        le=500,
+        validation_alias="GROWTH_QUEUE_RETRY_MEDIUM_COOLDOWN_MULTIPLIER",
+    )
+    growth_queue_retry_long_floor_seconds: int = Field(
+        default=30 * 60,
+        ge=0,
+        le=24 * 60 * 60,
+        validation_alias="GROWTH_QUEUE_RETRY_LONG_FLOOR_SECONDS",
+    )
+    growth_queue_retry_long_cooldown_multiplier: int = Field(
+        default=18,
+        ge=0,
+        le=500,
+        validation_alias="GROWTH_QUEUE_RETRY_LONG_COOLDOWN_MULTIPLIER",
+    )
+    growth_queue_prune_followed_after_days: int = Field(
+        default=30,
+        ge=0,
+        le=3650,
+        validation_alias="GROWTH_QUEUE_PRUNE_FOLLOWED_AFTER_DAYS",
+    )
+    growth_queue_prune_rejected_after_days: int = Field(
+        default=21,
+        ge=0,
+        le=3650,
+        validation_alias="GROWTH_QUEUE_PRUNE_REJECTED_AFTER_DAYS",
+    )
+    growth_queue_prune_stale_after_days: int = Field(
+        default=14,
+        ge=0,
+        le=3650,
+        validation_alias="GROWTH_QUEUE_PRUNE_STALE_AFTER_DAYS",
+    )
     follow_cooldown_hours: int = Field(default=72, ge=1, le=24 * 60, validation_alias="FOLLOW_COOLDOWN_HOURS")
     min_following_follower_ratio: float = Field(
         default=0.5,
@@ -385,6 +511,24 @@ class AppSettings(BaseSettings):
         return normalized
 
     @field_validator(
+        "graphql_origin",
+        "graphql_referer",
+        "apollo_client_name",
+        "apollo_client_version",
+        "user_agent",
+        "curl_impersonate",
+        "http_accept_language",
+    )
+    @classmethod
+    def normalize_identity_strings(cls, value: str, info: ValidationInfo) -> str:
+        normalized = value.strip()
+        if info.field_name == "http_accept_language":
+            return normalized
+        if not normalized:
+            raise ValueError(f"{info.field_name} must not be empty.")
+        return normalized
+
+    @field_validator(
         "bio_keywords_raw",
         "discovery_seed_users_raw",
         "default_growth_sources_raw",
@@ -413,6 +557,8 @@ class AppSettings(BaseSettings):
         "cleanup_unfollow_max_gap_seconds",
         "max_session_warmup_seconds",
         "pass_cooldown_max_seconds",
+        "growth_queue_buffer_target_max",
+        "growth_queue_fetch_limit_max",
     )
     @classmethod
     def validate_max_at_least_min(cls, value: int, info: ValidationInfo) -> int:
@@ -423,12 +569,28 @@ class AppSettings(BaseSettings):
             "cleanup_unfollow_max_gap_seconds": "cleanup_unfollow_min_gap_seconds",
             "max_session_warmup_seconds": "min_session_warmup_seconds",
             "pass_cooldown_max_seconds": "pass_cooldown_min_seconds",
+            "growth_queue_buffer_target_max": "growth_queue_buffer_target_min",
+            "growth_queue_fetch_limit_max": "growth_queue_fetch_limit_min",
         }
         min_field = min_field_map[info.field_name]
         min_value = info.data.get(min_field)
         if min_value is not None and value < min_value:
             raise ValueError(f"{info.field_name} must be greater than or equal to {min_field}.")
         return value
+
+    @model_validator(mode="after")
+    def validate_growth_queue_retry_floors(self) -> "AppSettings":
+        if self.growth_queue_retry_medium_floor_seconds < self.growth_queue_retry_short_floor_seconds:
+            raise ValueError(
+                "GROWTH_QUEUE_RETRY_MEDIUM_FLOOR_SECONDS must be greater than or equal to "
+                "GROWTH_QUEUE_RETRY_SHORT_FLOOR_SECONDS."
+            )
+        if self.growth_queue_retry_long_floor_seconds < self.growth_queue_retry_medium_floor_seconds:
+            raise ValueError(
+                "GROWTH_QUEUE_RETRY_LONG_FLOOR_SECONDS must be greater than or equal to "
+                "GROWTH_QUEUE_RETRY_MEDIUM_FLOOR_SECONDS."
+            )
+        return self
 
     @field_validator("retry_max_delay_seconds")
     @classmethod
