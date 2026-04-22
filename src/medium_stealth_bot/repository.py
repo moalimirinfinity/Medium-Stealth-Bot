@@ -35,6 +35,22 @@ class ActionRepository:
                 parsed.append(source)
         return parsed
 
+    def _candidate_from_growth_queue_row(self, row) -> CandidateUser:
+        return CandidateUser(
+            user_id=row["user_id"],
+            username=row["username"],
+            name=row["name"],
+            bio=row["bio"],
+            newsletter_v3_id=row["newsletter_v3_id"],
+            follower_count=row["follower_count"],
+            following_count=row["following_count"],
+            latest_post_id=row["latest_post_id"],
+            latest_post_title=row["latest_post_title"],
+            last_post_created_at=row["last_post_created_at"],
+            score=float(row["queued_score"] or 0.0),
+            sources=self._parse_candidate_sources(row["source_labels"]),
+        )
+
     @staticmethod
     def _utc_modifier_hours(hours: int) -> str:
         return f"-{hours} hours"
@@ -769,8 +785,22 @@ class ActionRepository:
             connection.commit()
         return len(queue_rows)
 
-    def queued_growth_candidates(self, *, limit: int) -> list[CandidateUser]:
-        query = """
+    def queued_growth_candidates(
+        self,
+        *,
+        limit: int,
+        due_deferred_reserve_ratio: float = 0.0,
+    ) -> list[CandidateUser]:
+        if limit <= 0:
+            return []
+        bounded_limit = limit
+        reserve_ratio = min(0.9, max(0.0, due_deferred_reserve_ratio))
+        reserved_due_limit = 0
+        if reserve_ratio > 0:
+            reserved_due_limit = max(1, int(round(bounded_limit * reserve_ratio)))
+            reserved_due_limit = min(bounded_limit, reserved_due_limit)
+
+        base_select = """
         SELECT
             user_id,
             username,
@@ -785,40 +815,129 @@ class ActionRepository:
             latest_post_title,
             last_post_created_at
         FROM growth_candidate_queue
+        """
+        queued_query = (
+            base_select
+            + """
         WHERE queue_state = 'queued'
-           OR (
-               queue_state = 'deferred'
-               AND (
-                   retry_after_at IS NULL
-                   OR datetime(retry_after_at) <= datetime('now', 'utc')
-               )
-           )
         ORDER BY
-            CASE WHEN queue_state = 'queued' THEN 0 ELSE 1 END,
             queued_score DESC,
             datetime(last_discovered_at) DESC,
             datetime(first_discovered_at) ASC
         LIMIT ?
         """
+        )
+        due_deferred_query = (
+            base_select
+            + """
+        WHERE queue_state = 'deferred'
+          AND (
+              retry_after_at IS NULL
+              OR datetime(retry_after_at) <= datetime('now', 'utc')
+          )
+        ORDER BY
+            datetime(COALESCE(retry_after_at, last_discovered_at)) ASC,
+            queued_score DESC,
+            datetime(last_discovered_at) DESC,
+            datetime(first_discovered_at) ASC
+        LIMIT ? OFFSET ?
+        """
+        )
+
         with self.database.connect() as connection:
-            rows = connection.execute(query, (max(1, limit),)).fetchall()
-            return [
-                CandidateUser(
-                    user_id=row["user_id"],
-                    username=row["username"],
-                    name=row["name"],
-                    bio=row["bio"],
-                    newsletter_v3_id=row["newsletter_v3_id"],
-                    follower_count=row["follower_count"],
-                    following_count=row["following_count"],
-                    latest_post_id=row["latest_post_id"],
-                    latest_post_title=row["latest_post_title"],
-                    last_post_created_at=row["last_post_created_at"],
-                    score=float(row["queued_score"] or 0.0),
-                    sources=self._parse_candidate_sources(row["source_labels"]),
+            due_rows = (
+                connection.execute(due_deferred_query, (reserved_due_limit, 0)).fetchall()
+                if reserved_due_limit > 0
+                else []
+            )
+            queued_limit = max(0, bounded_limit - len(due_rows))
+            queued_rows = (
+                connection.execute(queued_query, (queued_limit,)).fetchall()
+                if queued_limit > 0
+                else []
+            )
+            filled = len(due_rows) + len(queued_rows)
+            extra_due_rows = []
+            if filled < bounded_limit:
+                extra_due_rows = connection.execute(
+                    due_deferred_query,
+                    (bounded_limit - filled, len(due_rows)),
+                ).fetchall()
+
+            rows = [*due_rows, *queued_rows, *extra_due_rows]
+            return [self._candidate_from_growth_queue_row(row) for row in rows]
+
+    def prune_growth_candidate_queue(
+        self,
+        *,
+        followed_after_days: int,
+        rejected_after_days: int,
+        stale_after_days: int,
+    ) -> dict[str, int]:
+        counts = {"followed": 0, "rejected": 0, "stale": 0}
+        with self.database.connect() as connection:
+            if followed_after_days >= 0:
+                connection.execute(
+                    """
+                    DELETE FROM growth_candidate_queue
+                    WHERE queue_state = 'followed'
+                      AND datetime(
+                          COALESCE(
+                              last_followed_at,
+                              last_attempted_at,
+                              last_screened_at,
+                              last_discovered_at,
+                              first_discovered_at
+                          )
+                      ) <= datetime('now', 'utc', ?)
+                    """,
+                    (f"-{followed_after_days} days",),
                 )
-                for row in rows
-            ]
+                row = connection.execute("SELECT changes() AS count").fetchone()
+                counts["followed"] = int(row["count"]) if row is not None else 0
+
+            if rejected_after_days >= 0:
+                connection.execute(
+                    """
+                    DELETE FROM growth_candidate_queue
+                    WHERE queue_state = 'rejected'
+                      AND datetime(
+                          COALESCE(
+                              last_screened_at,
+                              last_attempted_at,
+                              last_discovered_at,
+                              first_discovered_at
+                          )
+                      ) <= datetime('now', 'utc', ?)
+                    """,
+                    (f"-{rejected_after_days} days",),
+                )
+                row = connection.execute("SELECT changes() AS count").fetchone()
+                counts["rejected"] = int(row["count"]) if row is not None else 0
+
+            if stale_after_days >= 0:
+                connection.execute(
+                    """
+                    DELETE FROM growth_candidate_queue
+                    WHERE queue_state IN ('queued', 'deferred')
+                      AND datetime(
+                          COALESCE(
+                              last_attempted_at,
+                              last_screened_at,
+                              last_discovered_at,
+                              first_discovered_at
+                          )
+                      ) <= datetime('now', 'utc', ?)
+                    """,
+                    (f"-{stale_after_days} days",),
+                )
+                row = connection.execute("SELECT changes() AS count").fetchone()
+                counts["stale"] = int(row["count"]) if row is not None else 0
+
+            connection.commit()
+
+        counts["total"] = counts["followed"] + counts["rejected"] + counts["stale"]
+        return counts
 
     def mark_growth_candidate_queue_state(
         self,
