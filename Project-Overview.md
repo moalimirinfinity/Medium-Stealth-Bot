@@ -28,7 +28,7 @@ The system is intentionally single-machine and does not depend on hosted orchest
    - Playwright persistent profile + `APIRequestContext`
    - preferred for production-like behavior and session continuity
 2. `CLIENT_MODE=fast`
-   - async `curl-cffi` session with Chrome impersonation
+   - async `curl-cffi` session with configurable impersonation target (`CURL_IMPERSONATE`)
    - optimized for lower-overhead local iteration
 
 ### Auth Bootstrap
@@ -40,7 +40,8 @@ The system is intentionally single-machine and does not depend on hosted orchest
 
 ## 3. Contract Source of Truth
 
-Implementation contracts are derived from capture artifacts in `captures/final/`, primarily:
+Implementation contracts are derived from capture artifacts in `captures/final/`.
+Canonical pointers are tracked in `captures/manifest.json`:
 
 - `live_capture_2026-02-24.json`
 - `live_ops_2026-02-24.json`
@@ -100,14 +101,12 @@ Design rule: newsletter subscription is not treated as guaranteed user-follow st
 
 Pipeline stages:
 
-1. probe
-2. candidate discovery
-3. scoring
-4. eligibility filtering
-5. follow/subscribe attempt (or dry-run planning)
-6. verification
-7. state persistence
-8. optional cleanup of due non-reciprocal follows
+1. conditional probe (source-dependent)
+2. discovery refill into growth queue
+3. queue fetch + candidate evaluation
+4. follow/engagement attempt (or dry-run planning)
+5. follow-state verification
+6. queue/state persistence + run artifact emission
 
 Discovery sources:
 
@@ -170,15 +169,17 @@ Hard-stop triggers:
 
 ### Start Menu Grouping
 
-When you run `uv run bot start`, options are grouped and ordered as:
+When you run `uv run bot start`, options are grouped as:
 
-- `1-4`: execution
-- `5-9`: maintenance
-- `10-12`: diagnostics
-- `13-14`: observability
-- `15-16`: config
-- `17`: auth
-- `18`: system/exit
+- `1`: growth
+- `2`: unfollow
+- `3`: maintenance
+- `4`: diagnostics
+- `5`: observability
+- `6`: settings/auth
+- `7`: exit
+
+Growth mode then opens source/policy/runtime submenus, and source selection supports multi-source combinations.
 
 ## 8. Operational Contracts
 
@@ -195,7 +196,7 @@ Current baseline includes:
 - strict response-path checks
 - capture freshness/integrity checks
 - capture sanitization checks
-- unit/integration-style local tests
+- compile/smoke validation scripts
 - CI quality workflow in `.github/workflows/contracts.yml`
 - CI secret scanning workflow in `.github/workflows/secrets.yml`
 - tag-triggered release workflow in `.github/workflows/release.yml`
