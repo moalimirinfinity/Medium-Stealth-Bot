@@ -89,7 +89,7 @@ class GraphSyncService:
                 skip_reason="fresh_cache_window",
             )
 
-        run_id = self.repository.begin_graph_sync_run(
+        run_id = None if dry_run else self.repository.begin_graph_sync_run(
             mode=mode,
             source_path=str(self.settings.implementation_ops_registry_path),
         )
@@ -104,13 +104,18 @@ class GraphSyncService:
 
         try:
             followers_rows, followers_source = await self._fetch_followers_rows()
-            followers_count = self.repository.replace_own_followers_snapshot(followers_rows, run_id=run_id)
+            if dry_run:
+                followers_count = len(followers_rows)
+            else:
+                followers_count = self.repository.replace_own_followers_snapshot(followers_rows, run_id=run_id)
 
             following_rows, following_source = await self._fetch_following_rows()
-            following_count = self.repository.replace_own_following_snapshot(following_rows, run_id=run_id)
-            users_upserted_count = self.repository.upsert_users_from_social_caches()
-
-            imported_pending_count = self.repository.upsert_imported_follow_cycle_pending_from_following_cache()
+            if dry_run:
+                following_count = len(following_rows)
+            else:
+                following_count = self.repository.replace_own_following_snapshot(following_rows, run_id=run_id)
+                users_upserted_count = self.repository.upsert_users_from_social_caches()
+                imported_pending_count = self.repository.upsert_imported_follow_cycle_pending_from_following_cache()
         except Exception as exc:  # noqa: BLE001
             status = "failed"
             error_message = str(exc)
@@ -120,14 +125,15 @@ class GraphSyncService:
                 error=error_message,
             )
         finally:
-            self.repository.complete_graph_sync_run(
-                run_id,
-                status=status,
-                followers_count=followers_count,
-                following_count=following_count,
-                imported_pending_count=imported_pending_count,
-                error_message=error_message,
-            )
+            if run_id is not None:
+                self.repository.complete_graph_sync_run(
+                    run_id,
+                    status=status,
+                    followers_count=followers_count,
+                    following_count=following_count,
+                    imported_pending_count=imported_pending_count,
+                    error_message=error_message,
+                )
 
         duration_ms = int((time.perf_counter() - started) * 1000)
         if status != "success":

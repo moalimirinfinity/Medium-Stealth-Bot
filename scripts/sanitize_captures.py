@@ -131,6 +131,9 @@ def _regenerate_manifest() -> None:
     manifest = _load_json(MANIFEST_PATH) if MANIFEST_PATH.exists() else {}
     canonical_capture = str(manifest.get("canonicalCapture") or "captures/final/live_capture_2026-02-24.json")
     canonical_ops = str(manifest.get("canonicalOps") or "captures/final/live_ops_2026-02-24.json")
+    canonical_implementation = str(
+        manifest.get("canonicalImplementationOps") or "captures/final/implementation_ops_2026-02-24.json"
+    )
     old_files = {
         str(item.get("path")): item
         for item in manifest.get("files", [])
@@ -164,7 +167,7 @@ def _regenerate_manifest() -> None:
                 "evidenceLevel": str(old.get("evidenceLevel", "sanitized_public_capture")),
                 "isCanonical": bool(
                     old.get("isCanonical")
-                    or rel in {canonical_capture, canonical_ops}
+                    or rel in {canonical_capture, canonical_ops, canonical_implementation}
                 ),
             }
         )
@@ -173,6 +176,7 @@ def _regenerate_manifest() -> None:
         "generatedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "canonicalCapture": canonical_capture,
         "canonicalOps": canonical_ops,
+        "canonicalImplementationOps": canonical_implementation,
         "files": files,
     }
     _write_json(MANIFEST_PATH, manifest_out)

@@ -1,19 +1,31 @@
 # Scheduling Operations
 
-This project is local-first. Scheduled live execution is done on the operator machine, not in cloud runners.
+This project is local-first. Scheduled execution runs on the operator machine, not in hosted runners.
+
+## What Should Be Scheduled
+
+The project now has two separate operational loops:
+
+- `Discovery`: fills the queue with execution-ready candidates
+- `Growth`: drains the queue with live follow/engagement actions
+
+The bundled runner in `scripts/run_daily_live.sh` is for the guided live workflow driven by `bot start --quick-live --dry-run-first`.
+In the current project model, treat scheduled growth and scheduled discovery as separate concerns.
 
 ## Prerequisites
 
 1. Create a production profile:
    - `cp .env.production.example .env.production`
-   - fill `MEDIUM_SESSION`, `MEDIUM_CSRF`, `MEDIUM_USER_REF`.
-2. Validate profile:
+2. Fill auth/session values:
+   - `MEDIUM_SESSION` or `MEDIUM_SESSION_*`
+   - `MEDIUM_CSRF`
+   - `MEDIUM_USER_REF`
+3. Validate the profile:
    - `uv run bot profile-validate --env-path .env.production`
-   - this confirms baseline profile sanity; safety thresholds remain operator-defined in `.env.production`
-3. Confirm manual run:
+4. Confirm a manual run:
    - `uv run bot start --quick-live --dry-run-first --tag programming`
 
-## Scheduler Runner
+## Bundled Scheduler Runner
 
 Use:
 
@@ -23,16 +35,37 @@ scripts/run_daily_live.sh --env-file .env.production --tag programming
 
 Behavior:
 
-- acquires lock to prevent overlapping runs
-- skips run when `OPERATOR_KILL_SWITCH=true`
-- validates production profile
-- uses operator-configured safety thresholds from env
-- executes dry-run preflight then live cycle
+- acquires a local lock
+- skips when `OPERATOR_KILL_SWITCH=true`
+- validates the production profile
+- runs `bot start --quick-live --dry-run-first`
 - writes logs to `.data/scheduler/`
 
-Note:
+Important:
 
-- The scheduled runner is for growth execution. Use `uv run bot sync --live --force` separately when you need a full social-graph refresh before maintenance tasks.
+- This runner is intended for the guided live workflow.
+- Keep the growth queue stocked before relying on scheduled growth windows.
+- Run discovery separately on a cadence that matches queue depletion.
+
+## Suggested Scheduling Strategy
+
+### Simple setup
+
+1. Run discovery manually or on a separate scheduled cadence.
+2. Use the bundled runner once per day for live execution.
+3. Check queue counts regularly with:
+   - `uv run bot queue`
+
+### More controlled setup
+
+Use two scheduled jobs:
+
+1. `discover` job
+   - fills the queue
+2. `run` or `start --quick-live` job
+   - drains the queue
+
+This separation matches the current project architecture better than a single combined automation assumption.
 
 ## Cron (Linux/macOS)
 
@@ -40,17 +73,15 @@ Template: `ops/scheduling/cron.example`
 
 Install:
 
-1. Replace `/ABSOLUTE/PATH/TO/Medium-Stealth-Bot` in template.
-2. Add line to crontab:
-   - `crontab -e`
-3. Verify entry:
-   - `crontab -l`
+1. Replace `/ABSOLUTE/PATH/TO/Medium-Stealth-Bot` in the template.
+2. Add the line to your crontab with `crontab -e`.
+3. Verify with `crontab -l`.
 
-Default cadence in template: daily at `09:00 UTC`.
+Default template cadence: daily at `09:00 UTC`.
 
 Disable:
 
-- remove cron entry and save.
+- remove the cron entry
 
 ## launchd (macOS)
 
@@ -71,17 +102,37 @@ Disable:
 
 ## Verification Checklist
 
-1. `.data/scheduler/` receives timestamped run logs.
-2. Each run produces a run artifact in `.data/runs/`.
-3. `uv run bot status` reports healthy/degraded with expected mode.
+1. `.data/scheduler/` receives timestamped logs.
+2. Runs emit artifacts under `.data/runs/`.
+3. `uv run bot status` reports the latest run outcome.
+4. `uv run bot queue` shows whether discovery cadence is keeping up with growth.
 
-## Troubleshooting Quick Checks
+## Troubleshooting
 
-1. Scheduler not running:
-   - confirm lock file is not stale: `.data/scheduler/run_daily_live.lock`
-   - confirm `OPERATOR_KILL_SWITCH=false`
-2. Runs execute but maintenance data is stale:
-   - run `uv run bot sync --live --force` manually
-3. Runs fail preflight:
-   - rerun `uv run bot profile-validate --env-path .env.production`
-   - rerun `uv run bot contracts --tag programming --no-execute-reads`
+### Scheduler does not run
+
+1. Confirm `.data/scheduler/run_daily_live.lock` is not stale.
+2. Confirm `OPERATOR_KILL_SWITCH=false`.
+
+### Scheduled growth runs but does nothing
+
+1. Check `uv run bot queue`.
+2. If ready queue is empty, run discovery first:
+   - `uv run bot discover --live --source topic-recommended --source seed-followers --tag programming`
+
+### Local graph state is stale
+
+Run:
+
+```bash
+uv run bot sync --live --force
+```
+
+### Preflight fails
+
+Run:
+
+```bash
+uv run bot profile-validate --env-path .env.production
+uv run bot contracts --tag programming --no-execute-reads
+```

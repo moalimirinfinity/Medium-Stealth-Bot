@@ -6,48 +6,59 @@ Implementation-ready GraphQL capture pack for Medium web flows.
 
 The application uses these files for:
 
-- operation-contract parity checks (`bot contracts`)
-- response-path validation checks
-- operation metadata lookup used during runtime request validation
+- operation-contract parity checks with `bot contracts`
+- response-path validation
+- runtime operation metadata lookup
+- maintenance of the Medium integration contract layer
 
 ## Canonical Files
-- `final/live_capture_2026-02-24.json`
-  - Full request-level GraphQL capture collected with authenticated `.env` session cookies.
-  - Includes request payloads, variables, request headers subset, response summaries, and `stubbed` marker.
-- `final/live_ops_2026-02-24.json`
-  - Compact operation summary derived from the live capture.
-  - Includes operation list, mutation list, variable key sets, hit counts, and sample page URLs.
+
+- `final/live_capture_2026-04-23.json`
+  - authenticated request-level refresh with corrected comment probe and highlight create/delete probes
+- `final/live_ops_2026-04-23.json`
+  - compact operation summary derived from the April 23 live capture
+- `final/implementation_ops_2026-04-23.json`
+  - curated runtime-aligned operation subset with live-verified comment and highlight contracts
 - `final/live_capture_2026-04-20.json`
-  - Targeted rollback-refresh capture focused on undo-clap and delete-comment payloads.
-  - Confirms `DeleteResponseMutation` and negative `ClapMutation` request shapes with the current harness.
+  - targeted rollback refresh for undo-clap and delete-comment coverage
 - `final/live_ops_2026-04-20.json`
-  - Compact summary for the targeted rollback-refresh capture.
-- `final/implementation_ops_2026-02-24.json`
-  - Curated runtime-aligned subset of core operations needed for bot implementation (follow/unfollow/discovery/state checks + helper reads).
-  - Includes operation-registry metadata: `classification`, `riskLevel`, variable contracts, and expected response fields.
+  - compact summary for the rollback refresh
 - `FOLLOW_ACTION_NOTE.md`
-  - Follow/unfollow semantics and how to classify state transitions for implementation.
+  - follow and unfollow semantics
 - `IMPLEMENTATION_NOTES.md`
-  - Direct implementation guidance (operation roles, safety, and integration rules).
+  - implementation guidance and integration rules
 - `manifest.json`
-  - Machine-readable index and canonical capture pointers.
+  - canonical machine-readable index
 
 ## Evidence Levels
-- `live_ui_observed`
-  - Captured from real page navigation and UI clicks with authenticated session.
-- `live_probe_stubbed`
-  - Side-effect mutations are intentionally fulfilled locally (stubbed) to avoid account changes.
-  - Used only for payload/variable contract extraction.
-- `legacy_reference`
-  - Older historical captures retained for diffing (`2026-02-21`).
 
-## Captured Flows (2026-02-24)
+- `live_ui_observed`
+  - recorded from real page/UI behavior
+- `live_probe_stubbed`
+  - mutation shape captured without applying real side effects
+- `legacy_reference`
+  - older retained captures used for diffing
+
+## Runtime Alignment
+
+The current project model uses captures across distinct workflows:
+
+- discovery reads and queue preparation
+- growth execution and verification
+- cleanup and rollback behavior
+- diagnostics and contract checks
+
+The capture registry is the shared contract layer across those workflows.
+
+## Captured Flows (2026-04-23 Refresh)
+
 1. `https://medium.com/me/followers`
 2. `https://medium.com/me/following`
 3. `https://medium.com/tag/programming/latest`
 4. `https://thilo-hermann.medium.com/the-day-we-forgot-about-layers-and-components-d6222451c4e2`
 
 ## Refresh Workflow
+
 Run from repo root:
 
 ```bash
@@ -57,12 +68,18 @@ NODE_PATH="$tmpdir/node_modules" node captures/scripts/live_graphql_capture.js
 ```
 
 This regenerates:
+
 - `captures/final/live_capture_YYYY-MM-DD.json`
 - `captures/final/live_ops_YYYY-MM-DD.json`
 
-For delete-comment coverage, set `MEDIUM_ACTIVITY_URL` in `.env` to the signed-in account activity page before refreshing captures so the harness can visit that flow as well.
+For delete-comment coverage, set `MEDIUM_ACTIVITY_URL` in `.env` so the capture harness can visit that flow.
+The harness now also includes stubbed probes for:
 
-## CI Integrity Check
+- `PublishPostThreadedResponse` using the current minimal `Delta` shape
+- `QuoteCreateMutation`
+- `DeleteQuoteMutation`
+
+## CI Integrity Checks
 
 Repository CI runs:
 
@@ -71,11 +88,12 @@ uv run python scripts/check_capture_integrity.py
 uv run python scripts/check_capture_sanitization.py
 ```
 
-This enforces:
-- canonical manifest pointers resolve to existing files
-- canonical files are marked `isCanonical` in `manifest.json`
-- capture freshness is within configured age threshold (`CAPTURE_MAX_AGE_DAYS`)
-- sanitized public-push invariants are preserved
+These enforce:
+
+- canonical manifest pointers resolve to real files
+- canonical files are marked correctly in `manifest.json`
+- capture freshness stays within threshold
+- sanitized public-push invariants hold
 
 ## Public Sanitization Policy
 
@@ -83,14 +101,12 @@ Tracked files in `captures/final/*.json` must include:
 
 - `sanitizedForPublicPush: true`
 
-Public sanitization removes high-granularity/sensitive capture fields:
+Sanitization removes or normalizes sensitive details such as:
 
 - request-level `pageUrl`
-- request-level `requestBodyPreview`
-- raw `variables` payload values
-- `referer` from request header subsets
-
-URL-like fields are normalized to route-safe forms with no personal identifiers.
+- request body preview
+- raw variable payload values
+- request `referer`
 
 ## Refresh + Sanitize Flow
 

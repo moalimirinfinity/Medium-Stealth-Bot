@@ -292,9 +292,42 @@ async function main() {
         query:
           "mutation PublishPostThreadedResponse($inResponseToPostId: ID!, $deltas: [Delta!]!, $inResponseToQuoteId: ID) { publishPostThreadedResponse(inResponseToPostId: $inResponseToPostId, deltas: $deltas, inResponseToQuoteId: $inResponseToQuoteId) { __typename } }",
         variables: {
-          inResponseToPostId: "7d66cfdfa301",
-          deltas: [{ insert: "Probe response from capture harness." }],
+          inResponseToPostId: "c0f99459b6cb",
+          deltas: [
+            {
+              type: 1,
+              index: 0,
+              paragraph: {
+                name: "p000",
+                type: 1,
+                text: "Probe response from capture harness.",
+                markups: [],
+              },
+            },
+          ],
           inResponseToQuoteId: null,
+        },
+      },
+      {
+        operationName: "QuoteCreateMutation",
+        query:
+          "mutation QuoteCreateMutation($targetPostId: ID!, $targetPostVersionId: ID!, $targetParagraphNames: [ID!]!, $startOffset: Int!, $endOffset: Int!, $quoteType: StreamItemQuoteType!) { createQuote(targetPostId: $targetPostId, targetPostVersionId: $targetPostVersionId, targetParagraphNames: $targetParagraphNames, startOffset: $startOffset, endOffset: $endOffset, quoteType: $quoteType) { __typename id } }",
+        variables: {
+          targetPostId: "c0f99459b6cb",
+          targetPostVersionId: "94db8a49dac7",
+          targetParagraphNames: ["ad30"],
+          startOffset: 164,
+          endOffset: 204,
+          quoteType: "HIGHLIGHT",
+        },
+      },
+      {
+        operationName: "DeleteQuoteMutation",
+        query:
+          "mutation DeleteQuoteMutation($targetPostId: ID!, $targetQuoteId: ID!) { deleteQuote(targetPostId: $targetPostId, targetQuoteId: $targetQuoteId) }",
+        variables: {
+          targetPostId: "c0f99459b6cb",
+          targetQuoteId: "5800c1998f28",
         },
       },
       {
@@ -391,7 +424,10 @@ async function main() {
       "UnsubscribeNewsletterV3Mutation",
       "UnfollowUserMutation",
       "ClapMutation",
+      "PublishPostThreadedResponse",
       "DeleteResponseMutation",
+      "QuoteCreateMutation",
+      "DeleteQuoteMutation",
     ].filter((name) => opNames.includes(name)),
   );
 

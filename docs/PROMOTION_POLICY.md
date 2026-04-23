@@ -1,56 +1,66 @@
 # Promotion Policy
 
-Policy for enabling sustained daily live scheduling.
+Policy for enabling sustained scheduled live operation.
 
-## Gate A: Dry-Run Stability
+## Gate A: Discovery and Dry-Run Stability
 
 Requirement:
 
-- 3 consecutive daily dry-runs succeed.
-- 0 failed/halted run artifacts.
+- 3 consecutive daily dry-runs succeed
+- 0 failed or halted artifacts
+- queue remains healthy enough for planned live windows
 
 Evidence:
 
-- artifact paths + `status` output snapshot for each day.
+- artifact paths
+- `uv run bot queue` snapshots
+- `uv run bot status` output
 
 ## Gate B: Manual Live Validation
 
 Requirement:
 
-- 3 manual live runs on separate days.
-- 0 halts.
-- 0 failed run statuses.
+- 3 manual live growth runs on separate days
+- 0 halts
+- 0 failed live artifacts
 
-Execution mode:
+Recommended execution:
 
-- `uv run bot start --quick-live --dry-run-first --tag programming`
+```bash
+uv run bot discover --live --source topic-recommended --source seed-followers --tag programming
+uv run bot run --policy warm-engage --session
+```
 
 ## Gate C: Scheduled Soak
 
 Requirement:
 
-- scheduler enabled once per day for 7 consecutive days.
-- 0 halted/failed scheduled runs.
+- scheduler enabled once per day for 7 consecutive days
+- 0 halted or failed scheduled runs
+- queue does not repeatedly starve between discovery and growth windows
 
 Evidence:
 
-- `.data/scheduler/` logs + run artifact summaries.
+- `.data/scheduler/` logs
+- queue snapshots
+- run artifact summaries
 
 ## Gate D: Sustained Schedule Approval
 
 Requirement:
 
-- active profile passes `bot profile-validate`.
-- action caps align with approved production limits.
-- kill-switch and rollback procedures are documented and rehearsed.
+- active profile passes `bot profile-validate`
+- growth limits align with approved production thresholds
+- discovery cadence is defined, not ad hoc
+- kill-switch and rollback procedures are documented and rehearsed
 
 Outcome:
 
-- sustained daily live schedule approved.
+- sustained daily live schedule approved
 
 ## Reversion Rule
 
-If any halt/failure trend appears after promotion:
+If halt/failure trends appear after promotion:
 
 1. set `OPERATOR_KILL_SWITCH=true`
 2. pause scheduler
@@ -58,11 +68,10 @@ If any halt/failure trend appears after promotion:
 
 ## Evidence Template
 
-Use this per gate to keep promotion reviews consistent:
-
 - Gate:
 - Date (UTC):
-- Command/Run mode:
+- Commands / run mode:
+- Queue snapshot:
 - Artifact path(s):
 - Status summary:
-- Notes/Anomalies:
+- Notes / anomalies:

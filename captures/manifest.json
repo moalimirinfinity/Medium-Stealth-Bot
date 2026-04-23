@@ -1,13 +1,20 @@
 {
-  "generatedAt": "2026-04-20T08:01:00Z",
-  "canonicalCapture": "captures/final/live_capture_2026-02-24.json",
-  "canonicalOps": "captures/final/live_ops_2026-02-24.json",
-  "canonicalImplementationOps": "captures/final/implementation_ops_2026-02-24.json",
+  "generatedAt": "2026-04-23T15:58:00Z",
+  "canonicalCapture": "captures/final/live_capture_2026-04-23.json",
+  "canonicalOps": "captures/final/live_ops_2026-04-23.json",
+  "canonicalImplementationOps": "captures/final/implementation_ops_2026-04-23.json",
   "files": [
     {
       "path": "captures/final/implementation_ops_2026-02-24.json",
       "operationNames": 14,
       "mutationNames": 6,
+      "evidenceLevel": "curated_implementation_subset",
+      "isCanonical": false
+    },
+    {
+      "path": "captures/final/implementation_ops_2026-04-23.json",
+      "operationNames": 18,
+      "mutationNames": 8,
       "evidenceLevel": "curated_implementation_subset",
       "isCanonical": true
     },
@@ -16,7 +23,7 @@
       "operationNames": 39,
       "mutationNames": 8,
       "evidenceLevel": "live_ui_observed_plus_stubbed_probes",
-      "isCanonical": true
+      "isCanonical": false
     },
     {
       "path": "captures/final/live_capture_2026-04-20.json",
@@ -26,11 +33,18 @@
       "isCanonical": false
     },
     {
+      "path": "captures/final/live_capture_2026-04-23.json",
+      "operationNames": 11,
+      "mutationNames": 9,
+      "evidenceLevel": "live_ui_observed_plus_stubbed_probes",
+      "isCanonical": true
+    },
+    {
       "path": "captures/final/live_ops_2026-02-24.json",
       "operationNames": 40,
       "mutationNames": 9,
       "evidenceLevel": "derived_summary",
-      "isCanonical": true
+      "isCanonical": false
     },
     {
       "path": "captures/final/live_ops_2026-04-20.json",
@@ -38,6 +52,13 @@
       "mutationNames": 7,
       "evidenceLevel": "sanitized_public_capture",
       "isCanonical": false
+    },
+    {
+      "path": "captures/final/live_ops_2026-04-23.json",
+      "operationNames": 11,
+      "mutationNames": 9,
+      "evidenceLevel": "derived_summary",
+      "isCanonical": true
     },
     {
       "path": "captures/final/practical_capture_2026-02-21.json",

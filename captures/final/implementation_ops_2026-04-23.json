@@ -1,8 +1,8 @@
 {
-  "capturedAt": "2026-02-24T08:54:30.118Z",
-  "sourceCapture": "captures/final/live_capture_2026-02-24.json",
+  "capturedAt": "2026-04-23T15:55:00.000Z",
+  "sourceCapture": "captures/final/live_capture_2026-04-23.json",
   "endpoint": "https://medium.com/_/graphql",
-  "registryVersion": 2,
+  "registryVersion": 3,
   "classificationTaxonomy": {
     "labels": [
       "read",
@@ -471,9 +471,9 @@
     {
       "operationName": "ClapMutation",
       "hits": 2,
-      "stubbedHits": 2,
-      "nonStubbedHits": 0,
-      "evidence": "probe_stubbed_only",
+      "stubbedHits": 0,
+      "nonStubbedHits": 2,
+      "evidence": "live_transport_verified",
       "statusCodes": [
         200
       ],
@@ -485,7 +485,6 @@
         ]
       ],
       "samplePageUrls": [
-        "https://medium.com/tag/programming",
         "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
@@ -503,15 +502,16 @@
       ],
       "optionalVariableKeys": [],
       "expectedTopLevelResponseFields": [
-        "clap.clapCount"
+        "clap.clapCount",
+        "clap.viewerEdge.clapCount"
       ]
     },
     {
       "operationName": "PublishPostThreadedResponse",
-      "hits": 1,
-      "stubbedHits": 1,
-      "nonStubbedHits": 0,
-      "evidence": "probe_stubbed_only",
+      "hits": 3,
+      "stubbedHits": 0,
+      "nonStubbedHits": 3,
+      "evidence": "live_transport_verified",
       "statusCodes": [
         200
       ],
@@ -519,13 +519,17 @@
         [
           "deltas",
           "inResponseToPostId",
+          "inResponseToQuoteId"
+        ],
+        [
+          "deltas",
+          "inResponseToPostId",
           "inResponseToQuoteId",
-          "responseDistribution",
-          "sortType"
+          "responseDistribution"
         ]
       ],
       "samplePageUrls": [
-        "https://medium.com/tag/programming"
+        "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
         "https://medium.com/_/graphql"
@@ -541,8 +545,7 @@
       ],
       "optionalVariableKeys": [
         "inResponseToQuoteId",
-        "responseDistribution",
-        "sortType"
+        "responseDistribution"
       ],
       "expectedTopLevelResponseFields": [
         "publishPostThreadedResponse.id"
@@ -550,10 +553,10 @@
     },
     {
       "operationName": "DeleteResponseMutation",
-      "hits": 1,
+      "hits": 4,
       "stubbedHits": 0,
-      "nonStubbedHits": 1,
-      "evidence": "user_supplied_activity_payload",
+      "nonStubbedHits": 4,
+      "evidence": "live_transport_verified",
       "statusCodes": [
         200
       ],
@@ -563,7 +566,7 @@
         ]
       ],
       "samplePageUrls": [
-        "https://medium.com/user/profile"
+        "https://medium.com/post/redacted"
       ],
       "sampleRequestUrls": [
         "https://medium.com/_/graphql"
@@ -579,6 +582,84 @@
       "optionalVariableKeys": [],
       "expectedTopLevelResponseFields": [
         "deletePost"
+      ]
+    },
+    {
+      "operationName": "QuoteCreateMutation",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_transport_verified",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "endOffset",
+          "quoteType",
+          "startOffset",
+          "targetParagraphNames",
+          "targetPostId",
+          "targetPostVersionId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/post/redacted"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ],
+      "classification": [
+        "mutation",
+        "high-risk"
+      ],
+      "riskLevel": "high",
+      "requiredVariableKeys": [
+        "targetPostId",
+        "targetPostVersionId",
+        "targetParagraphNames",
+        "startOffset",
+        "endOffset",
+        "quoteType"
+      ],
+      "optionalVariableKeys": [],
+      "expectedTopLevelResponseFields": [
+        "createQuote.id"
+      ]
+    },
+    {
+      "operationName": "DeleteQuoteMutation",
+      "hits": 1,
+      "stubbedHits": 0,
+      "nonStubbedHits": 1,
+      "evidence": "live_transport_verified",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "targetPostId",
+          "targetQuoteId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/post/redacted"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ],
+      "classification": [
+        "mutation",
+        "high-risk"
+      ],
+      "riskLevel": "high",
+      "requiredVariableKeys": [
+        "targetPostId",
+        "targetQuoteId"
+      ],
+      "optionalVariableKeys": [],
+      "expectedTopLevelResponseFields": [
+        "deleteQuote"
       ]
     }
   ],

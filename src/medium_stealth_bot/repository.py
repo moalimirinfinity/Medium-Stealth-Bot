@@ -1180,6 +1180,10 @@ class ActionRepository:
         followed: bool = False,
         retry_after_at: str | None = None,
     ) -> None:
+        if queue_state in {"followed", "rejected"}:
+            self.remove_growth_candidate(user_id)
+            return
+
         query = """
         UPDATE growth_candidate_queue
         SET queue_state = ?,
@@ -1237,6 +1241,15 @@ class ActionRepository:
                     user_id,
                 ),
             )
+            connection.commit()
+
+    def remove_growth_candidate(self, user_id: str) -> None:
+        query = """
+        DELETE FROM growth_candidate_queue
+        WHERE user_id = ?
+        """
+        with self.database.connect() as connection:
+            connection.execute(query, (user_id,))
             connection.commit()
 
     def reconciliation_candidates_page(self, *, limit: int, offset: int = 0) -> list[dict[str, str | None]]:

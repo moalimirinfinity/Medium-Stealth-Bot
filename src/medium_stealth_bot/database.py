@@ -19,7 +19,7 @@ class SqlMigration:
 class Database:
     """SQLite wrapper with file-based numbered SQL migrations."""
 
-    TARGET_SCHEMA_VERSION = 9
+    TARGET_SCHEMA_VERSION = 11
 
     def __init__(self, path: Path):
         self.path = path

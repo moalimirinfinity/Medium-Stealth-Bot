@@ -87,6 +87,7 @@ class DailyRunner:
         self._session_mutations_enabled_override: bool | None = None
         self._mutations_suspended_until_monotonic = 0.0
         self._comment_mutation_supported = True
+        self._persist_decision_observations = True
         self._normalize_pacing_configuration()
 
     async def _maybe_recover_stealth_preflight_challenge(self, *, dry_run: bool) -> None:
@@ -213,6 +214,7 @@ class DailyRunner:
             self.timing.reset_session_state()
             self.timing.reset_metrics()
         self.timing.set_simulation_mode(dry_run)
+        self._persist_decision_observations = not dry_run
         actions_today_start = self.repository.actions_today_utc(TRACKED_DAILY_ACTION_TYPES)
         max_actions = self.settings.max_actions_per_day
         action_counts = self.repository.action_counts_today_utc(TRACKED_DAILY_ACTION_TYPES)
@@ -320,6 +322,8 @@ class DailyRunner:
             else:
                 queue_ready_after = len(discovery_buffered)
 
+        queue_only_execution = execution_enabled and not discovery_enabled
+
         if discovery_enabled and not execution_enabled:
             execution_pool = list(discovery_buffered)
             execution_pool_limit = len(execution_pool)
@@ -338,15 +342,19 @@ class DailyRunner:
         discovered_candidates = len(discovery_candidates)
         screened_candidates = len(execution_pool)
         considered_candidates = screened_candidates
-        eligible = (
-            await self._evaluate_candidates(
+        if execution_pool_limit <= 0:
+            eligible = []
+        elif queue_only_execution:
+            # Discovery already filtered these rows into execution-ready queue state.
+            # Growth should drain that queue and only re-check live follow state right
+            # before mutation so queue-driven runs do not spend whole passes re-screening.
+            eligible = list(execution_pool)
+        else:
+            eligible = await self._evaluate_candidates(
                 execution_pool,
                 decisions=decisions,
                 persist_observations=not dry_run,
             )
-            if execution_pool_limit > 0
-            else []
-        )
 
         if execution_enabled:
             follow_slots = min(max_follow_attempts_for_cycle, len(eligible))
@@ -1940,13 +1948,7 @@ class DailyRunner:
             local_state = self.repository.get_relationship_state(candidate.user_id)
             if local_state and local_state.user_follow_state == UserFollowState.FOLLOWING:
                 if persist_observations:
-                    self.repository.mark_growth_candidate_queue_state(
-                        candidate.user_id,
-                        queue_state="rejected",
-                        reason="skip:already_following_local_state",
-                        candidate=candidate,
-                        observed_follow_state=UserFollowState.FOLLOWING,
-                    )
+                    self.repository.remove_growth_candidate(candidate.user_id)
                 self._append_decision(
                     decisions,
                     candidate,
@@ -1973,13 +1975,7 @@ class DailyRunner:
                         verified_now=True,
                     )
                     self.repository.mark_candidate_reconciled(candidate.user_id, UserFollowState.FOLLOWING)
-                    self.repository.mark_growth_candidate_queue_state(
-                        candidate.user_id,
-                        queue_state="rejected",
-                        reason="skip:already_following_live_check",
-                        candidate=candidate,
-                        observed_follow_state=UserFollowState.FOLLOWING,
-                    )
+                    self.repository.remove_growth_candidate(candidate.user_id)
                 self._append_decision(
                     decisions,
                     candidate,
@@ -2344,14 +2340,7 @@ class DailyRunner:
                     reason="follow_success:verified_following",
                     needs_reconcile=False,
                 )
-                self.repository.mark_growth_candidate_queue_state(
-                    candidate.user_id,
-                    queue_state="followed",
-                    reason="follow_success:verified_following",
-                    candidate=candidate,
-                    observed_follow_state=UserFollowState.FOLLOWING,
-                    followed=True,
-                )
+                self.repository.remove_growth_candidate(candidate.user_id)
                 for key in self._candidate_growth_source_values(candidate):
                     source_follow_verified_counts[key] = source_follow_verified_counts.get(key, 0) + 1
             else:
@@ -2421,13 +2410,7 @@ class DailyRunner:
                 verified_now=True,
             )
             self.repository.mark_candidate_reconciled(candidate.user_id, UserFollowState.FOLLOWING)
-            self.repository.mark_growth_candidate_queue_state(
-                candidate.user_id,
-                queue_state="rejected",
-                reason="skip:already_following_pre_mutation_check",
-                candidate=candidate,
-                observed_follow_state=UserFollowState.FOLLOWING,
-            )
+            self.repository.remove_growth_candidate(candidate.user_id)
             self._append_decision(
                 decisions,
                 candidate,
@@ -3326,16 +3309,17 @@ class DailyRunner:
             score=candidate.score,
         )
         decisions.append(decision)
-        self.repository.upsert_candidate_reconciliation(
-            user_id=candidate.user_id,
-            username=candidate.username,
-            newsletter_v3_id=candidate.newsletter_v3_id,
-            source_labels=[source.value for source in candidate.sources],
-            score=candidate.score,
-            decision_reason=reason,
-            eligible=eligible,
-            needs_reconcile=needs_reconcile,
-        )
+        if self._persist_decision_observations:
+            self.repository.upsert_candidate_reconciliation(
+                user_id=candidate.user_id,
+                username=candidate.username,
+                newsletter_v3_id=candidate.newsletter_v3_id,
+                source_labels=[source.value for source in candidate.sources],
+                score=candidate.score,
+                decision_reason=reason,
+                eligible=eligible,
+                needs_reconcile=needs_reconcile,
+            )
 
     def _summarize_decisions(self, decisions: list[CandidateDecision]) -> tuple[dict[str, int], dict[str, int]]:
         reason_counts: dict[str, int] = {}
@@ -3437,7 +3421,7 @@ class DailyRunner:
     @staticmethod
     def _daily_action_key(action_type: str, user_id: str, *, extra: str | None = None) -> str:
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        parts = [action_type, user_id, day]
+        parts = [action_type, user_id, day, str(time.time_ns())]
         if extra:
             parts.append(extra)
         return ":".join(parts)
@@ -3452,7 +3436,11 @@ class DailyRunner:
     def _action_key_extra(action_key: str | None) -> str | None:
         if not action_key:
             return None
-        parts = action_key.split(":", 3)
+        parts = action_key.split(":", 4)
+        if len(parts) >= 5:
+            return parts[4] or None
+        if len(parts) == 4:
+            return parts[3] or None
         if len(parts) < 4:
             return None
         return parts[3] or None

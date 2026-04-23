@@ -2,75 +2,127 @@
 
 ## 1. Mission
 
-Medium Stealth Bot is a local-first CLI for Medium growth automation with three core principles:
+Medium Stealth Bot is a local-first CLI for Medium growth automation with three core goals:
 
-1. safety-first execution
-2. capture-driven API contracts
-3. inspectable local state and diagnostics
+1. explicit, operator-controlled workflows
+2. capture-backed Medium integration contracts
+3. inspectable local state, queueing, and diagnostics
 
-The system is intentionally single-machine and does not depend on hosted orchestration.
+The project is designed for single-machine operation. Auth state, queue state, and artifacts stay local.
 
 ## 2. Architecture Snapshot
 
-### Runtime Stack
+### Runtime stack
 
 - Python 3.12+
-- `uv` project/runtime management
-- `Typer` + `Rich` CLI
+- `uv`
+- `Typer` + `Rich`
 - `Pydantic v2` + `pydantic-settings`
-- `structlog` logging (`pretty` console default, optional JSON mode)
-- `SQLite` persistence
-- `Playwright` + `curl-cffi` clients
+- `structlog`
+- `SQLite`
+- `Playwright` and `curl-cffi`
 
-### Dual Client Modes
+### Client modes
 
-1. `CLIENT_MODE=stealth` (default)
-   - Playwright persistent profile + `APIRequestContext`
-   - preferred for production-like behavior and session continuity
+1. `CLIENT_MODE=stealth`
+   - Playwright persistent profile plus browser-backed request context
+   - preferred for live runs
 2. `CLIENT_MODE=fast`
-   - async `curl-cffi` session with configurable impersonation target (`CURL_IMPERSONATE`)
-   - optimized for lower-overhead local iteration
+   - `curl-cffi` session with impersonation support
+   - lower overhead for some read-heavy workflows
 
-### Auth Bootstrap
+### Auth bootstrap
 
-1. Run `uv run bot auth`.
-2. Complete login in headed Playwright session.
-3. Persist session material to `.env`.
-4. Reuse browser profile under `.data/playwright-profile`.
+1. `uv run bot auth`
+2. sign in through the Playwright session
+3. persist cookies/session fields into `.env`
+4. reuse the local browser profile in `.data/playwright-profile`
 
-## 3. Contract Source of Truth
+## 3. Operational Model
+
+The current project is separated into explicit pipelines.
+
+### Discovery
+
+Discovery reads Medium, scores/filter candidates, and persists execution-ready queue rows. It does not follow, clap, or comment.
+
+Current discovery sources:
+
+- topic/recommended
+- seed followers
+- target-user followers
+- publication adjacency
+- responders
+
+### Growth
+
+Growth is queue-driven execution only. It drains execution-ready candidates already chosen by discovery and applies one of these policies:
+
+- `follow-only`
+- `warm-engage`
+- `warm-engage-plus-rare-comment`
+
+Growth does not perform discovery source selection anymore; legacy source flags remain only for compatibility.
+
+### Unfollow / cleanup
+
+Cleanup is a separate maintenance workflow for overdue non-followback users.
+
+### Maintenance
+
+Maintenance includes:
+
+- graph sync
+- reconcile
+- DB hygiene
+
+### Diagnostics / observability
+
+Diagnostics and observability cover:
+
+- read probes
+- contract validation
+- queue counts
+- status output
+- artifact validation
+
+## 4. Contract Source of Truth
 
 Implementation contracts are derived from capture artifacts in `captures/final/`.
-Canonical pointers are tracked in `captures/manifest.json`:
+Canonical pointers are tracked in `captures/manifest.json`.
+
+Primary files:
 
 - `live_capture_2026-02-24.json`
 - `live_ops_2026-02-24.json`
 - `implementation_ops_2026-02-24.json`
+- `live_capture_2026-04-20.json` for rollback mutations
 
 The implementation registry defines:
 
-- operation set and variable requirements
-- classification labels (`read`, `mutation`, `state-verify`, `high-risk`)
-- expected response field paths for strict validation
+- operation names and required variables
+- classification labels such as `read`, `mutation`, `state-verify`, `high-risk`
+- expected response paths used by validation
 
-## 4. Follow Semantics Model
+## 5. Medium Action Semantics
 
-Observed Medium semantics used by runtime:
+Observed Medium semantics used by the runtime:
 
 1. subscribe path: `SubscribeNewsletterV3Mutation`
 2. unsubscribe notifications path: `UnsubscribeNewsletterV3Mutation`
-3. graph unfollow path: `UnfollowUserMutation`
+3. unfollow path: `UnfollowUserMutation`
 4. canonical follow-state verification: `UserViewerEdge.user.viewerEdge.isFollowing`
+5. clap rollback path: `ClapMutation` with negative `numClaps`
+6. comment deletion path: `DeleteResponseMutation`
 
-Design rule: newsletter subscription is not treated as guaranteed user-follow state.
+Design rule: newsletter subscription is not treated as definitive user-follow proof.
 
-## 5. Local Data Model
+## 6. Local Data Model
 
-### Core Tables
+### Core tables
 
 - `users`
-- `relationships` (legacy compatibility table)
-- `relationship_state` (canonical)
+- `relationship_state`
 - `follow_cycle`
 - `candidate_reconciliation`
 - `blacklist`
@@ -82,134 +134,170 @@ Design rule: newsletter subscription is not treated as guaranteed user-follow st
 - `snapshots`
 - `schema_migrations`
 
-### Canonical Relationship State
+### Growth queue model
 
-- `newsletter_state`: `subscribed | unsubscribed | unknown`
-- `user_follow_state`: `following | not_following | unknown`
-- `confidence`: `observed | inferred | stubbed`
+Growth candidates are persisted with queue-oriented state and metadata such as:
 
-### Migration Strategy
+- readiness
+- deferred retry timing
+- rejection / followed terminal state
+- source labels
+- score
+- freshness / reason fields
 
-- Numbered SQL files in `src/medium_stealth_bot/migrations/`
-- Migration history tracked in `schema_migrations`
-- `PRAGMA user_version` synchronized to latest applied migration version
-- Migration checksum validation prevents silent drift
+### Migration strategy
 
-## 6. Runtime Behavior
+- numbered SQL migrations under `src/medium_stealth_bot/migrations/`
+- history tracked in `schema_migrations`
+- checksum validation guards against silent migration drift
 
-### Daily Run (`bot run`)
+## 7. Runtime Behavior
+
+### Discovery (`bot discover`)
 
 Pipeline stages:
 
-1. conditional probe (source-dependent)
-2. discovery refill into growth queue
-3. queue fetch + candidate evaluation
-4. follow/engagement attempt (or dry-run planning)
-5. follow-state verification
-6. queue/state persistence + run artifact emission
+1. optional graph sync
+2. collect source candidates
+3. score and filter
+4. evaluate discovery-readiness
+5. persist queue rows and reconciliation notes
+6. emit run artifact
 
-Discovery sources:
+Output: execution-ready queue entries only.
 
-- topic latest stories
-- topic who-to-follow
-- who-to-follow module
-- optional seed followers (plus optional second hop)
+### Growth (`bot run`)
 
-### Reconciliation (`bot reconcile`)
+Pipeline stages:
 
-- Builds a paginated worklist from `candidate_reconciliation` and pending `follow_cycle` users.
-- Executes `UserViewerEdge` checks.
-- Writes canonical follow-state updates in live mode.
+1. optional graph sync
+2. fetch execution-ready queue candidates
+3. apply growth policy
+4. re-check follow state immediately before mutation
+5. record attempts, verification, and queue state changes
+6. emit run artifact
 
-### Social Graph Sync (`bot sync`)
+Output: follow/clap/comment execution against queued candidates.
 
-- Pulls own followers and following into local cache tables.
-- Uses full pagination by default (`--full` default true).
-- Supports force refresh (`--force`) that bypasses freshness window checks.
-- Upserts `users` from cache snapshots and imports missing following rows into `follow_cycle` as pending.
+### Reconcile (`bot reconcile`)
+
+- builds a paginated worklist from reconciliation rows and pending follow-cycle users
+- runs `UserViewerEdge`
+- updates canonical follow-state in live mode
+
+### Graph sync (`bot sync`)
+
+- refreshes own followers and following cache tables
+- upserts users from snapshots
+- may import pending follow-cycle rows for known current following state
 
 ### Cleanup (`bot cleanup`)
 
-- Uses cache-first candidate filtering: only pending rows that still exist in `own_following_cache` are unfollow-eligible.
-- Missing-cache rows are marked skipped (`cleanup_status='skipped'`) in live mode to prevent repeated churn.
-- Applies whitelist keep logic when follower count meets `CLEANUP_UNFOLLOW_WHITELIST_MIN_FOLLOWERS`.
-- Uses short unfollow pacing gaps clamped to effective `1-4s`.
+- targets overdue non-followback rows
+- uses cache-first filtering
+- respects whitelist thresholds for high-follower accounts
+- uses separate cleanup pacing
 
-### Safety
+### DB hygiene (`bot db-hygiene`)
 
-Hard-stop triggers:
+- prunes stale operational rows by retention windows
+- supports dry-run preview and optional `VACUUM`
 
-- challenge detection (status/text signatures)
+## 8. Safety and Timing
+
+Hard-stop triggers can include:
+
+- challenge detection
 - session/auth expiry signatures
-- consecutive failure threshold
-- operator kill switch (`OPERATOR_KILL_SWITCH=true`)
+- repeated failure threshold
+- `OPERATOR_KILL_SWITCH=true`
 
-### Timing
+Timing model includes:
 
-- session warm-up sleep
-- read-delay sleeps
-- inter-action non-uniform cooldowns
-- cleanup-only short unfollow pacing window (`1-4s` effective clamp)
+- session warmup
+- read delay
+- verify gap
+- action gap
+- mutation window limits
+- pass cooldown
+- cleanup-specific pacing
 
-## 7. CLI Surface
+## 9. CLI Surface
 
-- `uv run bot setup`
-- `uv run bot start` (interactive numbered menu)
-- `uv run bot start --quick-live [--dry-run-first]`
-- `uv run bot profile-validate --env-path .env.production`
-- `uv run bot auth`
-- `uv run bot probe --tag programming`
-- `uv run bot contracts --tag programming [--execute-reads]`
-- `uv run bot run --tag programming [--dry-run] [--seed-user ...]`
-- `uv run bot cleanup [--live|--dry-run] [--limit N]`
-- `uv run bot sync [--live|--dry-run] [--force] [--full|--respect-pagination-config]`
-- `uv run bot reconcile --limit N --page-size N [--dry-run]`
-- `uv run bot artifacts validate [--path <artifact>]`
-- `uv run bot status`
+Top-level commands:
 
-### Start Menu Grouping
+- `setup`
+- `start`
+- `auth`
+- `auth-import`
+- `discover`
+- `run`
+- `queue`
+- `cleanup`
+- `sync`
+- `reconcile`
+- `db-hygiene`
+- `probe`
+- `contracts`
+- `status`
+- `artifacts validate`
 
-When you run `uv run bot start`, options are grouped as:
+Grouped aliases:
 
-- `1`: growth
-- `2`: unfollow
-- `3`: maintenance
-- `4`: diagnostics
-- `5`: observability
-- `6`: settings/auth
-- `7`: exit
+- `growth discover`
+- `growth queue`
+- `growth session`
+- `growth cycle`
+- `growth preflight`
+- `growth followers`
+- `unfollow cleanup`
+- `maintenance sync`
+- `maintenance reconcile`
+- `maintenance db-hygiene`
+- `diagnostics probe`
+- `diagnostics contracts`
+- `observe status`
+- `observe queue`
+- `observe validate-artifact`
 
-Growth mode then opens source/policy/runtime submenus, and source selection supports multi-source combinations.
+### Start menu grouping
 
-## 8. Operational Contracts
+`uv run bot start` now groups options as:
 
-1. UTC day boundary is mandatory for budget accounting.
-2. `MEDIUM_USER_REF` is `user_id` only.
-3. State verification and mutation side effects are recorded independently.
-4. `PublishPostThreadedResponse` remains in contract coverage, but is intentionally excluded from default daily execution flow.
+- `1` discovery
+- `2` growth
+- `3` unfollow
+- `4` maintenance
+- `5` diagnostics
+- `6` observability
+- `7` settings/auth
+- `8` exit
 
-## 9. Quality and Validation
+## 10. Operational Contracts
 
-Current baseline includes:
+1. UTC day-boundary accounting is required for budgets.
+2. `MEDIUM_USER_REF` must be a Medium `user_id`.
+3. Discovery and growth are separate workflows.
+4. Growth acts on the persisted queue; discovery populates it.
+5. Follow verification is independent from newsletter subscribe semantics.
+
+## 11. Quality and Validation
+
+Current validation surface includes:
 
 - contract parity checks
-- strict response-path checks
-- capture freshness/integrity checks
+- response-path checks
+- capture integrity checks
 - capture sanitization checks
-- compile/smoke validation scripts
-- CI quality workflow in `.github/workflows/contracts.yml`
-- CI secret scanning workflow in `.github/workflows/secrets.yml`
-- tag-triggered release workflow in `.github/workflows/release.yml`
+- compile/smoke checks
+- artifact schema validation
+- production profile validation
 
-Optional CI live-read validation runs when required secrets/variables are configured.
+## 12. Current Maturity
 
-## 10. Current Maturity
+Current project shape is stronger and more coherent than the earlier combined workflow:
 
-### Implemented
-
-- phases 0 through 7 from the development plan
-- live-read strict contract checks with newsletter slug + username inputs
-- file-based migrations, idempotency keys, reconciliation persistence
-- safety guardrails, run artifacts, status diagnostics, redaction layer
-- production profile validation + scheduler templates
-- release automation + security scanning + runbook/rollback/promotion docs
+- discovery, growth, unfollow, and maintenance are now explicit
+- queue-driven growth is the default model
+- observability and hygiene tooling are first-class operational features
+- capture-driven contract validation remains the main Medium integration safety layer

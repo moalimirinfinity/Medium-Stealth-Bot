@@ -232,6 +232,14 @@ query PostResponsesQuery($postId: ID!, $paging: PagingOptions, $sortType: Respon
           id
           name
           username
+          bio
+          newsletterV3 {
+            id
+          }
+          socialStats {
+            followerCount
+            followingCount
+          }
         }
       }
       pagingInfo {
@@ -317,6 +325,28 @@ mutation PublishPostThreadedResponse($inResponseToPostId: ID!, $deltas: [Delta!]
 DELETE_RESPONSE_MUTATION = """
 mutation DeleteResponseMutation($responseId: ID!) {
   deletePost(targetPostId: $responseId)
+}
+""".strip()
+
+QUOTE_CREATE_MUTATION = """
+mutation QuoteCreateMutation($targetPostId: ID!, $targetPostVersionId: ID!, $targetParagraphNames: [ID!]!, $startOffset: Int!, $endOffset: Int!, $quoteType: StreamItemQuoteType!) {
+  createQuote(
+    targetPostId: $targetPostId
+    targetPostVersionId: $targetPostVersionId
+    targetParagraphNames: $targetParagraphNames
+    startOffset: $startOffset
+    endOffset: $endOffset
+    quoteType: $quoteType
+  ) {
+    __typename
+    id
+  }
+}
+""".strip()
+
+DELETE_QUOTE_MUTATION = """
+mutation DeleteQuoteMutation($targetPostId: ID!, $targetQuoteId: ID!) {
+  deleteQuote(targetPostId: $targetPostId, targetQuoteId: $targetQuoteId)
 }
 """.strip()
 
@@ -482,6 +512,23 @@ def undo_clap_post(target_post_id: str, user_id: str, num_claps: int) -> GraphQL
     return clap_post(target_post_id, user_id, num_claps=-abs(num_claps))
 
 
+def _threaded_response_deltas(text: str) -> list[dict[str, object]]:
+    # Live-validated on 2026-04-23: Medium now accepts a minimal Delta payload
+    # for responses. The older {"insert": "..."} shape is rejected.
+    return [
+        {
+            "type": 1,
+            "index": 0,
+            "paragraph": {
+                "name": "p000",
+                "type": 1,
+                "text": text,
+                "markups": [],
+            },
+        }
+    ]
+
+
 def publish_threaded_response(
     in_response_to_post_id: str,
     text: str,
@@ -491,7 +538,7 @@ def publish_threaded_response(
         query=PUBLISH_POST_THREADED_RESPONSE_MUTATION,
         variables={
             "inResponseToPostId": in_response_to_post_id,
-            "deltas": [{"insert": text}],
+            "deltas": _threaded_response_deltas(text),
             "inResponseToQuoteId": None,
         },
     )
@@ -502,4 +549,38 @@ def delete_response(response_id: str) -> GraphQLOperation:
         operationName="DeleteResponseMutation",
         query=DELETE_RESPONSE_MUTATION,
         variables={"responseId": response_id},
+    )
+
+
+def create_quote_highlight(
+    *,
+    target_post_id: str,
+    target_post_version_id: str,
+    target_paragraph_names: list[str],
+    start_offset: int,
+    end_offset: int,
+    quote_type: str = "HIGHLIGHT",
+) -> GraphQLOperation:
+    return GraphQLOperation(
+        operationName="QuoteCreateMutation",
+        query=QUOTE_CREATE_MUTATION,
+        variables={
+            "targetPostId": target_post_id,
+            "targetPostVersionId": target_post_version_id,
+            "targetParagraphNames": target_paragraph_names,
+            "startOffset": start_offset,
+            "endOffset": end_offset,
+            "quoteType": quote_type,
+        },
+    )
+
+
+def delete_quote(*, target_post_id: str, target_quote_id: str) -> GraphQLOperation:
+    return GraphQLOperation(
+        operationName="DeleteQuoteMutation",
+        query=DELETE_QUOTE_MUTATION,
+        variables={
+            "targetPostId": target_post_id,
+            "targetQuoteId": target_quote_id,
+        },
     )

@@ -1,6 +1,6 @@
 # Follow Action Note
 
-## Current Mapping (Validated 2026-02-24)
+## Current Mapping (Validated 2026-04-23)
 
 ### Default Follow Button
 - Operation: `SubscribeNewsletterV3Mutation`
@@ -27,8 +27,9 @@
 
 ## Evidence Sources
 - Live capture:
-  - `captures/final/live_capture_2026-02-24.json`
-  - `captures/final/live_ops_2026-02-24.json`
+  - `captures/final/live_capture_2026-04-23.json`
+  - `captures/final/live_ops_2026-04-23.json`
+  - `captures/final/implementation_ops_2026-04-23.json`
 - Historical reference:
   - `captures/final/practical_capture_2026-02-21.json`
   - `captures/final/practical_ops_2026-02-21.json`

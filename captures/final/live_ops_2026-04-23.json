@@ -1,14 +1,16 @@
 {
-  "capturedAt": "2026-04-20T08:00:31.509Z",
+  "capturedAt": "2026-04-23T15:50:57.452Z",
   "purpose": "live_graphql_ops_summary",
-  "sourceCapture": "captures/final/live_capture_2026-04-20.json",
-  "totalUniqueOperationNames": 9,
+  "sourceCapture": "captures/final/live_capture_2026-04-23.json",
+  "totalUniqueOperationNames": 11,
   "operationNames": [
     "ClapMutation",
+    "DeleteQuoteMutation",
     "DeleteResponseMutation",
     "LogClientEventsMutation",
     "LogExperimentExposure",
     "PublishPostThreadedResponse",
+    "QuoteCreateMutation",
     "UnfollowUserMutation",
     "UnsubscribeNewsletterV3Mutation",
     "UseBaseCacheControlQuery",
@@ -16,16 +18,21 @@
   ],
   "mutationNames": [
     "ClapMutation",
+    "DeleteQuoteMutation",
     "DeleteResponseMutation",
     "LogClientEventsMutation",
     "LogExperimentExposure",
     "PublishPostThreadedResponse",
+    "QuoteCreateMutation",
     "UnfollowUserMutation",
     "UnsubscribeNewsletterV3Mutation"
   ],
   "practicalCritical": [
     "ClapMutation",
+    "DeleteQuoteMutation",
     "DeleteResponseMutation",
+    "PublishPostThreadedResponse",
+    "QuoteCreateMutation",
     "UnfollowUserMutation",
     "UnsubscribeNewsletterV3Mutation"
   ],
@@ -44,6 +51,28 @@
           "numClaps",
           "targetPostId",
           "userId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/post/redacted"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "DeleteQuoteMutation",
+      "hits": 1,
+      "stubbedHits": 1,
+      "nonStubbedHits": 0,
+      "evidence": "probe_stubbed_only",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "targetPostId",
+          "targetQuoteId"
         ]
       ],
       "samplePageUrls": [
@@ -129,9 +158,33 @@
         [
           "deltas",
           "inResponseToPostId",
-          "inResponseToQuoteId",
-          "responseDistribution",
-          "sortType"
+          "inResponseToQuoteId"
+        ]
+      ],
+      "samplePageUrls": [
+        "https://medium.com/post/redacted"
+      ],
+      "sampleRequestUrls": [
+        "https://medium.com/_/graphql"
+      ]
+    },
+    {
+      "operationName": "QuoteCreateMutation",
+      "hits": 1,
+      "stubbedHits": 1,
+      "nonStubbedHits": 0,
+      "evidence": "probe_stubbed_only",
+      "statusCodes": [
+        200
+      ],
+      "variableKeySets": [
+        [
+          "endOffset",
+          "quoteType",
+          "startOffset",
+          "targetParagraphNames",
+          "targetPostId",
+          "targetPostVersionId"
         ]
       ],
       "samplePageUrls": [

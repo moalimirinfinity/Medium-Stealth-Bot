@@ -1,12 +1,13 @@
 # Release Process
 
-Release flow is tag-driven and separate from normal quality checks.
+Release flow is tag-driven and separate from normal operator workflows.
 
 ## Prerequisites
 
 1. Worktree is clean.
-2. Local quality checks and contract checks pass.
-3. Target version follows semantic versioning (`MAJOR.MINOR.PATCH`).
+2. Local quality and contract checks pass.
+3. Target version follows semantic versioning: `MAJOR.MINOR.PATCH`.
+4. Operator-facing docs reflect the current discovery / growth / maintenance model.
 
 ## Local One-Command Release
 
@@ -26,15 +27,15 @@ The script performs:
 2. release checks:
    - compile
    - capture integrity
-   - capture sanitization check
-   - response contract path check
+   - capture sanitization
+   - response contract path validation
    - contract registry parity
    - production profile template baseline validation
 3. version bump in:
    - `pyproject.toml`
    - `src/medium_stealth_bot/__init__.py`
-4. release commit + annotated tag `v<version>`
-5. push commit and tag (unless `--no-push`)
+4. release commit and annotated tag `v<version>`
+5. push commit and tag unless `--no-push` is used
 
 ## GitHub Release Workflow
 
@@ -43,26 +44,28 @@ Workflow: `.github/workflows/release.yml`
 Triggers:
 
 - push tags `v*.*.*`
-- `workflow_dispatch` (optional manual tag input)
+- optional `workflow_dispatch`
 
 Workflow outputs:
 
-- re-runs release checks
+- reruns release checks
 - builds `sdist` and `wheel` with `uv build`
 - generates `dist/SHA256SUMS.txt`
-- creates GitHub Release with generated notes and attached artifacts
+- creates a GitHub Release with generated notes and attached artifacts
 
 ## Post-Release Checks
 
-1. Confirm release tag appears in repository tags and GitHub Releases.
-2. Confirm assets include wheel/sdist and checksums.
-3. Re-run quick smoke checks locally on the released tag if needed.
+1. Confirm the tag appears in Git and GitHub Releases.
+2. Confirm assets include wheel, sdist, and checksums.
+3. Smoke-check the released tag if needed.
+4. Confirm docs and runbook still match the release behavior.
 
-## Rollback of a Bad Release
+## Bad Release Procedure
 
 If a release is bad:
 
 1. stop schedulers and set `OPERATOR_KILL_SWITCH=true`
-2. revert to prior stable tag in deployment environment
-3. create a corrective patch release
-4. document incident in `docs/ROLLBACK.md` record section
+2. revert the deployment checkout to the prior stable tag
+3. revalidate profile and contracts
+4. create a corrective patch release
+5. document the incident in [docs/ROLLBACK.md](/Users/moalimir/Project%20World/Medium-Stealth-Bot/docs/ROLLBACK.md)

@@ -1,5 +1,5 @@
 {
-  "capturedAt": "2026-04-20T08:00:31.509Z",
+  "capturedAt": "2026-04-23T15:50:57.452Z",
   "purpose": "live_graphql_capture",
   "source": "playwright + .env session cookies",
   "visits": [
@@ -13,14 +13,16 @@
     "manual-mutation-probes-sent",
     "article-clap-not-found"
   ],
-  "totalRequestsCaptured": 11,
-  "totalUniqueOperationNames": 9,
+  "totalRequestsCaptured": 13,
+  "totalUniqueOperationNames": 11,
   "operationNames": [
     "ClapMutation",
+    "DeleteQuoteMutation",
     "DeleteResponseMutation",
     "LogClientEventsMutation",
     "LogExperimentExposure",
     "PublishPostThreadedResponse",
+    "QuoteCreateMutation",
     "UnfollowUserMutation",
     "UnsubscribeNewsletterV3Mutation",
     "UseBaseCacheControlQuery",
@@ -28,22 +30,27 @@
   ],
   "mutationNames": [
     "ClapMutation",
+    "DeleteQuoteMutation",
     "DeleteResponseMutation",
     "LogClientEventsMutation",
     "LogExperimentExposure",
     "PublishPostThreadedResponse",
+    "QuoteCreateMutation",
     "UnfollowUserMutation",
     "UnsubscribeNewsletterV3Mutation"
   ],
   "practicalCritical": [
     "ClapMutation",
+    "DeleteQuoteMutation",
     "DeleteResponseMutation",
+    "PublishPostThreadedResponse",
+    "QuoteCreateMutation",
     "UnfollowUserMutation",
     "UnsubscribeNewsletterV3Mutation"
   ],
   "requests": [
     {
-      "capturedAt": "2026-04-20T07:58:44.692Z",
+      "capturedAt": "2026-04-23T15:49:15.458Z",
       "requestUrl": "https://medium.com/_/graphql",
       "status": 200,
       "operationName": "VisitorQuery",
@@ -54,7 +61,7 @@
         "origin": "https://medium.com",
         "content-type": "application/json",
         "apollographql-client-name": "lite",
-        "apollographql-client-version": "main-20260416-171403-2c58fcd4d8"
+        "apollographql-client-version": "main-20260423-093454-1cb5c55fdb"
       },
       "responseSummary": {
         "hasData": true,
@@ -68,7 +75,7 @@
       "stubbed": false
     },
     {
-      "capturedAt": "2026-04-20T07:58:44.730Z",
+      "capturedAt": "2026-04-23T15:49:15.458Z",
       "requestUrl": "https://medium.com/_/graphql",
       "status": 200,
       "operationName": "UseBaseCacheControlQuery",
@@ -79,7 +86,7 @@
         "origin": "https://medium.com",
         "content-type": "application/json",
         "apollographql-client-name": "lite",
-        "apollographql-client-version": "main-20260416-171403-2c58fcd4d8"
+        "apollographql-client-version": "main-20260423-093454-1cb5c55fdb"
       },
       "responseSummary": {
         "hasData": true,
@@ -93,7 +100,7 @@
       "stubbed": false
     },
     {
-      "capturedAt": "2026-04-20T07:58:44.777Z",
+      "capturedAt": "2026-04-23T15:49:15.458Z",
       "requestUrl": "https://medium.com/_/graphql",
       "status": 200,
       "operationName": "LogExperimentExposure",
@@ -106,7 +113,7 @@
         "origin": "https://medium.com",
         "content-type": "application/json",
         "apollographql-client-name": "lite",
-        "apollographql-client-version": "main-20260416-171403-2c58fcd4d8"
+        "apollographql-client-version": "main-20260423-093454-1cb5c55fdb"
       },
       "responseSummary": {
         "hasData": true,
@@ -120,7 +127,7 @@
       "stubbed": false
     },
     {
-      "capturedAt": "2026-04-20T07:58:49.619Z",
+      "capturedAt": "2026-04-23T15:49:19.834Z",
       "requestUrl": "https://medium.com/_/graphql",
       "status": 403,
       "operationName": "LogClientEventsMutation",
@@ -128,12 +135,12 @@
       "variableKeys": [
         "payload"
       ],
-      "requestBodyLength": 2397,
+      "requestBodyLength": 1931,
       "requestHeadersSubset": {
         "origin": "https://medium.com",
         "content-type": "application/json",
         "apollographql-client-name": "lite",
-        "apollographql-client-version": "main-20260416-171403-2c58fcd4d8"
+        "apollographql-client-version": "main-20260423-093454-1cb5c55fdb"
       },
       "responseSummary": {
         "hasData": false,
@@ -145,7 +152,7 @@
       "stubbed": false
     },
     {
-      "capturedAt": "2026-04-20T07:58:53.492Z",
+      "capturedAt": "2026-04-23T15:49:23.798Z",
       "requestUrl": "https://medium.com/_/graphql",
       "status": 403,
       "operationName": "LogClientEventsMutation",
@@ -153,12 +160,12 @@
       "variableKeys": [
         "payload"
       ],
-      "requestBodyLength": 2397,
+      "requestBodyLength": 1931,
       "requestHeadersSubset": {
         "origin": "https://medium.com",
         "content-type": "application/json",
         "apollographql-client-name": "lite",
-        "apollographql-client-version": "main-20260416-171403-2c58fcd4d8"
+        "apollographql-client-version": "main-20260423-093454-1cb5c55fdb"
       },
       "responseSummary": {
         "hasData": false,
@@ -170,7 +177,7 @@
       "stubbed": false
     },
     {
-      "capturedAt": "2026-04-20T07:59:54.332Z",
+      "capturedAt": "2026-04-23T15:50:20.408Z",
       "requestUrl": "https://medium.com/_/graphql",
       "status": 200,
       "operationName": "UnsubscribeNewsletterV3Mutation",
@@ -196,7 +203,7 @@
       "stubbed": true
     },
     {
-      "capturedAt": "2026-04-20T07:59:54.332Z",
+      "capturedAt": "2026-04-23T15:50:20.408Z",
       "requestUrl": "https://medium.com/_/graphql",
       "status": 200,
       "operationName": "UnfollowUserMutation",
@@ -222,7 +229,7 @@
       "stubbed": true
     },
     {
-      "capturedAt": "2026-04-20T07:59:54.332Z",
+      "capturedAt": "2026-04-23T15:50:20.408Z",
       "requestUrl": "https://medium.com/_/graphql",
       "status": 200,
       "operationName": "ClapMutation",
@@ -250,19 +257,17 @@
       "stubbed": true
     },
     {
-      "capturedAt": "2026-04-20T07:59:54.332Z",
+      "capturedAt": "2026-04-23T15:50:20.408Z",
       "requestUrl": "https://medium.com/_/graphql",
       "status": 200,
       "operationName": "PublishPostThreadedResponse",
-      "query": "mutation PublishPostThreadedResponse($inResponseToPostId: ID!, $deltas: [Delta!]!, $inResponseToQuoteId: ID, $responseDistribution: ResponseDistributionType, $sortType: ResponseSortType) { publishPostThreadedResponse(inResponseToPostId: $inResponseToPostId, deltas: $deltas, inResponseToQuoteId: $inResponseToQuoteId, responseDistribution: $responseDistribution, sortType: $sortType) { __typename } }",
+      "query": "mutation PublishPostThreadedResponse($inResponseToPostId: ID!, $deltas: [Delta!]!, $inResponseToQuoteId: ID) { publishPostThreadedResponse(inResponseToPostId: $inResponseToPostId, deltas: $deltas, inResponseToQuoteId: $inResponseToQuoteId) { __typename } }",
       "variableKeys": [
         "deltas",
         "inResponseToPostId",
-        "inResponseToQuoteId",
-        "responseDistribution",
-        "sortType"
+        "inResponseToQuoteId"
       ],
-      "requestBodyLength": 650,
+      "requestBodyLength": 521,
       "requestHeadersSubset": {
         "origin": "https://medium.com",
         "content-type": "application/json",
@@ -280,7 +285,65 @@
       "stubbed": true
     },
     {
-      "capturedAt": "2026-04-20T07:59:54.333Z",
+      "capturedAt": "2026-04-23T15:50:20.408Z",
+      "requestUrl": "https://medium.com/_/graphql",
+      "status": 200,
+      "operationName": "QuoteCreateMutation",
+      "query": "mutation QuoteCreateMutation($targetPostId: ID!, $targetPostVersionId: ID!, $targetParagraphNames: [ID!]!, $startOffset: Int!, $endOffset: Int!, $quoteType: StreamItemQuoteType!) { createQuote(targetPostId: $targetPostId, targetPostVersionId: $targetPostVersionId, targetParagraphNames: $targetParagraphNames, startOffset: $startOffset, endOffset: $endOffset, quoteType: $quoteType) { __typename id } }",
+      "variableKeys": [
+        "endOffset",
+        "quoteType",
+        "startOffset",
+        "targetParagraphNames",
+        "targetPostId",
+        "targetPostVersionId"
+      ],
+      "requestBodyLength": 625,
+      "requestHeadersSubset": {
+        "origin": "https://medium.com",
+        "content-type": "application/json",
+        "apollographql-client-name": "lite",
+        "apollographql-client-version": "main-20260223-200902-cb62c3b9f7"
+      },
+      "responseSummary": {
+        "hasData": false,
+        "hasErrors": false,
+        "errorCount": 0,
+        "topLevelDataKeys": [],
+        "nonJson": true,
+        "parseError": "Error: response.json: Protocol error (Network.getResponseBody): No resource with given identifier found"
+      },
+      "stubbed": true
+    },
+    {
+      "capturedAt": "2026-04-23T15:50:20.408Z",
+      "requestUrl": "https://medium.com/_/graphql",
+      "status": 200,
+      "operationName": "DeleteQuoteMutation",
+      "query": "mutation DeleteQuoteMutation($targetPostId: ID!, $targetQuoteId: ID!) { deleteQuote(targetPostId: $targetPostId, targetQuoteId: $targetQuoteId) }",
+      "variableKeys": [
+        "targetPostId",
+        "targetQuoteId"
+      ],
+      "requestBodyLength": 272,
+      "requestHeadersSubset": {
+        "origin": "https://medium.com",
+        "content-type": "application/json",
+        "apollographql-client-name": "lite",
+        "apollographql-client-version": "main-20260223-200902-cb62c3b9f7"
+      },
+      "responseSummary": {
+        "hasData": false,
+        "hasErrors": false,
+        "errorCount": 0,
+        "topLevelDataKeys": [],
+        "nonJson": true,
+        "parseError": "Error: response.json: Protocol error (Network.getResponseBody): No resource with given identifier found"
+      },
+      "stubbed": true
+    },
+    {
+      "capturedAt": "2026-04-23T15:50:20.408Z",
       "requestUrl": "https://medium.com/_/graphql",
       "status": 200,
       "operationName": "ClapMutation",
@@ -308,7 +371,7 @@
       "stubbed": true
     },
     {
-      "capturedAt": "2026-04-20T07:59:54.333Z",
+      "capturedAt": "2026-04-23T15:50:20.408Z",
       "requestUrl": "https://medium.com/_/graphql",
       "status": 200,
       "operationName": "DeleteResponseMutation",

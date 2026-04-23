@@ -1,19 +1,30 @@
 # Implementation Notes
 
-## Canonical Capture
-Use `captures/manifest.json` canonical pointers as primary truth for implementation.
-Current canonical capture is `captures/final/live_capture_2026-02-24.json`.
-Use `captures/final/live_capture_2026-04-20.json` as targeted supplemental evidence for rollback mutations (`DeleteResponseMutation` and negative `ClapMutation`).
-Use `captures/final/implementation_ops_2026-02-24.json` as the focused operation subset for coding.
-The focused subset is runtime-aligned: capture-observed operations plus the runtime helper `UserLatestPostQuery`.
-The subset is also a machine-readable operation registry with per-operation `classification`, `riskLevel`,
-`requiredVariableKeys`, `optionalVariableKeys`, and `expectedTopLevelResponseFields`.
+## Canonical Capture Set
+
+Use `captures/manifest.json` as the canonical pointer source.
+
+Current primary references:
+
+- `captures/final/live_capture_2026-04-23.json`
+- `captures/final/live_ops_2026-04-23.json`
+- `captures/final/implementation_ops_2026-04-23.json`
+- `captures/final/live_capture_2026-04-20.json` for rollback mutations
+
+The implementation subset is the runtime-aligned operation registry. It includes:
+
+- `classification`
+- `riskLevel`
+- required and optional variable keys
+- expected response fields
 
 ## Endpoint
-- GraphQL endpoint: `https://medium.com/_/graphql`
-- Payload transport: JSON array of operation objects.
 
-Single request shape:
+- GraphQL endpoint: `https://medium.com/_/graphql`
+- transport shape: JSON array of operation objects
+
+Example request:
+
 ```json
 [
   {
@@ -26,79 +37,140 @@ Single request shape:
 ]
 ```
 
-## Critical Operation Contracts
+## Runtime-Aligned Operation Roles
 
-### Follow UI Path
-- Operation: `SubscribeNewsletterV3Mutation`
-- Variables:
+### Growth execution
+
+- `SubscribeNewsletterV3Mutation`
+- `UnsubscribeNewsletterV3Mutation`
+- `UnfollowUserMutation`
+- `ClapMutation`
+- `DeleteResponseMutation`
+- `QuoteCreateMutation`
+- `DeleteQuoteMutation`
+- `UserViewerEdge`
+
+### Discovery and queue preparation
+
+- `UseBaseCacheControlQuery`
+- `TopicLatestStorieQuery`
+- `TopicWhoToFollowPubishersQuery`
+- `WhoToFollowModuleQuery`
+- `UserLatestPostQuery`
+- `NewsletterV3ViewerEdge`
+
+Discovery now fills the queue only. Growth execution consumes already-selected queue candidates.
+
+## Critical Semantics
+
+### Follow UI path
+
+- operation: `SubscribeNewsletterV3Mutation`
+- required variable:
   - `newsletterV3Id`
-  - `shouldRecordConsent` (observed `false`)
-- Classification: `newsletter_subscribe` (not definitive `user_follow`).
+- note:
+  - newsletter subscribe is not definitive proof of graph follow state
 
-### Unsubscribe Notifications
-- Operation: `UnsubscribeNewsletterV3Mutation`
-- Variables:
-  - `newsletterV3Id`
-- Classification: `newsletter_unsubscribe`.
+### Full unfollow
 
-### Full Unfollow
-- Operation: `UnfollowUserMutation`
-- Variables:
+- operation: `UnfollowUserMutation`
+- variable:
   - `targetUserId`
-- Classification: `user_unfollow`.
 
-### Undo Claps
-- Operation: `ClapMutation`
-- Variables:
+### Verify actual follow state
+
+- operation: `UserViewerEdge`
+- canonical signal:
+  - `user.viewerEdge.isFollowing`
+
+### Undo clap
+
+- operation: `ClapMutation`
+- variables:
   - `targetPostId`
   - `userId`
   - `numClaps`
-- Rule: rollback uses the same mutation with a negative `numClaps` value.
+- rule:
+  - rollback uses a negative `numClaps`
+- live verification:
+  - confirmed on 2026-04-23 via Playwright-backed authenticated session with `numClaps=-1`
 
-### Delete Comment / Response
-- Operation: `DeleteResponseMutation`
-- Variables:
+### Delete comment / response
+
+- operation: `DeleteResponseMutation`
+- variable:
   - `responseId`
-- Backend field:
+- backend field:
   - `deletePost`
-- Note: current evidence comes from the account activity flow (`/activity`) rather than the older capture bundle.
+- live verification:
+  - confirmed on 2026-04-23 via Playwright-backed authenticated session
 
-### Verify Actual Follow State
-- Operation: `UserViewerEdge`
-- Signal:
-  - `user.viewerEdge.isFollowing`
-- Rule: count `user_follow` only when `isFollowing == true`.
+### Publish comment / response
 
-### Discover Targets
-- Operations:
-  - `UseBaseCacheControlQuery`
-  - `TopicLatestStorieQuery`
-  - `TopicWhoToFollowPubishersQuery`
-  - `WhoToFollowModuleQuery`
-  - `UserLatestPostQuery` (runtime helper for optional pre-follow clap target resolution)
-  - `NewsletterV3ViewerEdge`
+- operation: `PublishPostThreadedResponse`
+- required variables:
+  - `inResponseToPostId`
+  - `deltas`
+- optional variables:
+  - `inResponseToQuoteId`
+- live-validated minimal payload:
+  - a single paragraph delta with `type=1`, `index=0`, and `paragraph={name,type,text,markups}`
+- important drift:
+  - the legacy `{"insert": "..."}` delta shape is rejected
+  - `responseDistribution` is optional for the minimal mutation
+  - `sortType` should not be declared unless the query actually uses it
+
+### Create highlight
+
+- operation: `QuoteCreateMutation`
+- required variables:
+  - `targetPostId`
+  - `targetPostVersionId`
+  - `targetParagraphNames`
+  - `startOffset`
+  - `endOffset`
+  - `quoteType`
+- live verification:
+  - confirmed on 2026-04-23 via Playwright-backed authenticated session
+- observed response field:
+  - `createQuote.id`
+
+### Delete highlight / quote
+
+- operation: `DeleteQuoteMutation`
+- required variables:
+  - `targetPostId`
+  - `targetQuoteId`
+- backend field:
+  - `deleteQuote`
+- live verification:
+  - confirmed on 2026-04-23 via Playwright-backed authenticated session
 
 ## Safety Notes
-- In `live_capture_2026-02-24.json`, side-effect mutation probes are marked with `"stubbed": true`.
-- Stubbed records are safe for payload contract extraction, but not proof of backend success semantics.
-- Treat non-stubbed UI-observed records as behavior evidence.
 
-## Practical Build Rule Set
-1. Separate states: `newsletter_subscribe`, `newsletter_unsubscribe`, `user_follow`, `user_unfollow`.
-2. Never infer `user_follow` from newsletter subscription alone.
-3. Verify follow state with `UserViewerEdge` after follow/unfollow decisions.
-4. Persist both `user_id` and `newsletter_v3_id` in storage.
-5. Validate outgoing operations against the registry contract before request execution.
+- Some live-capture mutation probes are marked `stubbed`.
+- Stubbed records are valid for payload and variable contract extraction, not for backend success semantics.
+- Prefer non-stubbed UI-observed records when reasoning about actual behavior.
+
+## Practical Build Rules
+
+1. Keep `newsletter_subscribe`, `newsletter_unsubscribe`, `user_follow`, and `user_unfollow` as separate concepts.
+2. Never infer true follow state from newsletter subscribe alone.
+3. Verify follow state with `UserViewerEdge`.
+4. Persist both `user_id` and `newsletter_v3_id` when available.
+5. Validate outgoing operations against the registry before execution.
+6. Keep discovery-side reads and growth-side mutations as separate workflows.
 
 ## Operational Implications
 
-- Reconcile accuracy depends on `UserViewerEdge` reliability.
-- Cleanup accuracy depends on separating subscription-state signals from true graph follow-state signals.
-- Graph sync and cache refresh should not infer user-follow state without explicit verify reads.
-- Public-engagement cleanup should undo claps with negative `ClapMutation` payloads and remove bot-authored comments with `DeleteResponseMutation`.
+- Reconcile depends on `UserViewerEdge` reliability.
+- Cleanup depends on separating subscription semantics from graph follow semantics.
+- Graph sync should not infer user-follow state without explicit verification.
+- Rollback flows depend on negative clap support, `DeleteResponseMutation`, and `DeleteQuoteMutation`.
 
 ## Classification Taxonomy
-- `read`: no intended state change.
-- `mutation`: state-changing operation.
-- `state-verify`: canonical verification read (`UserViewerEdge`, `NewsletterV3ViewerEdge`).
-- `high-risk`: mutation with account-visible side effects.
+
+- `read`: no intended state change
+- `mutation`: state-changing operation
+- `state-verify`: canonical verification read
+- `high-risk`: account-visible mutation

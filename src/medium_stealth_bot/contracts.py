@@ -16,6 +16,9 @@ FALLBACK_NEWSLETTER_SLUG = "example-newsletter"
 FALLBACK_NEWSLETTER_V3_ID = "example-newsletter-v3-id"
 FALLBACK_TARGET_USER_ID = "example-target-user-id"
 FALLBACK_POST_ID = "example-post-id"
+FALLBACK_POST_VERSION_ID = "example-post-version-id"
+FALLBACK_PARAGRAPH_NAME = "example-paragraph"
+FALLBACK_QUOTE_ID = "example-quote-id"
 FALLBACK_RESPONSE_ID = "example-response-id"
 
 
@@ -114,6 +117,17 @@ def _sample_operation_builders(tag_slug: str, actor_user_id: str | None) -> dict
         "ClapMutation": operations.clap_post(FALLBACK_POST_ID, user_id, num_claps=1),
         "PublishPostThreadedResponse": operations.publish_threaded_response(FALLBACK_POST_ID, "hello"),
         "DeleteResponseMutation": operations.delete_response(FALLBACK_RESPONSE_ID),
+        "QuoteCreateMutation": operations.create_quote_highlight(
+            target_post_id=FALLBACK_POST_ID,
+            target_post_version_id=FALLBACK_POST_VERSION_ID,
+            target_paragraph_names=[FALLBACK_PARAGRAPH_NAME],
+            start_offset=1,
+            end_offset=5,
+        ),
+        "DeleteQuoteMutation": operations.delete_quote(
+            target_post_id=FALLBACK_POST_ID,
+            target_quote_id=FALLBACK_QUOTE_ID,
+        ),
     }
 
 

@@ -157,7 +157,7 @@ _DIAGNOSTICS_MENU_OPTIONS: tuple[tuple[str, str, str], ...] = (
 
 _OBSERVABILITY_MENU_OPTIONS: tuple[tuple[str, str, str], ...] = (
     ("1", "Inspect", "Show latest run status"),
-    ("2", "Queue", "Show growth queue ready/deferred/rejected/followed counts"),
+    ("2", "Queue", "Show growth queue ready/deferred counts"),
     ("3", "Validate", "Validate latest run artifact schema"),
     ("4", "Back", "Return to the start sections"),
 )
@@ -440,8 +440,6 @@ def _render_growth_queue_status(queue_counts: dict[str, int], *, title: str = "G
     table.add_row("Deferred (All)", str(queue_counts.get("deferred", 0)))
     table.add_row("Deferred (Due)", str(queue_counts.get("deferred_due", 0)))
     table.add_row("Deferred (Future)", str(queue_counts.get("deferred_future", 0)))
-    table.add_row("Rejected", str(queue_counts.get("rejected", 0)))
-    table.add_row("Followed", str(queue_counts.get("followed", 0)))
     table.add_row("Total", str(queue_counts.get("total", 0)))
     console.print(table)
 
@@ -504,12 +502,10 @@ def _render_daily_run(outcome: DailyRunOutcome) -> None:
         summary_table.add_row("Session Target Duration (m)", str(outcome.session_target_duration_minutes or "-"))
     queue_ready = outcome.kpis.get("growth_queue_ready")
     queue_deferred = outcome.kpis.get("growth_queue_deferred")
-    queue_rejected = outcome.kpis.get("growth_queue_rejected")
-    queue_followed = outcome.kpis.get("growth_queue_followed")
-    if all(isinstance(value, (int, float)) for value in (queue_ready, queue_deferred, queue_rejected, queue_followed)):
+    if all(isinstance(value, (int, float)) for value in (queue_ready, queue_deferred)):
         summary_table.add_row(
-            "Queue Ready/Deferred/Rejected/Followed",
-            f"{int(queue_ready)} / {int(queue_deferred)} / {int(queue_rejected)} / {int(queue_followed)}",
+            "Queue Ready/Deferred",
+            f"{int(queue_ready)} / {int(queue_deferred)}",
         )
     summary_table.add_row(
         "Discovered / Screened",
@@ -4506,7 +4502,7 @@ def run_command(
 @app.command("queue")
 def queue_command() -> None:
     """
-    Show current growth queue counts (ready/deferred/rejected/followed).
+    Show current growth queue counts (ready/deferred).
     """
     settings = _bootstrap_settings()
     _, repository = _build_runner(settings)
