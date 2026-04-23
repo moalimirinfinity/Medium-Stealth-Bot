@@ -14,6 +14,10 @@ DEFAULT_USER_AGENT = (
     "Chrome/142.0.0.0 Safari/537.36"
 )
 DEFAULT_IMPLEMENTATION_OPS_REGISTRY_PATH = Path("captures/final/implementation_ops_2026-02-24.json")
+MAX_LIVE_SESSION_DURATION_MINUTES = 24 * 60
+MAX_LIVE_SESSION_FOLLOW_ATTEMPTS = 20_000
+MAX_LIVE_SESSION_PASSES = 20_000
+MAX_DISCOVERY_LIMIT = 5_000
 
 
 def _default_implementation_ops_registry_path() -> Path:
@@ -56,6 +60,40 @@ class AppSettings(BaseSettings):
     data_dir: Path = Field(default=Path(".data"), validation_alias="DATA_DIR")
     db_path: Path = Field(default=Path(".data/medium-stealth-bot.db"), validation_alias="DB_PATH")
     run_artifacts_dir: Path = Field(default=Path(".data/runs"), validation_alias="RUN_ARTIFACTS_DIR")
+    db_hygiene_action_log_retention_days: int = Field(
+        default=45,
+        ge=0,
+        le=3650,
+        validation_alias="DB_HYGIENE_ACTION_LOG_RETENTION_DAYS",
+    )
+    db_hygiene_graph_sync_runs_retention_days: int = Field(
+        default=14,
+        ge=0,
+        le=3650,
+        validation_alias="DB_HYGIENE_GRAPH_SYNC_RUNS_RETENTION_DAYS",
+    )
+    db_hygiene_candidate_reconciliation_retention_days: int = Field(
+        default=30,
+        ge=0,
+        le=3650,
+        validation_alias="DB_HYGIENE_CANDIDATE_RECONCILIATION_RETENTION_DAYS",
+    )
+    db_hygiene_follow_cycle_terminal_retention_days: int = Field(
+        default=120,
+        ge=0,
+        le=3650,
+        validation_alias="DB_HYGIENE_FOLLOW_CYCLE_TERMINAL_RETENTION_DAYS",
+    )
+    db_hygiene_snapshots_retention_days: int = Field(
+        default=365,
+        ge=0,
+        le=3650,
+        validation_alias="DB_HYGIENE_SNAPSHOTS_RETENTION_DAYS",
+    )
+    db_hygiene_vacuum_after_cleanup: bool = Field(
+        default=True,
+        validation_alias="DB_HYGIENE_VACUUM_AFTER_CLEANUP",
+    )
 
     graphql_endpoint: str = Field(
         default="https://medium.com/_/graphql",
@@ -120,25 +158,25 @@ class AppSettings(BaseSettings):
     live_session_duration_minutes: int = Field(
         default=60,
         ge=1,
-        le=24 * 12,
+        le=MAX_LIVE_SESSION_DURATION_MINUTES,
         validation_alias="LIVE_SESSION_DURATION_MINUTES",
     )
     live_session_target_follow_attempts: int = Field(
         default=100,
         ge=1,
-        le=5000,
+        le=MAX_LIVE_SESSION_FOLLOW_ATTEMPTS,
         validation_alias="LIVE_SESSION_TARGET_FOLLOW_ATTEMPTS",
     )
     live_session_min_follow_attempts: int = Field(
         default=80,
         ge=1,
-        le=5000,
+        le=MAX_LIVE_SESSION_FOLLOW_ATTEMPTS,
         validation_alias="LIVE_SESSION_MIN_FOLLOW_ATTEMPTS",
     )
     live_session_max_passes: int = Field(
         default=12,
         ge=1,
-        le=500,
+        le=MAX_LIVE_SESSION_PASSES,
         validation_alias="LIVE_SESSION_MAX_PASSES",
     )
     max_follow_actions_per_run: int = Field(default=5, ge=0, validation_alias="MAX_FOLLOW_ACTIONS_PER_RUN")
@@ -178,10 +216,10 @@ class AppSettings(BaseSettings):
     target_user_followers_scan_limit: int = Field(
         default=50,
         ge=1,
-        le=500,
+        le=MAX_DISCOVERY_LIMIT,
         validation_alias="TARGET_USER_FOLLOWERS_SCAN_LIMIT",
     )
-    follow_candidate_limit: int = Field(default=30, ge=1, le=500, validation_alias="FOLLOW_CANDIDATE_LIMIT")
+    follow_candidate_limit: int = Field(default=30, ge=1, le=MAX_DISCOVERY_LIMIT, validation_alias="FOLLOW_CANDIDATE_LIMIT")
     growth_queue_buffer_target_min: int = Field(
         default=60,
         ge=1,
@@ -189,7 +227,7 @@ class AppSettings(BaseSettings):
         validation_alias="GROWTH_QUEUE_BUFFER_TARGET_MIN",
     )
     growth_queue_buffer_target_max: int = Field(
-        default=250,
+        default=500,
         ge=1,
         le=10000,
         validation_alias="GROWTH_QUEUE_BUFFER_TARGET_MAX",
@@ -325,12 +363,17 @@ class AppSettings(BaseSettings):
         validation_alias="BIO_KEYWORDS",
     )
     discovery_seed_users_raw: str = Field(default="", validation_alias="DISCOVERY_SEED_USERS")
-    discovery_seed_followers_limit: int = Field(default=8, ge=1, le=100, validation_alias="DISCOVERY_SEED_FOLLOWERS_LIMIT")
+    discovery_seed_followers_limit: int = Field(
+        default=8,
+        ge=1,
+        le=MAX_DISCOVERY_LIMIT,
+        validation_alias="DISCOVERY_SEED_FOLLOWERS_LIMIT",
+    )
     discovery_followers_depth: int = Field(default=1, ge=1, le=2, validation_alias="DISCOVERY_FOLLOWERS_DEPTH")
     discovery_second_hop_seed_limit: int = Field(
         default=3,
         ge=1,
-        le=50,
+        le=MAX_DISCOVERY_LIMIT,
         validation_alias="DISCOVERY_SECOND_HOP_SEED_LIMIT",
     )
     topic_curated_list_item_limit: int = Field(
@@ -484,11 +527,19 @@ class AppSettings(BaseSettings):
                 ("sid", self.medium_session_sid),
                 ("uid", self.medium_session_uid),
                 ("xsrf", self.medium_session_xsrf),
-                ("cf_clearance", self.medium_session_cf_clearance),
-                ("_cfuvid", self.medium_session_cfuvid),
             ):
                 if value:
                     cookie_parts.append(f"{key}={value}")
+            # Cloudflare challenge cookies rotate frequently and can go stale quickly.
+            # Avoid rebuilding MEDIUM_SESSION with them in stealth mode when using
+            # split MEDIUM_SESSION_* fields; keep them only for fast mode.
+            if self.client_mode == "fast":
+                for key, value in (
+                    ("cf_clearance", self.medium_session_cf_clearance),
+                    ("_cfuvid", self.medium_session_cfuvid),
+                ):
+                    if value:
+                        cookie_parts.append(f"{key}={value}")
             if cookie_parts:
                 self.medium_session = "; ".join(cookie_parts)
 
@@ -589,6 +640,15 @@ class AppSettings(BaseSettings):
             raise ValueError(
                 "GROWTH_QUEUE_RETRY_LONG_FLOOR_SECONDS must be greater than or equal to "
                 "GROWTH_QUEUE_RETRY_MEDIUM_FLOOR_SECONDS."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_live_session_targets(self) -> "AppSettings":
+        if self.live_session_min_follow_attempts > self.live_session_target_follow_attempts:
+            raise ValueError(
+                "LIVE_SESSION_MIN_FOLLOW_ATTEMPTS must be less than or equal to "
+                "LIVE_SESSION_TARGET_FOLLOW_ATTEMPTS."
             )
         return self
 

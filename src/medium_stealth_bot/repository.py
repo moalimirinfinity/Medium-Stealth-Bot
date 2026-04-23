@@ -56,6 +56,10 @@ class ActionRepository:
         return f"-{hours} hours"
 
     @staticmethod
+    def _utc_modifier_days(days: int) -> str:
+        return f"-{days} days"
+
+    @staticmethod
     def _utc_add_hours_modifier(hours: int) -> str:
         return f"+{hours} hours"
 
@@ -655,21 +659,57 @@ class ActionRepository:
             connection.commit()
 
     def growth_queue_ready_count(self) -> int:
+        return self.growth_queue_state_counts()["ready"]
+
+    def growth_queue_state_counts(self) -> dict[str, int]:
         query = """
-        SELECT COUNT(*) AS count
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN queue_state = 'queued' THEN 1 ELSE 0 END) AS queued,
+            SUM(
+                CASE
+                    WHEN queue_state = 'deferred'
+                     AND (
+                         retry_after_at IS NULL
+                         OR datetime(retry_after_at) <= datetime('now', 'utc')
+                     )
+                    THEN 1
+                    ELSE 0
+                END
+            ) AS deferred_due,
+            SUM(
+                CASE
+                    WHEN queue_state = 'deferred'
+                     AND retry_after_at IS NOT NULL
+                     AND datetime(retry_after_at) > datetime('now', 'utc')
+                    THEN 1
+                    ELSE 0
+                END
+            ) AS deferred_future,
+            SUM(CASE WHEN queue_state = 'rejected' THEN 1 ELSE 0 END) AS rejected,
+            SUM(CASE WHEN queue_state = 'followed' THEN 1 ELSE 0 END) AS followed
         FROM growth_candidate_queue
-        WHERE queue_state = 'queued'
-           OR (
-               queue_state = 'deferred'
-               AND (
-                   retry_after_at IS NULL
-                   OR datetime(retry_after_at) <= datetime('now', 'utc')
-               )
-           )
         """
         with self.database.connect() as connection:
             row = connection.execute(query).fetchone()
-            return int(row["count"]) if row is not None else 0
+            queued = int(row["queued"] or 0) if row is not None else 0
+            deferred_due = int(row["deferred_due"] or 0) if row is not None else 0
+            deferred_future = int(row["deferred_future"] or 0) if row is not None else 0
+            rejected = int(row["rejected"] or 0) if row is not None else 0
+            followed = int(row["followed"] or 0) if row is not None else 0
+            total = int(row["total"] or 0) if row is not None else 0
+            deferred = deferred_due + deferred_future
+            ready = queued + deferred_due
+            return {
+                "ready": ready,
+                "queued": queued,
+                "deferred": deferred,
+                "deferred_due": deferred_due,
+                "deferred_future": deferred_future,
+                "rejected": rejected,
+                "followed": followed,
+                "total": total,
+            }
 
     def upsert_growth_candidate_buffer(
         self,
@@ -873,71 +913,260 @@ class ActionRepository:
         followed_after_days: int,
         rejected_after_days: int,
         stale_after_days: int,
+        dry_run: bool = False,
     ) -> dict[str, int]:
+        followed_after_days = max(0, followed_after_days)
+        rejected_after_days = max(0, rejected_after_days)
+        stale_after_days = max(0, stale_after_days)
+        prune_plan: tuple[tuple[str, str, tuple[object, ...]], ...] = (
+            (
+                "followed",
+                """
+                queue_state = 'followed'
+                  AND datetime(
+                      COALESCE(
+                          last_followed_at,
+                          last_attempted_at,
+                          last_screened_at,
+                          last_discovered_at,
+                          first_discovered_at
+                      )
+                  ) <= datetime('now', 'utc', ?)
+                """,
+                (self._utc_modifier_days(followed_after_days),),
+            ),
+            (
+                "rejected",
+                """
+                queue_state = 'rejected'
+                  AND datetime(
+                      COALESCE(
+                          last_screened_at,
+                          last_attempted_at,
+                          last_discovered_at,
+                          first_discovered_at
+                      )
+                  ) <= datetime('now', 'utc', ?)
+                """,
+                (self._utc_modifier_days(rejected_after_days),),
+            ),
+            (
+                "stale",
+                """
+                queue_state IN ('queued', 'deferred')
+                  AND datetime(
+                      COALESCE(
+                          last_attempted_at,
+                          last_screened_at,
+                          last_discovered_at,
+                          first_discovered_at
+                      )
+                  ) <= datetime('now', 'utc', ?)
+                """,
+                (self._utc_modifier_days(stale_after_days),),
+            ),
+        )
         counts = {"followed": 0, "rejected": 0, "stale": 0}
         with self.database.connect() as connection:
-            if followed_after_days >= 0:
-                connection.execute(
-                    """
-                    DELETE FROM growth_candidate_queue
-                    WHERE queue_state = 'followed'
-                      AND datetime(
-                          COALESCE(
-                              last_followed_at,
-                              last_attempted_at,
-                              last_screened_at,
-                              last_discovered_at,
-                              first_discovered_at
-                          )
-                      ) <= datetime('now', 'utc', ?)
+            for key, where_clause, params in prune_plan:
+                row = connection.execute(
+                    f"""
+                    SELECT COUNT(*) AS count
+                    FROM growth_candidate_queue
+                    WHERE {where_clause}
                     """,
-                    (f"-{followed_after_days} days",),
-                )
-                row = connection.execute("SELECT changes() AS count").fetchone()
-                counts["followed"] = int(row["count"]) if row is not None else 0
-
-            if rejected_after_days >= 0:
+                    params,
+                ).fetchone()
+                count = int(row["count"]) if row is not None else 0
+                if dry_run:
+                    counts[key] = count
+                    continue
+                if count <= 0:
+                    counts[key] = 0
+                    continue
                 connection.execute(
-                    """
+                    f"""
                     DELETE FROM growth_candidate_queue
-                    WHERE queue_state = 'rejected'
-                      AND datetime(
-                          COALESCE(
-                              last_screened_at,
-                              last_attempted_at,
-                              last_discovered_at,
-                              first_discovered_at
-                          )
-                      ) <= datetime('now', 'utc', ?)
+                    WHERE {where_clause}
                     """,
-                    (f"-{rejected_after_days} days",),
+                    params,
                 )
-                row = connection.execute("SELECT changes() AS count").fetchone()
-                counts["rejected"] = int(row["count"]) if row is not None else 0
+                deleted_row = connection.execute("SELECT changes() AS count").fetchone()
+                counts[key] = int(deleted_row["count"]) if deleted_row is not None else 0
 
-            if stale_after_days >= 0:
-                connection.execute(
-                    """
-                    DELETE FROM growth_candidate_queue
-                    WHERE queue_state IN ('queued', 'deferred')
-                      AND datetime(
-                          COALESCE(
-                              last_attempted_at,
-                              last_screened_at,
-                              last_discovered_at,
-                              first_discovered_at
-                          )
-                      ) <= datetime('now', 'utc', ?)
-                    """,
-                    (f"-{stale_after_days} days",),
-                )
-                row = connection.execute("SELECT changes() AS count").fetchone()
-                counts["stale"] = int(row["count"]) if row is not None else 0
-
-            connection.commit()
+            if not dry_run:
+                connection.commit()
 
         counts["total"] = counts["followed"] + counts["rejected"] + counts["stale"]
         return counts
+
+    def run_db_hygiene(
+        self,
+        *,
+        action_log_retention_days: int,
+        graph_sync_runs_retention_days: int,
+        candidate_reconciliation_retention_days: int,
+        follow_cycle_terminal_retention_days: int,
+        snapshots_retention_days: int,
+        queue_followed_after_days: int,
+        queue_rejected_after_days: int,
+        queue_stale_after_days: int,
+        dry_run: bool = True,
+        vacuum: bool = False,
+    ) -> dict[str, int | bool]:
+        queue_counts = self.prune_growth_candidate_queue(
+            followed_after_days=queue_followed_after_days,
+            rejected_after_days=queue_rejected_after_days,
+            stale_after_days=queue_stale_after_days,
+            dry_run=dry_run,
+        )
+
+        action_log_retention_days = max(0, action_log_retention_days)
+        graph_sync_runs_retention_days = max(0, graph_sync_runs_retention_days)
+        candidate_reconciliation_retention_days = max(0, candidate_reconciliation_retention_days)
+        follow_cycle_terminal_retention_days = max(0, follow_cycle_terminal_retention_days)
+        snapshots_retention_days = max(0, snapshots_retention_days)
+
+        prune_plan: tuple[tuple[str, str, str, tuple[object, ...]], ...] = (
+            (
+                "action_log",
+                "action_log",
+                """
+                datetime(COALESCE(timestamp, CURRENT_TIMESTAMP))
+                    <= datetime('now', 'utc', ?)
+                """,
+                (self._utc_modifier_days(action_log_retention_days),),
+            ),
+            (
+                "graph_sync_runs",
+                "graph_sync_runs",
+                """
+                status != 'running'
+                AND datetime(COALESCE(ended_at, started_at))
+                    <= datetime('now', 'utc', ?)
+                AND id NOT IN (
+                    SELECT last_sync_run_id
+                    FROM own_followers_cache
+                    WHERE last_sync_run_id IS NOT NULL
+                    UNION
+                    SELECT last_sync_run_id
+                    FROM own_following_cache
+                    WHERE last_sync_run_id IS NOT NULL
+                    UNION
+                    SELECT last_run_id
+                    FROM graph_sync_state
+                    WHERE last_run_id IS NOT NULL
+                )
+                """,
+                (self._utc_modifier_days(graph_sync_runs_retention_days),),
+            ),
+            (
+                "candidate_reconciliation",
+                "candidate_reconciliation",
+                """
+                COALESCE(needs_reconcile, 0) = 0
+                AND datetime(COALESCE(last_reconciled_at, last_seen_at, first_seen_at))
+                    <= datetime('now', 'utc', ?)
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM growth_candidate_queue q
+                    WHERE q.user_id = candidate_reconciliation.user_id
+                      AND q.queue_state IN ('queued', 'deferred')
+                )
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM follow_cycle f
+                    WHERE f.user_id = candidate_reconciliation.user_id
+                      AND f.cleanup_status = 'pending'
+                )
+                """,
+                (self._utc_modifier_days(candidate_reconciliation_retention_days),),
+            ),
+            (
+                "follow_cycle_terminal",
+                "follow_cycle",
+                """
+                cleanup_status IN ('followed_back', 'unfollowed_nonreciprocal', 'kept_whitelist', 'skipped')
+                AND datetime(COALESCE(updated_at, last_checked_at, followed_back_at, followed_at))
+                    <= datetime('now', 'utc', ?)
+                """,
+                (self._utc_modifier_days(follow_cycle_terminal_retention_days),),
+            ),
+            (
+                "snapshots",
+                "snapshots",
+                """
+                date(COALESCE(date, CURRENT_TIMESTAMP))
+                    <= date('now', 'utc', ?)
+                """,
+                (self._utc_modifier_days(snapshots_retention_days),),
+            ),
+        )
+        deleted_counts: dict[str, int] = {
+            "action_log": 0,
+            "graph_sync_runs": 0,
+            "candidate_reconciliation": 0,
+            "follow_cycle_terminal": 0,
+            "snapshots": 0,
+        }
+        with self.database.connect() as connection:
+            for key, table_name, where_clause, params in prune_plan:
+                row = connection.execute(
+                    f"""
+                    SELECT COUNT(*) AS count
+                    FROM {table_name}
+                    WHERE {where_clause}
+                    """,
+                    params,
+                ).fetchone()
+                count = int(row["count"]) if row is not None else 0
+                if dry_run:
+                    deleted_counts[key] = count
+                    continue
+                if count <= 0:
+                    deleted_counts[key] = 0
+                    continue
+                connection.execute(
+                    f"""
+                    DELETE FROM {table_name}
+                    WHERE {where_clause}
+                    """,
+                    params,
+                )
+                deleted_row = connection.execute("SELECT changes() AS count").fetchone()
+                deleted_counts[key] = int(deleted_row["count"]) if deleted_row is not None else 0
+
+            if not dry_run:
+                connection.commit()
+                if vacuum:
+                    connection.execute("VACUUM")
+
+        result: dict[str, int | bool] = {
+            "queue_followed": int(queue_counts.get("followed", 0)),
+            "queue_rejected": int(queue_counts.get("rejected", 0)),
+            "queue_stale": int(queue_counts.get("stale", 0)),
+            "action_log": int(deleted_counts.get("action_log", 0)),
+            "graph_sync_runs": int(deleted_counts.get("graph_sync_runs", 0)),
+            "candidate_reconciliation": int(deleted_counts.get("candidate_reconciliation", 0)),
+            "follow_cycle_terminal": int(deleted_counts.get("follow_cycle_terminal", 0)),
+            "snapshots": int(deleted_counts.get("snapshots", 0)),
+        }
+        result["total"] = sum(
+            int(result[key])
+            for key in (
+                "queue_followed",
+                "queue_rejected",
+                "queue_stale",
+                "action_log",
+                "graph_sync_runs",
+                "candidate_reconciliation",
+                "follow_cycle_terminal",
+                "snapshots",
+            )
+        )
+        result["dry_run"] = dry_run
+        result["vacuum_performed"] = bool(vacuum and not dry_run)
+        return result
 
     def mark_growth_candidate_queue_state(
         self,

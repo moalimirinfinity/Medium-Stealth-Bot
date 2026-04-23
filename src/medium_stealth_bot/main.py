@@ -71,18 +71,21 @@ _NOTICE_PREFIX = {
 }
 
 _START_MENU_SECTIONS: tuple[tuple[str, str, str], ...] = (
-    ("1", "Growth", "Run follower-growth workflows."),
-    ("2", "Unfollow", "Run cleanup-only unfollow workflows."),
-    ("3", "Maintenance", "Reconcile and sync local social graph state."),
-    ("4", "Diagnostics", "Probe Medium reads and validate contracts."),
-    ("5", "Observability", "Inspect the latest run status and artifacts."),
-    ("6", "Settings/Auth", "Edit defaults, run setup, or refresh auth."),
-    ("7", "Exit", "Leave the interactive start menu."),
+    ("1", "Discovery", "Discover, score, evaluate, and queue growth candidates."),
+    ("2", "Growth", "Execute follow growth from execution-ready queue."),
+    ("3", "Unfollow", "Run cleanup-only unfollow workflows."),
+    ("4", "Maintenance", "Reconcile and sync local social graph state."),
+    ("5", "Diagnostics", "Probe Medium reads and validate contracts."),
+    ("6", "Observability", "Inspect the latest run status and queue/artifacts."),
+    ("7", "Settings/Auth", "Edit defaults, run setup, or refresh auth."),
+    ("8", "Exit", "Leave the interactive start menu."),
 )
 
 _START_MENU_SECTION_STYLES: dict[str, str] = {
+    "Discovery": "bright_cyan",
     "Growth": "cyan",
     "Growth Source": "cyan",
+    "Discovery Runtime": "bright_cyan",
     "Growth Policy": "cyan",
     "Growth Runtime": "cyan",
     "Unfollow": "yellow",
@@ -116,10 +119,16 @@ _GROWTH_POLICY_MENU_OPTIONS: tuple[tuple[str, str, str], ...] = (
     ("4", "Back", "Return to growth source selection"),
 )
 
+_DISCOVERY_RUNTIME_MENU_OPTIONS: tuple[tuple[str, str, str], ...] = (
+    ("1", "Persist", "Run discovery and persist execution-ready queue entries."),
+    ("2", "Dry-run", "Preview discovery decisions without persisting queue updates."),
+    ("3", "Back", "Return to source selection"),
+)
+
 _GROWTH_RUNTIME_MENU_OPTIONS: tuple[tuple[str, str, str], ...] = (
     ("1", "Session", "Run a live multi-cycle growth session."),
-    ("2", "Single Pass", "Run one live growth cycle."),
-    ("3", "Preflight", "Run one dry-run growth cycle."),
+    ("2", "Single Pass", "Run one live queue-drain growth cycle."),
+    ("3", "Preflight", "Run one dry-run queue-drain growth cycle."),
     ("4", "Hybrid", "Run preflight, then continue into a live session."),
     ("5", "Back", "Return to growth policy selection"),
 )
@@ -134,7 +143,9 @@ _MAINTENANCE_MENU_OPTIONS: tuple[tuple[str, str, str], ...] = (
     ("1", "Live", "Reconcile follow states"),
     ("2", "Dry-run", "Preview follow-state reconciliation"),
     ("3", "Sync", "Sync social graph cache"),
-    ("4", "Back", "Return to the start sections"),
+    ("4", "DB Hygiene (Dry-run)", "Preview DB pruning impact with current retention policy."),
+    ("5", "DB Hygiene (Live)", "Apply DB pruning retention policy."),
+    ("6", "Back", "Return to the start sections"),
 )
 
 _DIAGNOSTICS_MENU_OPTIONS: tuple[tuple[str, str, str], ...] = (
@@ -146,8 +157,9 @@ _DIAGNOSTICS_MENU_OPTIONS: tuple[tuple[str, str, str], ...] = (
 
 _OBSERVABILITY_MENU_OPTIONS: tuple[tuple[str, str, str], ...] = (
     ("1", "Inspect", "Show latest run status"),
-    ("2", "Validate", "Validate latest run artifact schema"),
-    ("3", "Back", "Return to the start sections"),
+    ("2", "Queue", "Show growth queue ready/deferred/rejected/followed counts"),
+    ("3", "Validate", "Validate latest run artifact schema"),
+    ("4", "Back", "Return to the start sections"),
 )
 
 _SETTINGS_MENU_OPTIONS: tuple[tuple[str, str, str], ...] = (
@@ -419,6 +431,41 @@ def _render_probe(snapshot: ProbeSnapshot) -> None:
     _print_notice(f"Probe duration: {snapshot.duration_ms}ms", level="info")
 
 
+def _render_growth_queue_status(queue_counts: dict[str, int], *, title: str = "Growth Queue Status") -> None:
+    table = Table(title=title)
+    table.add_column("Metric")
+    table.add_column("Count")
+    table.add_row("Ready", str(queue_counts.get("ready", 0)))
+    table.add_row("Queued", str(queue_counts.get("queued", 0)))
+    table.add_row("Deferred (All)", str(queue_counts.get("deferred", 0)))
+    table.add_row("Deferred (Due)", str(queue_counts.get("deferred_due", 0)))
+    table.add_row("Deferred (Future)", str(queue_counts.get("deferred_future", 0)))
+    table.add_row("Rejected", str(queue_counts.get("rejected", 0)))
+    table.add_row("Followed", str(queue_counts.get("followed", 0)))
+    table.add_row("Total", str(queue_counts.get("total", 0)))
+    console.print(table)
+
+
+def _render_db_hygiene_status(result: dict[str, int | bool], *, mode: str) -> None:
+    table = Table(title=f"DB Hygiene ({mode})")
+    table.add_column("Scope")
+    table.add_column("Rows")
+    table.add_row("Queue: Followed", str(int(result.get("queue_followed", 0))))
+    table.add_row("Queue: Rejected", str(int(result.get("queue_rejected", 0))))
+    table.add_row("Queue: Stale Queued/Deferred", str(int(result.get("queue_stale", 0))))
+    table.add_row("Action Log", str(int(result.get("action_log", 0))))
+    table.add_row("Graph Sync Runs", str(int(result.get("graph_sync_runs", 0))))
+    table.add_row("Candidate Reconciliation", str(int(result.get("candidate_reconciliation", 0))))
+    table.add_row("Follow Cycle (Terminal)", str(int(result.get("follow_cycle_terminal", 0))))
+    table.add_row("Snapshots", str(int(result.get("snapshots", 0))))
+    table.add_row("Total", str(int(result.get("total", 0))))
+    table.add_row(
+        "Vacuum",
+        "yes" if bool(result.get("vacuum_performed", False)) else "no",
+    )
+    console.print(table)
+
+
 def _render_daily_run(outcome: DailyRunOutcome) -> None:
     mode_label = "dry-run" if outcome.dry_run else "live"
 
@@ -455,6 +502,15 @@ def _render_daily_run(outcome: DailyRunOutcome) -> None:
             str(int(session_min_follows)) if isinstance(session_min_follows, (int, float)) else "-",
         )
         summary_table.add_row("Session Target Duration (m)", str(outcome.session_target_duration_minutes or "-"))
+    queue_ready = outcome.kpis.get("growth_queue_ready")
+    queue_deferred = outcome.kpis.get("growth_queue_deferred")
+    queue_rejected = outcome.kpis.get("growth_queue_rejected")
+    queue_followed = outcome.kpis.get("growth_queue_followed")
+    if all(isinstance(value, (int, float)) for value in (queue_ready, queue_deferred, queue_rejected, queue_followed)):
+        summary_table.add_row(
+            "Queue Ready/Deferred/Rejected/Followed",
+            f"{int(queue_ready)} / {int(queue_deferred)} / {int(queue_rejected)} / {int(queue_followed)}",
+        )
     summary_table.add_row(
         "Discovered / Screened",
         f"{outcome.discovered_candidates} / {outcome.screened_candidates}",
@@ -706,6 +762,7 @@ def _build_run_artifact_payload(
     status: str,
     outcome: DailyRunOutcome | None,
     error: dict[str, str] | None,
+    client_metrics_override: dict[str, Any] | None = None,
 ) -> dict:
     duration_ms = int((ended_at - started_at).total_seconds() * 1000)
     payload: dict = {
@@ -725,7 +782,7 @@ def _build_run_artifact_payload(
         "result_counts": {},
         "reason_counts": {},
         "kpis": {},
-        "client_metrics": {},
+        "client_metrics": client_metrics_override or {},
         "source_candidate_counts": {},
         "source_follow_verified_counts": {},
         "policy_follow_verified_counts": {},
@@ -768,7 +825,7 @@ def _build_run_artifact_payload(
     payload["result_counts"] = outcome.decision_result_counts
     payload["reason_counts"] = outcome.decision_reason_counts
     payload["kpis"] = outcome.kpis
-    payload["client_metrics"] = outcome.client_metrics
+    payload["client_metrics"] = outcome.client_metrics or client_metrics_override or {}
     payload["source_candidate_counts"] = outcome.source_candidate_counts
     payload["source_follow_verified_counts"] = outcome.source_follow_verified_counts
     payload["policy_follow_verified_counts"] = outcome.policy_follow_verified_counts
@@ -954,6 +1011,15 @@ def _render_status(artifact: dict, *, artifact_path: Path, settings: AppSettings
     if settings is None:
         return
 
+    try:
+        _, repository = _build_runner(settings)
+        _render_growth_queue_status(
+            repository.growth_queue_state_counts(),
+            title="Growth Queue Control Panel",
+        )
+    except Exception as exc:  # noqa: BLE001
+        _print_notice(f"Failed to load queue status: {exc}", level="warning")
+
     growth_defaults = Table(title="Configured Growth Defaults")
     growth_defaults.add_column("Key")
     growth_defaults.add_column("Value")
@@ -1021,6 +1087,17 @@ def _render_status(artifact: dict, *, artifact_path: Path, settings: AppSettings
             f"stale={settings.growth_queue_prune_stale_after_days}"
         ),
     )
+    growth_defaults.add_row(
+        "DB Hygiene TTL (d)",
+        (
+            f"action_log={settings.db_hygiene_action_log_retention_days}, "
+            f"graph_sync_runs={settings.db_hygiene_graph_sync_runs_retention_days}, "
+            f"candidate_reconciliation={settings.db_hygiene_candidate_reconciliation_retention_days}, "
+            f"follow_cycle={settings.db_hygiene_follow_cycle_terminal_retention_days}, "
+            f"snapshots={settings.db_hygiene_snapshots_retention_days}"
+        ),
+    )
+    growth_defaults.add_row("DB Hygiene Vacuum", "true" if settings.db_hygiene_vacuum_after_cleanup else "false")
     growth_defaults.add_row("Pre-Follow Clap", "true" if settings.enable_pre_follow_clap else "false")
     growth_defaults.add_row("Pre-Follow Comment", "true" if settings.enable_pre_follow_comment else "false")
     growth_defaults.add_row("Pre-Follow Comment Probability", str(round(settings.pre_follow_comment_probability, 3)))
@@ -1747,6 +1824,10 @@ def _seed_refs_summary(seed_user_refs: list[str] | None) -> str:
 def _render_start_menu(
     *,
     has_session: bool,
+    queue_ready_count: int,
+    queue_deferred_count: int,
+    queue_rejected_count: int,
+    queue_followed_count: int,
     tag_slug: str,
     seed_user_refs: list[str] | None,
     live_session_minutes: int,
@@ -1831,6 +1912,10 @@ def _render_start_menu(
     defaults.add_row("Seed Users", _seed_refs_summary(seed_user_refs))
     defaults.add_row("Growth Policy", _format_growth_policy(growth_policy))
     defaults.add_row("Growth Sources", _format_growth_sources(growth_sources))
+    defaults.add_row("Queue Ready", str(queue_ready_count))
+    defaults.add_row("Queue Deferred", str(queue_deferred_count))
+    defaults.add_row("Queue Rejected", str(queue_rejected_count))
+    defaults.add_row("Queue Followed", str(queue_followed_count))
     defaults.add_row("Target-User Followers Scan Limit", str(target_user_followers_scan_limit))
     defaults.add_row("Follow Candidate Limit", str(follow_candidate_limit))
     defaults.add_row("Follow Cooldown (h)", str(follow_cooldown_hours))
@@ -2105,10 +2190,25 @@ def _run_start_menu(
 
     while True:
         settings = _bootstrap_settings()
+        queue_counts = {
+            "ready": 0,
+            "deferred": 0,
+            "rejected": 0,
+            "followed": 0,
+        }
+        try:
+            _, queue_repository = _build_runner(settings)
+            queue_counts = queue_repository.growth_queue_state_counts()
+        except Exception:
+            pass
         if live_session_min_follows > live_session_target_follows:
             live_session_min_follows = live_session_target_follows
         _render_start_menu(
             has_session=settings.has_session,
+            queue_ready_count=int(queue_counts.get("ready", 0)),
+            queue_deferred_count=int(queue_counts.get("deferred", 0)),
+            queue_rejected_count=int(queue_counts.get("rejected", 0)),
+            queue_followed_count=int(queue_counts.get("followed", 0)),
             tag_slug=tag_slug,
             seed_user_refs=seed_user_refs,
             live_session_minutes=live_session_minutes,
@@ -2179,7 +2279,7 @@ def _run_start_menu(
 
         choice = str(typer.prompt("Select option", default="1")).strip().lower()
         if choice in {"q", "quit", "exit"}:
-            choice = "7"
+            choice = "8"
         if choice not in valid_choices:
             _print_notice(f"Invalid option. Choose {valid_choices_hint} (or q to exit).", level="warning")
             continue
@@ -3307,6 +3407,8 @@ def _run_start_menu(
                 ),
             ),
             "3": ("sync social graph cache", lambda: sync_command(live=True, force=True)),
+            "4": ("db hygiene dry-run", lambda: db_hygiene_command(live=False, vacuum=False)),
+            "5": ("db hygiene live", lambda: db_hygiene_command(live=True, vacuum=False)),
         }
 
         diagnostics_actions: dict[str, tuple[str, Callable[[], None]]] = {
@@ -3335,7 +3437,8 @@ def _run_start_menu(
 
         observability_actions: dict[str, tuple[str, Callable[[], None]]] = {
             "1": ("show status", lambda: status_command(emit_artifact=True)),
-            "2": (
+            "2": ("show queue status", queue_command),
+            "3": (
                 "validate latest artifact",
                 lambda: artifacts_validate_command(artifact_path=None, emit_artifact=True),
             ),
@@ -3362,7 +3465,6 @@ def _run_start_menu(
                 continue
 
             selected_growth_sources = list(selected_growth_sources_choice)
-            selected_growth_policy = growth_policy
             selected_target_user_refs: list[str] | None = None
             selected_target_user_scan_limit: int | None = None
             selected_seed_user_refs = seed_user_refs if GrowthSource.SEED_FOLLOWERS in selected_growth_sources else None
@@ -3377,6 +3479,37 @@ def _run_start_menu(
                     continue
                 selected_target_user_scan_limit = _prompt_target_user_scan_limit_for_run()
 
+            discovery_runtime_choice = _select_from_submenu(
+                title="Discovery Runtime",
+                options=_DISCOVERY_RUNTIME_MENU_OPTIONS,
+            )
+            if discovery_runtime_choice == "exit":
+                _print_notice("Exiting start menu.", level="success")
+                return
+            if discovery_runtime_choice is None:
+                continue
+
+            growth_sources = selected_growth_sources
+            if selected_seed_user_refs is not None:
+                seed_user_refs = selected_seed_user_refs
+
+            discovery_live = discovery_runtime_choice == "1"
+            discovery_mode_label = "persist" if discovery_live else "dry-run"
+            _execute(
+                f"run discovery {discovery_mode_label} ({_format_growth_sources(selected_growth_sources)})",
+                lambda: discover_command(
+                    tag_slug=tag_slug,
+                    live=discovery_live,
+                    growth_sources=selected_growth_sources,
+                    seed_user_refs=selected_seed_user_refs,
+                    target_user_refs=selected_target_user_refs,
+                    target_user_scan_limit=selected_target_user_scan_limit,
+                    auto_sync=graph_sync_auto_enabled,
+                ),
+            )
+            continue
+
+        if choice == "2":
             growth_policy_choice = _select_from_submenu(title="Growth Policy", options=_GROWTH_POLICY_MENU_OPTIONS)
             if growth_policy_choice == "exit":
                 _print_notice("Exiting start menu.", level="success")
@@ -3389,7 +3522,6 @@ def _run_start_menu(
                 "3": GrowthPolicy.WARM_ENGAGE_RARE_COMMENT,
             }[growth_policy_choice]
             growth_policy = selected_growth_policy
-            growth_sources = selected_growth_sources
 
             growth_runtime_choice = _select_from_submenu(title="Growth Runtime", options=_GROWTH_RUNTIME_MENU_OPTIONS)
             if growth_runtime_choice == "exit":
@@ -3403,10 +3535,6 @@ def _run_start_menu(
                     tag_slug=tag_slug,
                     live=live,
                     growth_policy=selected_growth_policy,
-                    growth_sources=selected_growth_sources,
-                    seed_user_refs=selected_seed_user_refs,
-                    target_user_refs=selected_target_user_refs,
-                    target_user_scan_limit=selected_target_user_scan_limit,
                     session=session,
                     session_minutes=live_session_minutes if session and live else None,
                     target_follows=live_session_target_follows if session and live else None,
@@ -3414,10 +3542,7 @@ def _run_start_menu(
                     auto_sync=graph_sync_auto_enabled,
                 )
 
-            growth_label = (
-                f"{_format_growth_sources(selected_growth_sources)} / "
-                f"{_format_growth_policy(selected_growth_policy)}"
-            )
+            growth_label = _format_growth_policy(selected_growth_policy)
             if growth_runtime_choice == "4":
                 preflight_ok = _execute(
                     f"dry-run preflight ({growth_label})",
@@ -3438,7 +3563,7 @@ def _run_start_menu(
             _execute(f"{action_name} ({growth_label})", handler)
             continue
 
-        if choice == "2":
+        if choice == "3":
             unfollow_choice = _select_from_submenu(title="Unfollow", options=_UNFOLLOW_MENU_OPTIONS)
             if unfollow_choice == "exit":
                 _print_notice("Exiting start menu.", level="success")
@@ -3449,7 +3574,7 @@ def _run_start_menu(
             _execute(action_name, handler)
             continue
 
-        if choice == "3":
+        if choice == "4":
             maintenance_choice = _select_from_submenu(title="Maintenance", options=_MAINTENANCE_MENU_OPTIONS)
             if maintenance_choice == "exit":
                 _print_notice("Exiting start menu.", level="success")
@@ -3460,7 +3585,7 @@ def _run_start_menu(
             _execute(action_name, handler)
             continue
 
-        if choice == "4":
+        if choice == "5":
             diagnostics_choice = _select_from_submenu(title="Diagnostics", options=_DIAGNOSTICS_MENU_OPTIONS)
             if diagnostics_choice == "exit":
                 _print_notice("Exiting start menu.", level="success")
@@ -3471,7 +3596,7 @@ def _run_start_menu(
             _execute(action_name, handler)
             continue
 
-        if choice == "5":
+        if choice == "6":
             observability_choice = _select_from_submenu(title="Observability", options=_OBSERVABILITY_MENU_OPTIONS)
             if observability_choice == "exit":
                 _print_notice("Exiting start menu.", level="success")
@@ -3482,7 +3607,7 @@ def _run_start_menu(
             _execute(action_name, handler)
             continue
 
-        if choice == "6":
+        if choice == "7":
             settings_choice = _select_from_submenu(title="Settings/Auth", options=_SETTINGS_MENU_OPTIONS)
             if settings_choice == "exit":
                 _print_notice("Exiting start menu.", level="success")
@@ -3499,7 +3624,7 @@ def _run_start_menu(
                 _refresh_defaults_from_settings(refreshed_settings)
             continue
 
-        if choice == "7":
+        if choice == "8":
             _print_notice("Exiting start menu.", level="success")
             return
 
@@ -3549,6 +3674,7 @@ def start_command(
     Guided start command with interactive menu and optional quick-live mode.
     """
     settings = _bootstrap_settings()
+    quick_live_discovery_inputs = bool(growth_sources or seed_user_refs)
     resolved_seeds = _normalize_seed_user_refs(seed_user_refs if seed_user_refs else settings.discovery_seed_users)
     resolved_growth_policy = (
         growth_policy
@@ -3627,6 +3753,11 @@ def start_command(
         return
 
     _require_session(settings, guidance="uv run bot auth (or uv run bot setup)")
+    if quick_live_discovery_inputs:
+        _print_notice(
+            "Quick-live start runs queue execution only. Run `uv run bot discover` to build queue candidates.",
+            level="warning",
+        )
 
     if dry_run_first:
         _print_notice("Step 1/2: running dry-run sanity check.", level="info")
@@ -3634,8 +3765,6 @@ def start_command(
             tag_slug=tag_slug,
             live=False,
             growth_policy=resolved_growth_policy,
-            growth_sources=resolved_growth_sources,
-            seed_user_refs=resolved_seeds,
         )
         _print_notice("Dry-run preflight complete; continuing to live session execution.", level="success")
     else:
@@ -3647,8 +3776,6 @@ def start_command(
         tag_slug=tag_slug,
         live=True,
         growth_policy=resolved_growth_policy,
-        growth_sources=resolved_growth_sources,
-        seed_user_refs=resolved_seeds,
     )
 
 
@@ -3898,12 +4025,211 @@ def contracts_command(
         structlog_contextvars.clear_contextvars()
 
 
+@app.command("discover")
+def discover_command(
+    tag_slug: str = typer.Option(
+        "programming",
+        "--tag",
+        help="Topic tag slug used for discovery reads.",
+    ),
+    live: bool = typer.Option(
+        True,
+        "--live/--dry-run",
+        help="Persist discovery queue updates by default. Use --dry-run for read-only discovery preview.",
+    ),
+    growth_sources: list[GrowthSource] | None = typer.Option(
+        None,
+        "--source",
+        case_sensitive=False,
+        help="Discovery source. Repeat option to combine sources.",
+    ),
+    discovery_mode: GrowthDiscoveryMode = typer.Option(
+        GrowthDiscoveryMode.GENERAL,
+        "--discovery-mode",
+        case_sensitive=False,
+        help="Legacy alias to select target-user-only discovery.",
+    ),
+    seed_user_refs: list[str] | None = typer.Option(
+        None,
+        "--seed-user",
+        help="Optional seed users for seed-follower discovery. Repeat option.",
+    ),
+    target_user_refs: list[str] | None = typer.Option(
+        None,
+        "--target-user",
+        help="Target user(s) whose followers should be discovered. Repeat option.",
+    ),
+    target_user_scan_limit: int | None = typer.Option(
+        None,
+        "--target-user-scan-limit",
+        min=1,
+        max=500,
+        help="Max followers to scan per target user. Defaults to TARGET_USER_FOLLOWERS_SCAN_LIMIT.",
+    ),
+    auto_sync: bool = typer.Option(
+        False,
+        "--auto-sync/--no-auto-sync",
+        help="Refresh local social-graph cache before discovery execution.",
+    ),
+) -> None:
+    """
+    Run discovery-only pipeline: collect, score, filter, evaluate, and persist execution-ready queue rows.
+    """
+    growth_sources = _coerce_optioninfo(growth_sources, default=None)
+    discovery_mode = _coerce_optioninfo(discovery_mode, default=GrowthDiscoveryMode.GENERAL)
+    seed_user_refs = _coerce_optioninfo(seed_user_refs, default=None)
+    target_user_refs = _coerce_optioninfo(target_user_refs, default=None)
+    target_user_scan_limit = _coerce_optioninfo(target_user_scan_limit, default=None)
+    auto_sync = _coerce_optioninfo(auto_sync, default=False)
+
+    settings = _bootstrap_settings()
+    _require_session(settings)
+    resolved_growth_sources = list(
+        growth_sources
+        or ([GrowthSource.TARGET_USER_FOLLOWERS] if discovery_mode == GrowthDiscoveryMode.TARGET_USER_FOLLOWERS else [])
+        or settings.default_growth_sources
+    )
+    resolved_target_user_refs = _normalize_seed_user_refs(target_user_refs)
+    if GrowthSource.TARGET_USER_FOLLOWERS in resolved_growth_sources and not resolved_target_user_refs:
+        _print_notice("Target-user-followers discovery requires at least one `--target-user`.", level="error")
+        raise typer.Exit(code=2)
+
+    run_id = new_run_id("discover")
+    structlog_contextvars.bind_contextvars(
+        run_id=run_id,
+        command="discover",
+        tag_slug=tag_slug,
+        mode="live" if live else "dry_run",
+        growth_sources=[source.value for source in resolved_growth_sources],
+    )
+    log = structlog.get_logger(__name__)
+    started_at = _utc_now()
+    status = "success"
+    error_payload: dict[str, str] | None = None
+    exit_code = 0
+    outcome: DailyRunOutcome | None = None
+    artifact_path: Path | None = None
+    sync_outcome: GraphSyncOutcome | None = None
+    runtime_client_metrics: dict[str, Any] = {}
+    _print_notice(
+        "Starting discovery "
+        f"`{run_id}` (mode={'live' if live else 'dry-run'}, "
+        f"sources={','.join(source.value for source in resolved_growth_sources)}, tag={tag_slug}).",
+        level="info",
+    )
+    if resolved_target_user_refs:
+        _print_notice(
+            "Target users: "
+            f"{_seed_refs_summary(resolved_target_user_refs)} "
+            f"(scan_limit={target_user_scan_limit or settings.target_user_followers_scan_limit} per target).",
+            level="info",
+        )
+
+    try:
+        try:
+            _, repository = _build_runner(settings)
+
+            async def _run() -> DailyRunOutcome:
+                nonlocal sync_outcome
+                nonlocal runtime_client_metrics
+                async with MediumAsyncClient(settings) as client:
+                    try:
+                        runner = DailyRunner(settings=settings, client=client, repository=repository)
+                        if auto_sync:
+                            sync_outcome_local = await runner.sync_social_graph(
+                                dry_run=not live,
+                                mode="auto",
+                                force=False,
+                            )
+                            if not sync_outcome_local.skipped:
+                                _render_graph_sync_outcome(sync_outcome_local)
+                            sync_outcome = sync_outcome_local
+                        return await runner.run_discovery_cycle(
+                            tag_slug=tag_slug,
+                            dry_run=not live,
+                            seed_user_refs=seed_user_refs or None,
+                            growth_sources=resolved_growth_sources,
+                            discovery_mode=discovery_mode,
+                            target_user_refs=resolved_target_user_refs,
+                            target_user_scan_limit=target_user_scan_limit,
+                        )
+                    finally:
+                        runtime_client_metrics = client.metrics_snapshot()
+
+            outcome = asyncio.run(_run())
+            if outcome is not None and sync_outcome is not None:
+                outcome.kpis["graph_sync_skipped"] = 1 if sync_outcome.skipped else 0
+                outcome.kpis["graph_sync_followers_count"] = sync_outcome.followers_count
+                outcome.kpis["graph_sync_following_count"] = sync_outcome.following_count
+                outcome.kpis["graph_sync_users_upserted_count"] = sync_outcome.users_upserted_count
+                outcome.kpis["graph_sync_imported_pending_count"] = sync_outcome.imported_pending_count
+        except RiskHaltError as exc:
+            status = "halted"
+            exit_code = _risk_halt_exit_code(settings)
+            error_payload = {
+                "type": "RiskHaltError",
+                "message": str(exc),
+                "reason": exc.reason,
+                "task_name": exc.task_name,
+                "detail": exc.detail,
+            }
+            _render_risk_halt(exc, settings=settings)
+        except Exception as exc:  # noqa: BLE001
+            status = "failed"
+            exit_code = 1
+            error_payload = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            }
+            _print_notice(f"Discovery run failed: {exc}", level="error")
+
+        ended_at = _utc_now()
+        artifact_payload = _build_run_artifact_payload(
+            run_id=run_id,
+            command="discover",
+            started_at=started_at,
+            ended_at=ended_at,
+            tag_slug=tag_slug,
+            dry_run=not live,
+            status=status,
+            outcome=outcome,
+            error=error_payload,
+            client_metrics_override=runtime_client_metrics,
+        )
+        payload_ok, payload_issues = validate_artifact_payload(artifact_payload)
+        if not payload_ok:
+            raise RuntimeError(f"discover artifact payload schema validation failed: {', '.join(payload_issues)}")
+        artifact_path = write_run_artifact(
+            artifacts_dir=settings.run_artifacts_dir,
+            run_id=run_id,
+            payload=artifact_payload,
+        )
+        log.info(
+            "run_artifact_written",
+            operation="run_artifact",
+            target_id=None,
+            decision="persist",
+            result="ok",
+            artifact_path=str(artifact_path),
+            status=status,
+        )
+
+        if outcome is not None:
+            _render_daily_run(outcome)
+        _print_notice(f"Run artifact saved: {artifact_path}", level="success")
+
+        if exit_code != 0:
+            raise typer.Exit(code=exit_code)
+    finally:
+        structlog_contextvars.clear_contextvars()
+
+
 @app.command("run")
 def run_command(
     tag_slug: str = typer.Option(
         "programming",
         "--tag",
-        help="Topic tag slug used for discovery and follow actions.",
+        help="Topic tag slug used for queue-driven growth execution context.",
     ),
     live: bool = typer.Option(
         True,
@@ -3920,7 +4246,7 @@ def run_command(
         None,
         "--source",
         case_sensitive=False,
-        help="Growth source. Repeat option to combine topic, seed, target-user, publication-adjacent, or responder discovery.",
+        help="Legacy option. Discovery sources are ignored here; use `uv run bot discover`.",
     ),
     mode: GrowthMode | None = typer.Option(
         None,
@@ -3932,24 +4258,24 @@ def run_command(
         GrowthDiscoveryMode.GENERAL,
         "--discovery-mode",
         case_sensitive=False,
-        help="Legacy compatibility alias for selecting target-user follower discovery.",
+        help="Legacy option. Discovery mode is ignored here; use `uv run bot discover`.",
     ),
     seed_user_refs: list[str] | None = typer.Option(
         None,
         "--seed-user",
-        help="Optional seed for followers discovery. Repeat option. Supports @username or user_id.",
+        help="Legacy option. Seed users are ignored here; use `uv run bot discover`.",
     ),
     target_user_refs: list[str] | None = typer.Option(
         None,
         "--target-user",
-        help="Target user(s) whose followers should be evaluated. Repeat option. Supports @username or id:<user_id>.",
+        help="Legacy option. Target users are ignored here; use `uv run bot discover`.",
     ),
     target_user_scan_limit: int | None = typer.Option(
         None,
         "--target-user-scan-limit",
         min=1,
         max=500,
-        help="Max followers to scan per target user. Defaults to TARGET_USER_FOLLOWERS_SCAN_LIMIT.",
+        help="Legacy option. Target-user scan limit is ignored here; use `uv run bot discover`.",
     ),
     session: bool = typer.Option(
         True,
@@ -3984,7 +4310,7 @@ def run_command(
     ),
 ) -> None:
     """
-    Run growth automation only in either single-cycle or live session mode.
+    Run queue-driven growth execution only (no discovery mutations).
     """
     growth_policy = _coerce_optioninfo(growth_policy, default=None)
     growth_sources = _coerce_optioninfo(growth_sources, default=None)
@@ -4007,15 +4333,18 @@ def run_command(
         or (GrowthPolicy.WARM_ENGAGE_RARE_COMMENT if mode == GrowthMode.SMART else None)
         or settings.default_growth_policy
     )
-    resolved_growth_sources = list(
+    ignored_discovery_inputs = bool(
         growth_sources
-        or ([GrowthSource.TARGET_USER_FOLLOWERS] if discovery_mode == GrowthDiscoveryMode.TARGET_USER_FOLLOWERS else [])
-        or settings.default_growth_sources
+        or seed_user_refs
+        or target_user_refs
+        or target_user_scan_limit is not None
+        or discovery_mode != GrowthDiscoveryMode.GENERAL
     )
-    resolved_target_user_refs = _normalize_seed_user_refs(target_user_refs)
-    if GrowthSource.TARGET_USER_FOLLOWERS in resolved_growth_sources and not resolved_target_user_refs:
-        _print_notice("Target-user-followers discovery requires at least one `--target-user`.", level="error")
-        raise typer.Exit(code=2)
+    if ignored_discovery_inputs:
+        _print_notice(
+            "Discovery inputs are ignored in growth execution mode. Run `uv run bot discover` first.",
+            level="warning",
+        )
 
     run_id = new_run_id("run")
     structlog_contextvars.bind_contextvars(
@@ -4024,7 +4353,6 @@ def run_command(
         tag_slug=tag_slug,
         mode="live" if live else "dry_run",
         growth_policy=resolved_growth_policy.value,
-        growth_sources=[source.value for source in resolved_growth_sources],
     )
     log = structlog.get_logger(__name__)
     started_at = _utc_now()
@@ -4034,21 +4362,15 @@ def run_command(
     outcome: DailyRunOutcome | None = None
     artifact_path: Path | None = None
     sync_outcome: GraphSyncOutcome | None = None
+    runtime_client_metrics: dict[str, Any] = {}
     live_session_enabled = live and session
     execution_mode_label = "live-session" if live_session_enabled else "live-single" if live else "dry-run"
     _print_notice(
         "Starting run "
         f"`{run_id}` (execution={execution_mode_label}, policy={resolved_growth_policy.value}, "
-        f"sources={','.join(source.value for source in resolved_growth_sources)}, tag={tag_slug}).",
+        f"queue=execution-ready, tag={tag_slug}).",
         level="info",
     )
-    if resolved_target_user_refs:
-        _print_notice(
-            "Target users: "
-            f"{_seed_refs_summary(resolved_target_user_refs)} "
-            f"(scan_limit={target_user_scan_limit or settings.target_user_followers_scan_limit} per target).",
-            level="info",
-        )
 
     try:
         try:
@@ -4056,55 +4378,52 @@ def run_command(
 
             async def _run() -> DailyRunOutcome:
                 nonlocal sync_outcome
+                nonlocal runtime_client_metrics
                 async with MediumAsyncClient(settings) as client:
-                    runner = DailyRunner(settings=settings, client=client, repository=repository)
-                    if auto_sync:
-                        sync_outcome_local = await runner.sync_social_graph(
-                            dry_run=not live,
-                            mode="auto",
-                            force=False,
-                        )
-                        if not sync_outcome_local.skipped:
-                            _render_graph_sync_outcome(sync_outcome_local)
-                        sync_outcome = sync_outcome_local
-                    if live_session_enabled:
-                        resolved_session_minutes = session_minutes or settings.live_session_duration_minutes
-                        resolved_target_follows = target_follows or settings.live_session_target_follow_attempts
-                        resolved_min_follows = min(
-                            settings.live_session_min_follow_attempts,
-                            resolved_target_follows,
-                        )
-                        resolved_session_max_passes = session_max_passes or settings.live_session_max_passes
-                        _print_notice(
-                            "Live session targets: "
-                            f"duration={resolved_session_minutes}m, "
-                            f"follow_attempts_min={resolved_min_follows}, "
-                            f"follow_attempts={resolved_target_follows}, "
-                            f"max_passes={resolved_session_max_passes}, "
-                            f"policy={resolved_growth_policy.value}, "
-                            f"sources={','.join(source.value for source in resolved_growth_sources)}.",
-                            level="info",
-                        )
-                        return await runner.run_live_session(
+                    try:
+                        runner = DailyRunner(settings=settings, client=client, repository=repository)
+                        if auto_sync:
+                            sync_outcome_local = await runner.sync_social_graph(
+                                dry_run=not live,
+                                mode="auto",
+                                force=False,
+                            )
+                            if not sync_outcome_local.skipped:
+                                _render_graph_sync_outcome(sync_outcome_local)
+                            sync_outcome = sync_outcome_local
+                        if live_session_enabled:
+                            resolved_session_minutes = session_minutes or settings.live_session_duration_minutes
+                            resolved_target_follows = target_follows or settings.live_session_target_follow_attempts
+                            resolved_min_follows = min(
+                                settings.live_session_min_follow_attempts,
+                                resolved_target_follows,
+                            )
+                            resolved_session_max_passes = session_max_passes or settings.live_session_max_passes
+                            _print_notice(
+                                "Live session targets: "
+                                f"duration={resolved_session_minutes}m, "
+                                f"follow_attempts_min={resolved_min_follows}, "
+                                f"follow_attempts={resolved_target_follows}, "
+                                f"max_passes={resolved_session_max_passes}, "
+                                f"policy={resolved_growth_policy.value}, "
+                                "queue=execution-ready.",
+                                level="info",
+                            )
+                            return await runner.run_live_session(
+                                tag_slug=tag_slug,
+                                target_follow_attempts=resolved_target_follows,
+                                max_duration_minutes=resolved_session_minutes,
+                                max_passes=resolved_session_max_passes,
+                                growth_policy=resolved_growth_policy,
+                                discovery_enabled=False,
+                            )
+                        return await runner.run_growth_queue_cycle(
                             tag_slug=tag_slug,
-                            seed_user_refs=seed_user_refs or None,
-                            target_follow_attempts=resolved_target_follows,
-                            max_duration_minutes=resolved_session_minutes,
-                            max_passes=resolved_session_max_passes,
+                            dry_run=not live,
                             growth_policy=resolved_growth_policy,
-                            growth_sources=resolved_growth_sources,
-                            target_user_refs=resolved_target_user_refs,
-                            target_user_scan_limit=target_user_scan_limit,
                         )
-                    return await runner.run_daily_cycle(
-                        tag_slug=tag_slug,
-                        dry_run=not live,
-                        seed_user_refs=seed_user_refs or None,
-                        growth_policy=resolved_growth_policy,
-                        growth_sources=resolved_growth_sources,
-                        target_user_refs=resolved_target_user_refs,
-                        target_user_scan_limit=target_user_scan_limit,
-                    )
+                    finally:
+                        runtime_client_metrics = client.metrics_snapshot()
 
             outcome = asyncio.run(_run())
             if outcome is not None and sync_outcome is not None:
@@ -4144,6 +4463,7 @@ def run_command(
             status=status,
             outcome=outcome,
             error=error_payload,
+            client_metrics_override=runtime_client_metrics,
         )
         payload_ok, payload_issues = validate_artifact_payload(artifact_payload)
         if not payload_ok:
@@ -4165,12 +4485,73 @@ def run_command(
 
         if outcome is not None:
             _render_daily_run(outcome)
+            queue_ready_before = outcome.kpis.get("growth_queue_ready_before_discovery")
+            if (
+                isinstance(queue_ready_before, (int, float))
+                and int(queue_ready_before) <= 0
+                and outcome.executed_candidates == 0
+            ):
+                _print_notice(
+                    "Growth queue is empty. Run `uv run bot discover` first.",
+                    level="warning",
+                )
         _print_notice(f"Run artifact saved: {artifact_path}", level="success")
 
         if exit_code != 0:
             raise typer.Exit(code=exit_code)
     finally:
         structlog_contextvars.clear_contextvars()
+
+
+@app.command("queue")
+def queue_command() -> None:
+    """
+    Show current growth queue counts (ready/deferred/rejected/followed).
+    """
+    settings = _bootstrap_settings()
+    _, repository = _build_runner(settings)
+    _render_growth_queue_status(repository.growth_queue_state_counts())
+
+
+@app.command("db-hygiene")
+def db_hygiene_command(
+    live: bool = typer.Option(
+        False,
+        "--live/--dry-run",
+        help="Preview deletions in dry-run mode by default. Use --live to apply cleanup.",
+    ),
+    vacuum: bool = typer.Option(
+        False,
+        "--vacuum",
+        help="Force VACUUM after live cleanup. DB_HYGIENE_VACUUM_AFTER_CLEANUP is also respected.",
+    ),
+) -> None:
+    """
+    Prune stale operational data with retention windows and optional VACUUM.
+    """
+    settings = _bootstrap_settings()
+    _, repository = _build_runner(settings)
+    resolved_vacuum = bool(live and (vacuum or settings.db_hygiene_vacuum_after_cleanup))
+    result = repository.run_db_hygiene(
+        action_log_retention_days=settings.db_hygiene_action_log_retention_days,
+        graph_sync_runs_retention_days=settings.db_hygiene_graph_sync_runs_retention_days,
+        candidate_reconciliation_retention_days=settings.db_hygiene_candidate_reconciliation_retention_days,
+        follow_cycle_terminal_retention_days=settings.db_hygiene_follow_cycle_terminal_retention_days,
+        snapshots_retention_days=settings.db_hygiene_snapshots_retention_days,
+        queue_followed_after_days=settings.growth_queue_prune_followed_after_days,
+        queue_rejected_after_days=settings.growth_queue_prune_rejected_after_days,
+        queue_stale_after_days=settings.growth_queue_prune_stale_after_days,
+        dry_run=not live,
+        vacuum=resolved_vacuum,
+    )
+    _render_db_hygiene_status(result, mode="live" if live else "dry-run")
+    if live:
+        _print_notice(
+            f"DB hygiene completed. Deleted {int(result.get('total', 0))} row(s).",
+            level="success",
+        )
+        return
+    _print_notice("Dry-run complete. Re-run with --live to apply cleanup.", level="warning")
 
 
 @app.command("cleanup")
@@ -4213,6 +4594,7 @@ def cleanup_command(
     outcome: DailyRunOutcome | None = None
     artifact_path: Path | None = None
     sync_outcome: GraphSyncOutcome | None = None
+    runtime_client_metrics: dict[str, Any] = {}
     resolved_limit = limit if limit is not None else settings.cleanup_unfollow_limit
     mode_label = "live" if live else "dry-run"
     _print_notice(
@@ -4226,21 +4608,25 @@ def cleanup_command(
 
             async def _run() -> DailyRunOutcome:
                 nonlocal sync_outcome
+                nonlocal runtime_client_metrics
                 async with MediumAsyncClient(settings) as client:
-                    runner = DailyRunner(settings=settings, client=client, repository=repository)
-                    if auto_sync:
-                        sync_outcome_local = await runner.sync_social_graph(
+                    try:
+                        runner = DailyRunner(settings=settings, client=client, repository=repository)
+                        if auto_sync:
+                            sync_outcome_local = await runner.sync_social_graph(
+                                dry_run=not live,
+                                mode="auto",
+                                force=False,
+                            )
+                            if not sync_outcome_local.skipped:
+                                _render_graph_sync_outcome(sync_outcome_local)
+                            sync_outcome = sync_outcome_local
+                        return await runner.run_cleanup_only(
                             dry_run=not live,
-                            mode="auto",
-                            force=False,
+                            max_unfollows=resolved_limit,
                         )
-                        if not sync_outcome_local.skipped:
-                            _render_graph_sync_outcome(sync_outcome_local)
-                        sync_outcome = sync_outcome_local
-                    return await runner.run_cleanup_only(
-                        dry_run=not live,
-                        max_unfollows=resolved_limit,
-                    )
+                    finally:
+                        runtime_client_metrics = client.metrics_snapshot()
 
             outcome = asyncio.run(_run())
             if outcome is not None and sync_outcome is not None:
@@ -4280,6 +4666,7 @@ def cleanup_command(
             status=status,
             outcome=outcome,
             error=error_payload,
+            client_metrics_override=runtime_client_metrics,
         )
         payload_ok, payload_issues = validate_artifact_payload(artifact_payload)
         if not payload_ok:
@@ -4346,6 +4733,7 @@ def sync_command(
     exit_code = 0
     outcome: GraphSyncOutcome | None = None
     artifact_path: Path | None = None
+    runtime_client_metrics: dict[str, Any] = {}
     _print_notice(
         f"Starting graph sync `{run_id}` "
         f"(mode={'live' if live else 'dry-run'}, force={str(force).lower()}, full={str(full).lower()}).",
@@ -4358,13 +4746,17 @@ def sync_command(
                 settings.graph_sync_full_pagination = True
 
             async def _run() -> GraphSyncOutcome:
+                nonlocal runtime_client_metrics
                 async with MediumAsyncClient(settings) as client:
-                    runner = DailyRunner(settings=settings, client=client, repository=repository)
-                    return await runner.sync_social_graph(
-                        dry_run=not live,
-                        mode="manual",
-                        force=force,
-                    )
+                    try:
+                        runner = DailyRunner(settings=settings, client=client, repository=repository)
+                        return await runner.sync_social_graph(
+                            dry_run=not live,
+                            mode="manual",
+                            force=force,
+                        )
+                    finally:
+                        runtime_client_metrics = client.metrics_snapshot()
 
             outcome = asyncio.run(_run())
         except RiskHaltError as exc:
@@ -4418,6 +4810,7 @@ def sync_command(
             status=status,
             summary=summary,
             kpis=kpis,
+            client_metrics=runtime_client_metrics,
             error=error_payload,
         )
         payload_ok, payload_issues = validate_artifact_payload(artifact_payload)
@@ -4493,6 +4886,7 @@ def reconcile_command(
     outcome: ReconcileOutcome | None = None
     sync_outcome: GraphSyncOutcome | None = None
     artifact_path: Path | None = None
+    runtime_client_metrics: dict[str, Any] = {}
     _print_notice(
         f"Starting reconcile run `{run_id}` (mode={'live' if live else 'dry-run'}, limit={max_users}, page_size={page_size}).",
         level="info",
@@ -4503,22 +4897,26 @@ def reconcile_command(
 
             async def _run() -> ReconcileOutcome:
                 nonlocal sync_outcome
+                nonlocal runtime_client_metrics
                 async with MediumAsyncClient(settings) as client:
-                    runner = DailyRunner(settings=settings, client=client, repository=repository)
-                    if auto_sync:
-                        sync_outcome_local = await runner.sync_social_graph(
+                    try:
+                        runner = DailyRunner(settings=settings, client=client, repository=repository)
+                        if auto_sync:
+                            sync_outcome_local = await runner.sync_social_graph(
+                                dry_run=not live,
+                                mode="auto",
+                                force=False,
+                            )
+                            if not sync_outcome_local.skipped:
+                                _render_graph_sync_outcome(sync_outcome_local)
+                            sync_outcome = sync_outcome_local
+                        return await runner.reconcile_follow_states(
                             dry_run=not live,
-                            mode="auto",
-                            force=False,
+                            max_users=max_users,
+                            page_size=page_size,
                         )
-                        if not sync_outcome_local.skipped:
-                            _render_graph_sync_outcome(sync_outcome_local)
-                        sync_outcome = sync_outcome_local
-                    return await runner.reconcile_follow_states(
-                        dry_run=not live,
-                        max_users=max_users,
-                        page_size=page_size,
-                    )
+                    finally:
+                        runtime_client_metrics = client.metrics_snapshot()
 
             outcome = asyncio.run(_run())
         except RiskHaltError as exc:
@@ -4573,6 +4971,7 @@ def reconcile_command(
             status=status,
             summary=summary,
             kpis=kpis,
+            client_metrics=runtime_client_metrics,
             error=error_payload,
         )
         payload_ok, payload_issues = validate_artifact_payload(artifact_payload)
@@ -4619,7 +5018,7 @@ def status_command(
     )
     if not latest:
         _print_notice(
-            f"No run artifacts found in {settings.run_artifacts_dir}. Execute `uv run bot run` first.",
+            f"No run artifacts found in {settings.run_artifacts_dir}. Execute `uv run bot discover` or `uv run bot run` first.",
             level="warning",
         )
         return
@@ -4737,12 +5136,82 @@ def artifacts_validate_command(
     _print_notice(f"Run artifact saved: {path}", level="success")
 
 
+@growth_app.command("discover")
+def growth_discover_command(
+    tag_slug: str = typer.Option(
+        "programming",
+        "--tag",
+        help="Topic tag slug used for discovery reads.",
+    ),
+    live: bool = typer.Option(
+        True,
+        "--live/--dry-run",
+        help="Persist discovery queue updates by default. Use --dry-run for read-only preview.",
+    ),
+    growth_sources: list[GrowthSource] | None = typer.Option(
+        None,
+        "--source",
+        case_sensitive=False,
+        help="Discovery source. Repeat option to combine sources.",
+    ),
+    discovery_mode: GrowthDiscoveryMode = typer.Option(
+        GrowthDiscoveryMode.GENERAL,
+        "--discovery-mode",
+        case_sensitive=False,
+        help="Legacy alias to select target-user-only discovery.",
+    ),
+    seed_user_refs: list[str] | None = typer.Option(
+        None,
+        "--seed-user",
+        help="Optional seed users for seed-follower discovery. Repeat option.",
+    ),
+    target_user_refs: list[str] | None = typer.Option(
+        None,
+        "--target-user",
+        help="Target user(s) whose followers should be discovered. Repeat option.",
+    ),
+    target_user_scan_limit: int | None = typer.Option(
+        None,
+        "--target-user-scan-limit",
+        min=1,
+        max=500,
+        help="Max followers to scan per target user. Defaults to TARGET_USER_FOLLOWERS_SCAN_LIMIT.",
+    ),
+    auto_sync: bool = typer.Option(
+        False,
+        "--auto-sync/--no-auto-sync",
+        help="Refresh local social-graph cache before discovery execution.",
+    ),
+) -> None:
+    """
+    Discovery-only alias: fill the queue with execution-ready candidates.
+    """
+    discover_command(
+        tag_slug=tag_slug,
+        live=live,
+        growth_sources=growth_sources,
+        discovery_mode=discovery_mode,
+        seed_user_refs=seed_user_refs,
+        target_user_refs=target_user_refs,
+        target_user_scan_limit=target_user_scan_limit,
+        auto_sync=auto_sync,
+    )
+
+
+@growth_app.command("queue")
+def growth_queue_command() -> None:
+    """
+    Show growth queue counts.
+    """
+    queue_command()
+
+
 @growth_app.command("session")
 def growth_session_command(
     tag_slug: str = typer.Option(
         "programming",
         "--tag",
-        help="Topic tag slug used for discovery and follow actions.",
+        help="Topic tag slug used for queue-driven growth execution context.",
     ),
     growth_policy: GrowthPolicy | None = typer.Option(
         None,
@@ -4750,22 +5219,11 @@ def growth_session_command(
         case_sensitive=False,
         help="Growth policy. `follow-only`, `warm-engage`, or `warm-engage-plus-rare-comment`.",
     ),
-    growth_sources: list[GrowthSource] | None = typer.Option(
-        None,
-        "--source",
-        case_sensitive=False,
-        help="Growth source. Repeat option to combine sources.",
-    ),
     mode: GrowthMode | None = typer.Option(
         None,
         "--mode",
         case_sensitive=False,
         help="Legacy compatibility alias for growth policy.",
-    ),
-    seed_user_refs: list[str] | None = typer.Option(
-        None,
-        "--seed-user",
-        help="Optional seed for followers discovery. Repeat option. Supports @username or user_id.",
     ),
     session_minutes: int | None = typer.Option(
         None,
@@ -4801,9 +5259,7 @@ def growth_session_command(
         tag_slug=tag_slug,
         live=True,
         growth_policy=growth_policy,
-        growth_sources=growth_sources,
         mode=mode,
-        seed_user_refs=seed_user_refs,
         session=True,
         session_minutes=session_minutes,
         target_follows=target_follows,
@@ -4817,7 +5273,7 @@ def growth_cycle_command(
     tag_slug: str = typer.Option(
         "programming",
         "--tag",
-        help="Topic tag slug used for discovery and follow actions.",
+        help="Topic tag slug used for queue-driven growth execution context.",
     ),
     live: bool = typer.Option(
         True,
@@ -4830,22 +5286,11 @@ def growth_cycle_command(
         case_sensitive=False,
         help="Growth policy. `follow-only`, `warm-engage`, or `warm-engage-plus-rare-comment`.",
     ),
-    growth_sources: list[GrowthSource] | None = typer.Option(
-        None,
-        "--source",
-        case_sensitive=False,
-        help="Growth source. Repeat option to combine sources.",
-    ),
     mode: GrowthMode | None = typer.Option(
         None,
         "--mode",
         case_sensitive=False,
         help="Legacy compatibility alias for growth policy.",
-    ),
-    seed_user_refs: list[str] | None = typer.Option(
-        None,
-        "--seed-user",
-        help="Optional seed for followers discovery. Repeat option. Supports @username or user_id.",
     ),
     auto_sync: bool = typer.Option(
         False,
@@ -4860,9 +5305,7 @@ def growth_cycle_command(
         tag_slug=tag_slug,
         live=live,
         growth_policy=growth_policy,
-        growth_sources=growth_sources,
         mode=mode,
-        seed_user_refs=seed_user_refs,
         session=False,
         auto_sync=auto_sync,
     )
@@ -4873,7 +5316,7 @@ def growth_preflight_command(
     tag_slug: str = typer.Option(
         "programming",
         "--tag",
-        help="Topic tag slug used for discovery and follow actions.",
+        help="Topic tag slug used for queue-driven growth execution context.",
     ),
     growth_policy: GrowthPolicy | None = typer.Option(
         None,
@@ -4881,22 +5324,11 @@ def growth_preflight_command(
         case_sensitive=False,
         help="Growth policy. `follow-only`, `warm-engage`, or `warm-engage-plus-rare-comment`.",
     ),
-    growth_sources: list[GrowthSource] | None = typer.Option(
-        None,
-        "--source",
-        case_sensitive=False,
-        help="Growth source. Repeat option to combine sources.",
-    ),
     mode: GrowthMode | None = typer.Option(
         None,
         "--mode",
         case_sensitive=False,
         help="Legacy compatibility alias for growth policy.",
-    ),
-    seed_user_refs: list[str] | None = typer.Option(
-        None,
-        "--seed-user",
-        help="Optional seed for followers discovery. Repeat option. Supports @username or user_id.",
     ),
     session_minutes: int | None = typer.Option(
         None,
@@ -4933,9 +5365,7 @@ def growth_preflight_command(
         tag_slug=tag_slug,
         live=False,
         growth_policy=growth_policy,
-        growth_sources=growth_sources,
         mode=mode,
-        seed_user_refs=seed_user_refs,
         session=False,
         auto_sync=auto_sync,
     )
@@ -4944,9 +5374,7 @@ def growth_preflight_command(
         tag_slug=tag_slug,
         live=True,
         growth_policy=growth_policy,
-        growth_sources=growth_sources,
         mode=mode,
-        seed_user_refs=seed_user_refs,
         session=True,
         session_minutes=session_minutes,
         target_follows=target_follows,
@@ -4972,33 +5400,7 @@ def growth_followers_command(
     live: bool = typer.Option(
         True,
         "--live/--dry-run",
-        help="Execute live mutations by default. Use --dry-run for preview-only execution.",
-    ),
-    session: bool = typer.Option(
-        True,
-        "--session/--single-cycle",
-        help="In live mode, run repeated growth cycles until session targets are reached. Use --single-cycle for one pass.",
-    ),
-    session_minutes: int | None = typer.Option(
-        None,
-        "--session-minutes",
-        min=1,
-        max=24 * 12,
-        help="Optional live session max duration in minutes. Defaults to LIVE_SESSION_DURATION_MINUTES.",
-    ),
-    target_follows: int | None = typer.Option(
-        None,
-        "--target-follows",
-        min=1,
-        max=5000,
-        help="Optional live session follow-attempt target. Defaults to LIVE_SESSION_TARGET_FOLLOW_ATTEMPTS.",
-    ),
-    session_max_passes: int | None = typer.Option(
-        None,
-        "--session-max-passes",
-        min=1,
-        max=500,
-        help="Optional cap on growth-cycle passes in one live session. Defaults to LIVE_SESSION_MAX_PASSES.",
+        help="Persist discovery queue updates by default. Use --dry-run for read-only preview.",
     ),
     auto_sync: bool = typer.Option(
         False,
@@ -5007,21 +5409,15 @@ def growth_followers_command(
     ),
 ) -> None:
     """
-    Run follow-only growth against followers of a supplied user or id.
+    Discovery alias: harvest followers of supplied target users into the growth queue.
     """
-    run_command(
+    discover_command(
         tag_slug="target_user_followers",
         live=live,
-        growth_policy=GrowthPolicy.FOLLOW_ONLY,
         growth_sources=[GrowthSource.TARGET_USER_FOLLOWERS],
-        mode=GrowthMode.SIMPLE,
         discovery_mode=GrowthDiscoveryMode.TARGET_USER_FOLLOWERS,
         target_user_refs=target_user_refs,
         target_user_scan_limit=target_user_scan_limit,
-        session=session,
-        session_minutes=session_minutes,
-        target_follows=target_follows,
-        session_max_passes=session_max_passes,
         auto_sync=auto_sync,
     )
 
@@ -5114,6 +5510,25 @@ def maintenance_sync_command(
     sync_command(live=live, force=force, full=full)
 
 
+@maintenance_app.command("db-hygiene")
+def maintenance_db_hygiene_command(
+    live: bool = typer.Option(
+        False,
+        "--live/--dry-run",
+        help="Preview deletions in dry-run mode by default. Use --live to apply cleanup.",
+    ),
+    vacuum: bool = typer.Option(
+        False,
+        "--vacuum",
+        help="Force VACUUM after live cleanup. DB_HYGIENE_VACUUM_AFTER_CLEANUP is also respected.",
+    ),
+) -> None:
+    """
+    Maintenance alias: prune stale operational DB rows with retention windows.
+    """
+    db_hygiene_command(live=live, vacuum=vacuum)
+
+
 @diagnostics_app.command("probe")
 def diagnostics_probe_command(
     tag_slug: str = typer.Option(
@@ -5180,6 +5595,14 @@ def observe_status_command(
     Show last-run diagnostic health from the latest run artifact.
     """
     status_command(emit_artifact=emit_artifact)
+
+
+@observe_app.command("queue")
+def observe_queue_command() -> None:
+    """
+    Show current growth queue counts.
+    """
+    queue_command()
 
 
 @observe_app.command("validate-artifact")

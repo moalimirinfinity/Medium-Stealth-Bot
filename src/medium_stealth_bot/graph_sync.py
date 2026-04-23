@@ -97,12 +97,13 @@ class GraphSyncService:
         following_count = 0
         users_upserted_count = 0
         imported_pending_count = 0
+        followers_source = "unknown"
         following_source = "unknown"
         error_message: str | None = None
         status = "success"
 
         try:
-            followers_rows = await self._fetch_followers_rows_graphql()
+            followers_rows, followers_source = await self._fetch_followers_rows()
             followers_count = self.repository.replace_own_followers_snapshot(followers_rows, run_id=run_id)
 
             following_rows, following_source = await self._fetch_following_rows()
@@ -137,6 +138,7 @@ class GraphSyncService:
             run_id=run_id,
             followers_count=followers_count,
             following_count=following_count,
+            followers_source=followers_source,
             users_upserted_count=users_upserted_count,
             imported_pending_count=imported_pending_count,
             following_source=following_source,
@@ -155,6 +157,30 @@ class GraphSyncService:
             used_following_source=following_source,
             duration_ms=duration_ms,
         )
+
+    async def _fetch_followers_rows(self) -> tuple[list[dict[str, object]], str]:
+        try:
+            rows = await self._fetch_followers_rows_graphql()
+            if rows:
+                return rows, "graphql"
+            self.log.warning("graph_sync_followers_graphql_empty")
+        except Exception as exc:  # noqa: BLE001
+            self.log.warning(
+                "graph_sync_followers_graphql_fallback",
+                error_type=type(exc).__name__,
+                error=self._summarize_exception(exc),
+            )
+
+        cached_ids = sorted(self.repository.cached_own_follower_ids())
+        if cached_ids:
+            self.log.warning(
+                "graph_sync_followers_using_cached_snapshot",
+                cached_count=len(cached_ids),
+            )
+            return [{"user_id": user_id} for user_id in cached_ids], "cached"
+
+        self.log.warning("graph_sync_followers_unavailable_no_cache")
+        return [], "unavailable"
 
     def _is_recent_success(self) -> bool:
         freshness_minutes = max(0, self.settings.graph_sync_freshness_window_minutes)

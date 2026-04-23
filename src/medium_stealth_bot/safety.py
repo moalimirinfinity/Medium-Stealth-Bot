@@ -32,6 +32,12 @@ class RiskGuard:
     def consecutive_failures(self) -> int:
         return self._consecutive_failures
 
+    def detect_challenge_detail(self, result: GraphQLResult) -> str | None:
+        return self._detect_challenge(result)
+
+    def detect_session_expiry_detail(self, result: GraphQLResult) -> str | None:
+        return self._detect_session_expiry(result)
+
     def evaluate_result(
         self,
         *,

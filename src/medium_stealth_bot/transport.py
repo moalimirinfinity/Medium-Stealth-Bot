@@ -100,6 +100,13 @@ class PlaywrightGraphQLTransport:
         self._browser_context: BrowserContext | None = None
         self._api_request: APIRequestContext | None = None
 
+    @staticmethod
+    def _cookie_map_for_playwright(cookie_map: dict[str, str]) -> dict[str, str]:
+        # Challenge cookies are volatile and can become stale quickly. Let the
+        # browser profile own them instead of injecting from env/session strings.
+        drop_names = {"cf_clearance", "_cfuvid"}
+        return {name: value for name, value in cookie_map.items() if name not in drop_names}
+
     async def open(self) -> None:
         if self._api_request is not None:
             return
@@ -120,8 +127,9 @@ class PlaywrightGraphQLTransport:
                 "If the profile is stale/corrupt, close running browsers and refresh via `uv run bot auth`."
             ) from exc
 
-        if self._cookie_map:
-            await self._browser_context.add_cookies(build_medium_context_cookies(self._cookie_map))
+        context_cookie_map = self._cookie_map_for_playwright(self._cookie_map)
+        if context_cookie_map:
+            await self._browser_context.add_cookies(build_medium_context_cookies(context_cookie_map))
         stored_cookies = await self._browser_context.cookies("https://medium.com")
         has_sid = any(cookie.get("name") == "sid" for cookie in stored_cookies)
         if not has_sid:

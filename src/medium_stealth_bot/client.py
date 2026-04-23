@@ -29,6 +29,9 @@ class MediumAsyncClient:
         self._request_latency_total_ms = 0.0
         self._result_failures = 0
         self._status_counts: dict[int, int] = {}
+        self._last_status_code: int | None = None
+        self._last_operation_names: list[str] = []
+        self._last_response_headers: dict[str, str] = {}
 
     async def __aenter__(self) -> "MediumAsyncClient":
         await self.open()
@@ -102,6 +105,10 @@ class MediumAsyncClient:
             self._transport = None
         self.log.info("client_closed", mode=self.settings.client_mode)
 
+    async def reset_transport(self) -> None:
+        await self.close()
+        await self.open()
+
     async def execute(self, operation: GraphQLOperation) -> GraphQLResult:
         results = await self.execute_batch([operation])
         return results[0]
@@ -151,6 +158,9 @@ class MediumAsyncClient:
         self._request_count += 1
         self._request_latency_total_ms += elapsed_ms
         self._status_counts[status] = self._status_counts.get(status, 0) + 1
+        self._last_status_code = status
+        self._last_operation_names = [operation.operation_name for operation in operations]
+        self._last_response_headers = self._diagnostic_headers(headers)
         self.log.info(
             "graphql_batch_executed",
             operation_count=len(operations),
@@ -165,6 +175,35 @@ class MediumAsyncClient:
         if self._transport is None:
             raise RuntimeError("HTTP session is not initialized")
         return await self._transport.post_graphql(payload)
+
+    @staticmethod
+    def _diagnostic_headers(headers: dict[str, str]) -> dict[str, str]:
+        if not headers:
+            return {}
+        keep_explicit = {
+            "cf-cache-status",
+            "cf-ray",
+            "content-type",
+            "retry-after",
+            "server",
+            "x-envoy-upstream-service-time",
+            "x-request-id",
+            "x-request-received-at",
+        }
+        filtered: dict[str, str] = {}
+        for key, value in headers.items():
+            lowered = str(key).lower()
+            if (
+                lowered in keep_explicit
+                or "rate" in lowered
+                or "limit" in lowered
+                or "retry" in lowered
+                or lowered.startswith("cf-")
+                or lowered.startswith("x-ratelimit")
+            ):
+                text = str(value)
+                filtered[lowered] = text if len(text) <= 300 else f"{text[:300]}..."
+        return dict(sorted(filtered.items()))
 
     def _load_contract_registry(self) -> OperationContractRegistry:
         path = self.settings.implementation_ops_registry_path
@@ -225,7 +264,7 @@ class MediumAsyncClient:
             stubbed=result.stubbed,
         )
 
-    def metrics_snapshot(self) -> dict[str, float | int | str]:
+    def metrics_snapshot(self) -> dict[str, Any]:
         average_latency_ms = (
             self._request_latency_total_ms / self._request_count if self._request_count > 0 else 0.0
         )
@@ -235,4 +274,7 @@ class MediumAsyncClient:
             "avg_latency_ms": round(average_latency_ms, 3),
             "status_counts": {str(code): count for code, count in sorted(self._status_counts.items())},
             "result_failures": self._result_failures,
+            "last_status_code": self._last_status_code,
+            "last_operation_names": list(self._last_operation_names),
+            "last_response_headers": dict(self._last_response_headers),
         }

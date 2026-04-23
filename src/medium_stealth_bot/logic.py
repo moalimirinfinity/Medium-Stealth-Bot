@@ -89,6 +89,42 @@ class DailyRunner:
         self._comment_mutation_supported = True
         self._normalize_pacing_configuration()
 
+    async def _maybe_recover_stealth_preflight_challenge(self, *, dry_run: bool) -> None:
+        if dry_run or self.settings.client_mode != "stealth":
+            return
+        task_name = "stealth_preflight_base_cache"
+        attempts = 2
+        last_result: GraphQLResult | None = None
+        for attempt in range(1, attempts + 1):
+            last_result = await self._execute_safe(task_name, operations.use_base_cache_control())
+            challenge_detail = self.risk_guard.detect_challenge_detail(last_result)
+            session_detail = self.risk_guard.detect_session_expiry_detail(last_result)
+            if challenge_detail is None and session_detail is None:
+                if attempt > 1:
+                    self.log.info(
+                        "stealth_preflight_recovered",
+                        attempt=attempt,
+                        status_code=last_result.status_code,
+                    )
+                return
+            detail = challenge_detail or session_detail or f"status={last_result.status_code}"
+            self.log.warning(
+                "stealth_preflight_blocked",
+                attempt=attempt,
+                attempts=attempts,
+                status_code=last_result.status_code,
+                detail=detail,
+            )
+            if attempt >= attempts:
+                self.risk_guard.evaluate_result(
+                    task_name=task_name,
+                    result=last_result,
+                    is_final_attempt=True,
+                )
+                return
+            await self.client.reset_transport()
+            await asyncio.sleep(self._retry_delay_seconds(attempt - 1))
+
     async def probe(self, tag_slug: str = "programming") -> ProbeSnapshot:
         self._assert_operator_not_stopped(task_name="probe")
         await self._maybe_sleep_session_warmup()
@@ -147,12 +183,21 @@ class DailyRunner:
         discovery_mode: GrowthDiscoveryMode | None = None,
         target_user_refs: list[str] | None = None,
         target_user_scan_limit: int | None = None,
+        discovery_enabled: bool = True,
+        execution_enabled: bool = True,
     ) -> DailyRunOutcome:
         self._assert_operator_not_stopped(task_name="run_daily_cycle")
+        if not discovery_enabled and not execution_enabled:
+            raise ValueError("At least one of discovery_enabled or execution_enabled must be true.")
+        await self._maybe_recover_stealth_preflight_challenge(dry_run=dry_run)
         resolved_growth_policy = self._resolve_growth_policy(growth_policy=growth_policy, growth_mode=growth_mode)
-        resolved_growth_sources = self._resolve_growth_sources(
-            growth_sources=growth_sources,
-            discovery_mode=discovery_mode,
+        resolved_growth_sources = (
+            self._resolve_growth_sources(
+                growth_sources=growth_sources,
+                discovery_mode=discovery_mode,
+            )
+            if discovery_enabled
+            else []
         )
         resolved_growth_mode = self._legacy_growth_mode_for_policy(resolved_growth_policy)
         resolved_discovery_mode = self._legacy_discovery_mode_for_sources(resolved_growth_sources)
@@ -181,7 +226,7 @@ class DailyRunner:
             action_type: max(0, action_limits[action_type] - action_counts.get(action_type, 0))
             for action_type in TRACKED_DAILY_ACTION_TYPES
         }
-        if actions_today_start >= max_actions:
+        if execution_enabled and actions_today_start >= max_actions:
             self.log.info(
                 "budget_exhausted",
                 actions_today=actions_today_start,
@@ -227,10 +272,14 @@ class DailyRunner:
         source_candidate_counts: dict[str, int] = {}
         discovery_buffered: list[CandidateUser] = []
         queue_pruned_counts = {"followed": 0, "rejected": 0, "stale": 0, "total": 0}
-        discovery_target = self._discovery_buffer_target(
-            growth_sources=resolved_growth_sources,
-            target_user_scan_limit=resolved_target_user_scan_limit,
-            target_user_refs=resolved_target_user_refs,
+        discovery_target = (
+            self._discovery_buffer_target(
+                growth_sources=resolved_growth_sources,
+                target_user_scan_limit=resolved_target_user_scan_limit,
+                target_user_refs=resolved_target_user_refs,
+            )
+            if discovery_enabled
+            else 0
         )
         if not dry_run:
             queue_pruned_counts = self.repository.prune_growth_candidate_queue(
@@ -238,12 +287,12 @@ class DailyRunner:
                 rejected_after_days=self.settings.growth_queue_prune_rejected_after_days,
                 stale_after_days=self.settings.growth_queue_prune_stale_after_days,
             )
-        queue_ready_before = 0 if dry_run else self.repository.growth_queue_ready_count()
+        queue_ready_before = self.repository.growth_queue_ready_count()
         queue_ready_after = queue_ready_before
         discovery_enqueued = 0
         discovery_replenished = False
 
-        if dry_run or queue_ready_before < discovery_target:
+        if discovery_enabled and (dry_run or queue_ready_before < discovery_target):
             probe = await self.probe(tag_slug=tag_slug) if self._growth_sources_need_probe(resolved_growth_sources) else None
             seed_refs = (seed_user_refs or []) + self.settings.discovery_seed_users
             discovery_candidates = await self._build_candidates(
@@ -271,46 +320,63 @@ class DailyRunner:
             else:
                 queue_ready_after = len(discovery_buffered)
 
-        execution_pool_limit = self._execution_queue_fetch_limit(max_follow_attempts_for_cycle)
-        if execution_pool_limit <= 0:
-            execution_pool = []
-        elif dry_run:
-            execution_pool = discovery_buffered[:execution_pool_limit]
+        if discovery_enabled and not execution_enabled:
+            execution_pool = list(discovery_buffered)
+            execution_pool_limit = len(execution_pool)
         else:
-            execution_pool = self.repository.queued_growth_candidates(
-                limit=execution_pool_limit,
-                due_deferred_reserve_ratio=self.settings.growth_queue_due_deferred_reserve_ratio,
-            )
+            execution_pool_limit = self._execution_queue_fetch_limit(max_follow_attempts_for_cycle)
+            if execution_pool_limit <= 0:
+                execution_pool = []
+            elif dry_run and discovery_enabled:
+                execution_pool = discovery_buffered[:execution_pool_limit]
+            else:
+                execution_pool = self.repository.queued_growth_candidates(
+                    limit=execution_pool_limit,
+                    due_deferred_reserve_ratio=self.settings.growth_queue_due_deferred_reserve_ratio,
+                )
         source_candidate_counts = self._source_counts(execution_pool)
         discovered_candidates = len(discovery_candidates)
         screened_candidates = len(execution_pool)
         considered_candidates = screened_candidates
-        eligible = await self._evaluate_candidates(
-            execution_pool,
-            decisions=decisions,
-            persist_observations=not dry_run,
-        ) if execution_pool_limit > 0 else []
-
-        follow_slots = min(max_follow_attempts_for_cycle, len(eligible))
-        (
-            follow_attempted,
-            follow_verified,
-            clap_attempted,
-            clap_verified,
-            comment_attempted,
-            comment_verified,
-            source_follow_verified_counts,
-        ) = (
-            await self._execute_follow_pipeline(
-                eligible_candidates=eligible,
-                max_to_run=follow_slots,
-                clap_budget_remaining=action_remaining[ACTION_CLAP],
-                comment_budget_remaining=action_remaining[ACTION_COMMENT],
-                dry_run=dry_run,
+        eligible = (
+            await self._evaluate_candidates(
+                execution_pool,
                 decisions=decisions,
-                growth_policy=resolved_growth_policy,
+                persist_observations=not dry_run,
             )
+            if execution_pool_limit > 0
+            else []
         )
+
+        if execution_enabled:
+            follow_slots = min(max_follow_attempts_for_cycle, len(eligible))
+            (
+                follow_attempted,
+                follow_verified,
+                clap_attempted,
+                clap_verified,
+                comment_attempted,
+                comment_verified,
+                source_follow_verified_counts,
+            ) = (
+                await self._execute_follow_pipeline(
+                    eligible_candidates=eligible,
+                    max_to_run=follow_slots,
+                    clap_budget_remaining=action_remaining[ACTION_CLAP],
+                    comment_budget_remaining=action_remaining[ACTION_COMMENT],
+                    dry_run=dry_run,
+                    decisions=decisions,
+                    growth_policy=resolved_growth_policy,
+                )
+            )
+        else:
+            follow_attempted = 0
+            follow_verified = 0
+            clap_attempted = 0
+            clap_verified = 0
+            comment_attempted = 0
+            comment_verified = 0
+            source_follow_verified_counts = {}
         executed_candidates = follow_attempted
         followed_candidates = follow_verified
         action_counts[ACTION_SUBSCRIBE] += follow_attempted
@@ -329,6 +395,9 @@ class DailyRunner:
             if not dry_run
             else actions_today_start
         )
+        if not dry_run:
+            queue_ready_after = self.repository.growth_queue_ready_count()
+        queue_counts = self.repository.growth_queue_state_counts()
 
         kpis = self._build_kpis(
             follow_attempted=follow_attempted,
@@ -349,6 +418,8 @@ class DailyRunner:
         ) = self.repository.follow_cycle_conversion_breakdowns()
         kpis["selected_growth_sources_count"] = len(resolved_growth_sources)
         kpis["selected_growth_policy_follow_verified"] = follow_verified
+        kpis["growth_discovery_enabled"] = 1 if discovery_enabled else 0
+        kpis["growth_execution_enabled"] = 1 if execution_enabled else 0
         kpis["growth_queue_ready_before_discovery"] = queue_ready_before
         kpis["growth_queue_ready_after_discovery"] = queue_ready_after
         kpis["growth_queue_due_deferred_reserve_ratio"] = round(
@@ -368,6 +439,14 @@ class DailyRunner:
         kpis["growth_queue_pruned_rejected"] = queue_pruned_counts["rejected"]
         kpis["growth_queue_pruned_stale"] = queue_pruned_counts["stale"]
         kpis["growth_queue_pruned_total"] = queue_pruned_counts["total"]
+        kpis["growth_queue_ready"] = queue_counts["ready"]
+        kpis["growth_queue_queued"] = queue_counts["queued"]
+        kpis["growth_queue_deferred"] = queue_counts["deferred"]
+        kpis["growth_queue_deferred_due"] = queue_counts["deferred_due"]
+        kpis["growth_queue_deferred_future"] = queue_counts["deferred_future"]
+        kpis["growth_queue_rejected"] = queue_counts["rejected"]
+        kpis["growth_queue_followed"] = queue_counts["followed"]
+        kpis["growth_queue_total"] = queue_counts["total"]
         kpis["growth_funnel_discovered"] = discovered_candidates
         kpis["growth_funnel_screened"] = screened_candidates
         kpis["growth_funnel_eligible"] = len(eligible)
@@ -409,6 +488,8 @@ class DailyRunner:
         self.log.info(
             "daily_cycle_complete",
             dry_run=dry_run,
+            discovery_enabled=discovery_enabled,
+            execution_enabled=execution_enabled,
             discovered_candidates=discovered_candidates,
             screened_candidates=screened_candidates,
             executed_candidates=executed_candidates,
@@ -417,6 +498,7 @@ class DailyRunner:
             eligible_candidates=len(eligible),
             queue_ready_before=queue_ready_before,
             queue_ready_after=queue_ready_after,
+            queue_counts=queue_counts,
             queue_pruned_counts=queue_pruned_counts,
             discovery_enqueued=discovery_enqueued,
             execution_pool=len(execution_pool),
@@ -497,6 +579,48 @@ class DailyRunner:
             probe=probe,
         )
 
+    async def run_discovery_cycle(
+        self,
+        *,
+        tag_slug: str = "programming",
+        dry_run: bool = True,
+        seed_user_refs: list[str] | None = None,
+        growth_sources: list[GrowthSource] | None = None,
+        discovery_mode: GrowthDiscoveryMode | None = None,
+        target_user_refs: list[str] | None = None,
+        target_user_scan_limit: int | None = None,
+    ) -> DailyRunOutcome:
+        return await self.run_daily_cycle(
+            tag_slug=tag_slug,
+            dry_run=dry_run,
+            seed_user_refs=seed_user_refs,
+            growth_policy=self.settings.default_growth_policy,
+            growth_sources=growth_sources,
+            discovery_mode=discovery_mode,
+            target_user_refs=target_user_refs,
+            target_user_scan_limit=target_user_scan_limit,
+            discovery_enabled=True,
+            execution_enabled=False,
+        )
+
+    async def run_growth_queue_cycle(
+        self,
+        *,
+        tag_slug: str = "programming",
+        dry_run: bool = True,
+        growth_policy: GrowthPolicy | None = None,
+        growth_mode: GrowthMode | None = None,
+    ) -> DailyRunOutcome:
+        return await self.run_daily_cycle(
+            tag_slug=tag_slug,
+            dry_run=dry_run,
+            growth_policy=growth_policy,
+            growth_mode=growth_mode,
+            growth_sources=[],
+            discovery_enabled=False,
+            execution_enabled=True,
+        )
+
     async def run_live_session(
         self,
         *,
@@ -511,12 +635,17 @@ class DailyRunner:
         discovery_mode: GrowthDiscoveryMode | None = None,
         target_user_refs: list[str] | None = None,
         target_user_scan_limit: int | None = None,
+        discovery_enabled: bool = True,
     ) -> DailyRunOutcome:
         self._assert_operator_not_stopped(task_name="run_live_session")
         resolved_growth_policy = self._resolve_growth_policy(growth_policy=growth_policy, growth_mode=growth_mode)
-        resolved_growth_sources = self._resolve_growth_sources(
-            growth_sources=growth_sources,
-            discovery_mode=discovery_mode,
+        resolved_growth_sources = (
+            self._resolve_growth_sources(
+                growth_sources=growth_sources,
+                discovery_mode=discovery_mode,
+            )
+            if discovery_enabled
+            else []
         )
         resolved_growth_mode = self._legacy_growth_mode_for_policy(resolved_growth_policy)
         resolved_discovery_mode = self._legacy_discovery_mode_for_sources(resolved_growth_sources)
@@ -627,6 +756,8 @@ class DailyRunner:
                     discovery_mode=resolved_discovery_mode,
                     target_user_refs=resolved_target_user_refs,
                     target_user_scan_limit=resolved_target_user_scan_limit,
+                    discovery_enabled=discovery_enabled,
+                    execution_enabled=True,
                 )
                 last_outcome = outcome
 
@@ -694,6 +825,14 @@ class DailyRunner:
                     budget_exhausted=outcome.budget_exhausted,
                 )
 
+                if (
+                    not discovery_enabled
+                    and outcome.screened_candidates == 0
+                    and outcome.eligible_candidates == 0
+                    and outcome.follow_actions_attempted == 0
+                ):
+                    stop_reason = "queue_empty"
+                    break
                 if outcome.budget_exhausted:
                     stop_reason = "budget_exhausted"
                     break
@@ -936,6 +1075,7 @@ class DailyRunner:
         max_unfollows: int | None = None,
     ) -> DailyRunOutcome:
         self._assert_operator_not_stopped(task_name="run_cleanup_only")
+        await self._maybe_recover_stealth_preflight_challenge(dry_run=dry_run)
         self.timing.reset_session_state()
         self.timing.reset_metrics()
         self.timing.set_simulation_mode(dry_run)
@@ -1066,6 +1206,7 @@ class DailyRunner:
         page_size: int,
     ) -> ReconcileOutcome:
         self._assert_operator_not_stopped(task_name="reconcile_follow_states")
+        await self._maybe_recover_stealth_preflight_challenge(dry_run=dry_run)
         self.timing.reset_session_state()
         self.timing.reset_metrics()
         self.timing.set_simulation_mode(dry_run)
@@ -2058,9 +2199,9 @@ class DailyRunner:
         comment_enabled = self._pre_follow_comment_enabled(growth_policy)
         for candidate in eligible_candidates[:max_to_run]:
             self._assert_operator_not_stopped(task_name="follow_pipeline")
-            attempted += 1
 
             if dry_run:
+                attempted += 1
                 if clap_enabled and clap_budget_remaining > 0:
                     clap_budget_remaining -= 1
                     clap_attempted += 1
@@ -2082,6 +2223,11 @@ class DailyRunner:
                     reason="dry_run:planned_follow",
                 )
                 continue
+
+            can_execute_mutation = await self._pre_mutation_follow_state_gate(candidate, decisions=decisions)
+            if not can_execute_mutation:
+                continue
+            attempted += 1
 
             self.repository.upsert_user_profile(
                 candidate.user_id,
@@ -2252,6 +2398,72 @@ class DailyRunner:
             comment_verified,
             source_follow_verified_counts,
         )
+
+    async def _pre_mutation_follow_state_gate(
+        self,
+        candidate: CandidateUser,
+        *,
+        decisions: list[CandidateDecision],
+    ) -> bool:
+        verify = await self._execute_with_retry(
+            "follow_pre_mutation_user_viewer_edge",
+            operations.user_viewer_edge(candidate.user_id),
+        )
+        self._hydrate_candidate_from_user_viewer_edge(candidate, verify)
+        is_following = parse_user_viewer_is_following(verify)
+        if is_following is True:
+            self.repository.upsert_relationship_state(
+                candidate.user_id,
+                newsletter_state=NewsletterState.UNKNOWN,
+                user_follow_state=UserFollowState.FOLLOWING,
+                confidence=RelationshipConfidence.OBSERVED,
+                source_operation="UserViewerEdge",
+                verified_now=True,
+            )
+            self.repository.mark_candidate_reconciled(candidate.user_id, UserFollowState.FOLLOWING)
+            self.repository.mark_growth_candidate_queue_state(
+                candidate.user_id,
+                queue_state="rejected",
+                reason="skip:already_following_pre_mutation_check",
+                candidate=candidate,
+                observed_follow_state=UserFollowState.FOLLOWING,
+            )
+            self._append_decision(
+                decisions,
+                candidate,
+                eligible=False,
+                reason="skip:already_following_pre_mutation_check",
+                needs_reconcile=False,
+            )
+            return False
+        if is_following is None:
+            self.repository.mark_growth_candidate_queue_state(
+                candidate.user_id,
+                queue_state="deferred",
+                reason="skip:pre_mutation_check_unavailable",
+                candidate=candidate,
+                retry_after_at=self._growth_queue_deferred_retry_at(
+                    user_id=candidate.user_id,
+                    reason="skip:live_check_unavailable",
+                ),
+            )
+            self._append_decision(
+                decisions,
+                candidate,
+                eligible=False,
+                reason="skip:pre_mutation_check_unavailable",
+            )
+            return False
+        self.repository.upsert_relationship_state(
+            candidate.user_id,
+            newsletter_state=NewsletterState.UNKNOWN,
+            user_follow_state=UserFollowState.NOT_FOLLOWING,
+            confidence=RelationshipConfidence.OBSERVED,
+            source_operation="UserViewerEdge",
+            verified_now=True,
+        )
+        self.repository.mark_candidate_reconciled(candidate.user_id, UserFollowState.NOT_FOLLOWING)
+        return True
 
     async def _execute_pre_follow_engagement(
         self,
