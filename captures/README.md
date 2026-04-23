@@ -19,10 +19,6 @@ The application uses these files for:
   - compact operation summary derived from the April 23 live capture
 - `final/implementation_ops_2026-04-23.json`
   - curated runtime-aligned operation subset with live-verified comment and highlight contracts
-- `final/live_capture_2026-04-20.json`
-  - targeted rollback refresh for undo-clap and delete-comment coverage
-- `final/live_ops_2026-04-20.json`
-  - compact summary for the rollback refresh
 - `FOLLOW_ACTION_NOTE.md`
   - follow and unfollow semantics
 - `IMPLEMENTATION_NOTES.md`
@@ -36,8 +32,6 @@ The application uses these files for:
   - recorded from real page/UI behavior
 - `live_probe_stubbed`
   - mutation shape captured without applying real side effects
-- `legacy_reference`
-  - older retained captures used for diffing
 
 ## Runtime Alignment
 

@@ -30,9 +30,6 @@
   - `captures/final/live_capture_2026-04-23.json`
   - `captures/final/live_ops_2026-04-23.json`
   - `captures/final/implementation_ops_2026-04-23.json`
-- Historical reference:
-  - `captures/final/practical_capture_2026-02-21.json`
-  - `captures/final/practical_ops_2026-02-21.json`
 
 ## Evidence Confidence
 - `SubscribeNewsletterV3Mutation`: live UI-observed + payload captured.

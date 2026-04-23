@@ -129,10 +129,10 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def _regenerate_manifest() -> None:
     manifest = _load_json(MANIFEST_PATH) if MANIFEST_PATH.exists() else {}
-    canonical_capture = str(manifest.get("canonicalCapture") or "captures/final/live_capture_2026-02-24.json")
-    canonical_ops = str(manifest.get("canonicalOps") or "captures/final/live_ops_2026-02-24.json")
+    canonical_capture = str(manifest.get("canonicalCapture") or "captures/final/live_capture_2026-04-23.json")
+    canonical_ops = str(manifest.get("canonicalOps") or "captures/final/live_ops_2026-04-23.json")
     canonical_implementation = str(
-        manifest.get("canonicalImplementationOps") or "captures/final/implementation_ops_2026-02-24.json"
+        manifest.get("canonicalImplementationOps") or "captures/final/implementation_ops_2026-04-23.json"
     )
     old_files = {
         str(item.get("path")): item

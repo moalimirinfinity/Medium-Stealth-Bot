@@ -39,7 +39,7 @@ def main() -> int:
     manifest = _load_json(manifest_path)
     canonical_capture = manifest.get("canonicalCapture")
     canonical_ops = manifest.get("canonicalOps")
-    canonical_implementation = manifest.get("canonicalImplementationOps") or "captures/final/implementation_ops_2026-02-24.json"
+    canonical_implementation = manifest.get("canonicalImplementationOps") or "captures/final/implementation_ops_2026-04-23.json"
     files = manifest.get("files")
 
     if not isinstance(canonical_capture, str):

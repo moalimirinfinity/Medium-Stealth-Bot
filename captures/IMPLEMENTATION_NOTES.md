@@ -9,7 +9,6 @@ Current primary references:
 - `captures/final/live_capture_2026-04-23.json`
 - `captures/final/live_ops_2026-04-23.json`
 - `captures/final/implementation_ops_2026-04-23.json`
-- `captures/final/live_capture_2026-04-20.json` for rollback mutations
 
 The implementation subset is the runtime-aligned operation registry. It includes:
 

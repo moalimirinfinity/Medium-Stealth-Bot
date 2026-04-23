@@ -93,10 +93,9 @@ Canonical pointers are tracked in `captures/manifest.json`.
 
 Primary files:
 
-- `live_capture_2026-02-24.json`
-- `live_ops_2026-02-24.json`
-- `implementation_ops_2026-02-24.json`
-- `live_capture_2026-04-20.json` for rollback mutations
+- `live_capture_2026-04-23.json`
+- `live_ops_2026-04-23.json`
+- `implementation_ops_2026-04-23.json`
 
 The implementation registry defines:
 
@@ -114,6 +113,7 @@ Observed Medium semantics used by the runtime:
 4. canonical follow-state verification: `UserViewerEdge.user.viewerEdge.isFollowing`
 5. clap rollback path: `ClapMutation` with negative `numClaps`
 6. comment deletion path: `DeleteResponseMutation`
+7. highlight create/delete path: `QuoteCreateMutation` and `DeleteQuoteMutation`
 
 Design rule: newsletter subscription is not treated as definitive user-follow proof.
 
