@@ -29,9 +29,30 @@ class UserNode(_Model):
     newsletter_v3: NewsletterV3 | None = Field(default=None, alias="newsletterV3")
 
 
+class PostParagraph(_Model):
+    name: str | None = None
+    text: str | None = None
+    type: str | int | None = None
+
+
+class PostBodyModel(_Model):
+    paragraphs: list[PostParagraph] = Field(default_factory=list)
+
+
+class PostContent(_Model):
+    body_model: PostBodyModel | None = Field(default=None, alias="bodyModel")
+
+
+class PostVersion(_Model):
+    id: str | None = None
+
+
 class TagPostNode(_Model):
     id: str | None = None
     title: str | None = None
+    latest_published_version_id: str | None = Field(default=None, alias="latestPublishedVersionId")
+    latest_published_version: str | PostVersion | None = Field(default=None, alias="latestPublishedVersion")
+    content: PostContent | None = None
     creator: UserNode | None = None
 
 
@@ -166,6 +187,18 @@ class DeleteResponseMutationData(_Model):
     delete_post: bool | None = Field(default=None, alias="deletePost")
 
 
+class QuoteCreatePayload(_Model):
+    id: str | None = None
+
+
+class QuoteCreateMutationData(_Model):
+    create_quote: QuoteCreatePayload | None = Field(default=None, alias="createQuote")
+
+
+class DeleteQuoteMutationData(_Model):
+    delete_quote: bool | None = Field(default=None, alias="deleteQuote")
+
+
 class CatalogItemEntityPost(_Model):
     id: str | None = None
     title: str | None = None
@@ -288,6 +321,54 @@ def parse_latest_post_preview(result: GraphQLResult) -> tuple[str | None, str | 
     return post.id, post.title
 
 
+def parse_recent_post_contexts(
+    result: GraphQLResult,
+) -> list[tuple[str, str | None, str | None, list[tuple[str, str | int | None, str]]]]:
+    payload = UserLatestPostData.model_validate(result.data or {})
+    if not payload.user_result or not payload.user_result.homepage_posts_connection:
+        return []
+    posts = payload.user_result.homepage_posts_connection.posts
+    if not posts:
+        return []
+
+    contexts: list[tuple[str, str | None, str | None, list[tuple[str, str | int | None, str]]]] = []
+    for post in posts:
+        if not post.id:
+            continue
+        version_id = post.latest_published_version_id
+        if not version_id and post.latest_published_version:
+            latest_version = post.latest_published_version
+            if isinstance(latest_version, str):
+                version_id = latest_version
+            else:
+                version_id = latest_version.id
+
+        paragraphs: list[tuple[str, str | int | None, str]] = []
+        body_model = post.content.body_model if post.content else None
+        if body_model:
+            for paragraph in body_model.paragraphs:
+                name = (paragraph.name or "").strip()
+                text = " ".join((paragraph.text or "").split()).strip()
+                if not name or not text:
+                    continue
+                paragraphs.append((name, paragraph.type, text))
+
+        contexts.append((post.id, post.title, version_id, paragraphs))
+
+    return contexts
+
+
+def parse_latest_post_context(
+    result: GraphQLResult,
+) -> tuple[str | None, str | None, str | None, list[tuple[str, str]]]:
+    contexts = parse_recent_post_contexts(result)
+    if not contexts:
+        return None, None, None, []
+    post_id, title, version_id, paragraphs_with_type = contexts[0]
+    paragraphs = [(name, text) for name, _paragraph_type, text in paragraphs_with_type]
+    return post_id, title, version_id, paragraphs
+
+
 def parse_user_viewer_is_following(result: GraphQLResult) -> bool | None:
     payload = UserViewerEdgeData.model_validate(result.data or {})
     if not payload.user or not payload.user.viewer_edge:
@@ -358,6 +439,18 @@ def parse_publish_threaded_response_id(result: GraphQLResult) -> str | None:
 def parse_delete_response_success(result: GraphQLResult) -> bool | None:
     payload = DeleteResponseMutationData.model_validate(result.data or {})
     return payload.delete_post
+
+
+def parse_create_quote_id(result: GraphQLResult) -> str | None:
+    payload = QuoteCreateMutationData.model_validate(result.data or {})
+    if not payload.create_quote:
+        return None
+    return payload.create_quote.id
+
+
+def parse_delete_quote_success(result: GraphQLResult) -> bool | None:
+    payload = DeleteQuoteMutationData.model_validate(result.data or {})
+    return payload.delete_quote
 
 
 def parse_topic_curated_list_users(result: GraphQLResult) -> list[tuple[UserNode, str | None, str | None]]:

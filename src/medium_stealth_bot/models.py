@@ -100,8 +100,12 @@ class DailyRunOutcome(BaseModel):
     follow_actions_verified: int = 0
     clap_actions_attempted: int = 0
     clap_actions_verified: int = 0
+    public_touch_actions_attempted: int = 0
+    public_touch_actions_verified: int = 0
     comment_actions_attempted: int = 0
     comment_actions_verified: int = 0
+    highlight_actions_attempted: int = 0
+    highlight_actions_verified: int = 0
     cleanup_actions_attempted: int = 0
     cleanup_actions_verified: int = 0
     source_candidate_counts: dict[str, int] = Field(default_factory=dict)

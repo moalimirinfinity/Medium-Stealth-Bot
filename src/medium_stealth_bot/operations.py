@@ -157,6 +157,33 @@ query UserLatestPostQuery($id: ID, $username: ID) {
 }
 """.strip()
 
+USER_LATEST_POST_CONTEXT_QUERY = """
+query UserLatestPostQuery($id: ID, $username: ID) {
+  userResult(id: $id, username: $username) {
+    __typename
+    ... on User {
+      id
+      homepagePostsConnection(paging: {limit: 3}) {
+        posts {
+          id
+          title
+          latestPublishedVersion
+          content {
+            bodyModel {
+              paragraphs {
+                name
+                type
+                text
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+""".strip()
+
 USER_VIEWER_EDGE_QUERY = """
 query UserViewerEdge($userId: ID!) {
   user(id: $userId) {
@@ -411,6 +438,15 @@ def user_latest_post(*, user_id: str | None = None, username: str | None = None)
     return GraphQLOperation(
         operationName="UserLatestPostQuery",
         query=USER_LATEST_POST_QUERY,
+        variables={"id": user_id, "username": username},
+    )
+
+
+def user_latest_post_context(*, user_id: str | None = None, username: str | None = None) -> GraphQLOperation:
+    # Keep operationName and variable keys aligned with the contract registry.
+    return GraphQLOperation(
+        operationName="UserLatestPostQuery",
+        query=USER_LATEST_POST_CONTEXT_QUERY,
         variables={"id": user_id, "username": username},
     )
 

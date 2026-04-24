@@ -115,7 +115,7 @@ _GROWTH_SOURCE_MENU_CHOICE_MAP: dict[str, GrowthSource] = {
 _GROWTH_POLICY_MENU_OPTIONS: tuple[tuple[str, str, str], ...] = (
     ("1", "Follow-Only", "Follow suitable users without pre-follow engagement."),
     ("2", "Warm-Engage", "Read and clap before following."),
-    ("3", "Warm-Engage+Comment", "Read, clap, and rarely comment before following."),
+    ("3", "Warm-Engage++", "Read, clap, and add a rare public touch (comment/highlight) before following."),
     ("4", "Back", "Return to growth source selection"),
 )
 
@@ -368,6 +368,19 @@ def _bootstrap_settings(*, env_path: Path | None = None) -> AppSettings:
     return settings
 
 
+def _runtime_settings_for_growth_policy(
+    settings: AppSettings,
+    *,
+    growth_policy: GrowthPolicy,
+) -> tuple[AppSettings, bool]:
+    if growth_policy != GrowthPolicy.WARM_ENGAGE_RARE_COMMENT:
+        return settings, False
+    if settings.enable_pre_follow_comment:
+        return settings, False
+    overridden = settings.model_copy(update={"enable_pre_follow_comment": True})
+    return overridden, True
+
+
 def _build_runner(settings: AppSettings) -> tuple[Database, ActionRepository]:
     database = Database(settings.db_path)
     database.initialize()
@@ -527,10 +540,28 @@ def _render_daily_run(outcome: DailyRunOutcome) -> None:
         "Clap Attempted / Verified",
         f"{outcome.clap_actions_attempted} / {outcome.clap_actions_verified}",
     )
-    if outcome.growth_policy == GrowthPolicy.WARM_ENGAGE_RARE_COMMENT or outcome.comment_actions_attempted > 0 or outcome.comment_actions_verified > 0:
+    if (
+        outcome.growth_policy == GrowthPolicy.WARM_ENGAGE_RARE_COMMENT
+        or outcome.public_touch_actions_attempted > 0
+        or outcome.public_touch_actions_verified > 0
+    ):
+        summary_table.add_row(
+            "Public Touch Attempted / Verified",
+            f"{outcome.public_touch_actions_attempted} / {outcome.public_touch_actions_verified}",
+        )
+    if (
+        outcome.growth_policy == GrowthPolicy.WARM_ENGAGE_RARE_COMMENT
+        or outcome.comment_actions_attempted > 0
+        or outcome.comment_actions_verified > 0
+    ):
         summary_table.add_row(
             "Comment Attempted / Verified",
             f"{outcome.comment_actions_attempted} / {outcome.comment_actions_verified}",
+        )
+    if outcome.highlight_actions_attempted > 0 or outcome.highlight_actions_verified > 0:
+        summary_table.add_row(
+            "Highlight Attempted / Verified",
+            f"{outcome.highlight_actions_attempted} / {outcome.highlight_actions_verified}",
         )
     if outcome.cleanup_only_mode or outcome.cleanup_actions_attempted > 0 or outcome.cleanup_actions_verified > 0:
         summary_table.add_row(
@@ -812,8 +843,12 @@ def _build_run_artifact_payload(
         "follow_actions_verified": outcome.follow_actions_verified,
         "clap_actions_attempted": outcome.clap_actions_attempted,
         "clap_actions_verified": outcome.clap_actions_verified,
+        "public_touch_actions_attempted": outcome.public_touch_actions_attempted,
+        "public_touch_actions_verified": outcome.public_touch_actions_verified,
         "comment_actions_attempted": outcome.comment_actions_attempted,
         "comment_actions_verified": outcome.comment_actions_verified,
+        "highlight_actions_attempted": outcome.highlight_actions_attempted,
+        "highlight_actions_verified": outcome.highlight_actions_verified,
         "cleanup_actions_attempted": outcome.cleanup_actions_attempted,
         "cleanup_actions_verified": outcome.cleanup_actions_verified,
     }
@@ -930,8 +965,12 @@ def _render_status(artifact: dict, *, artifact_path: Path, settings: AppSettings
             "follow_actions_verified",
             "clap_actions_attempted",
             "clap_actions_verified",
+            "public_touch_actions_attempted",
+            "public_touch_actions_verified",
             "comment_actions_attempted",
             "comment_actions_verified",
+            "highlight_actions_attempted",
+            "highlight_actions_verified",
             "cleanup_actions_attempted",
             "cleanup_actions_verified",
         ):
@@ -1097,6 +1136,8 @@ def _render_status(artifact: dict, *, artifact_path: Path, settings: AppSettings
     growth_defaults.add_row("Pre-Follow Clap", "true" if settings.enable_pre_follow_clap else "false")
     growth_defaults.add_row("Pre-Follow Comment", "true" if settings.enable_pre_follow_comment else "false")
     growth_defaults.add_row("Pre-Follow Comment Probability", str(round(settings.pre_follow_comment_probability, 3)))
+    growth_defaults.add_row("Pre-Follow Highlight", "true" if settings.enable_pre_follow_highlight else "false")
+    growth_defaults.add_row("Pre-Follow Highlight Probability", str(round(settings.pre_follow_highlight_probability, 3)))
     growth_defaults.add_row("Live Session Duration (m)", str(settings.live_session_duration_minutes))
     growth_defaults.add_row("Live Session Target Follows", str(settings.live_session_target_follow_attempts))
     growth_defaults.add_row("Live Session Min Follows", str(settings.live_session_min_follow_attempts))
@@ -1877,6 +1918,8 @@ def _render_start_menu(
     enable_pre_follow_clap: bool,
     enable_pre_follow_comment: bool,
     pre_follow_comment_probability: float,
+    enable_pre_follow_highlight: bool,
+    pre_follow_highlight_probability: float,
     pre_follow_comment_templates_raw: str,
     graph_sync_auto_enabled: bool,
     graph_sync_freshness_window_minutes: int,
@@ -1933,6 +1976,8 @@ def _render_start_menu(
     defaults.add_row("Pre-Follow Clap", "true" if enable_pre_follow_clap else "false")
     defaults.add_row("Pre-Follow Comment", "true" if enable_pre_follow_comment else "false")
     defaults.add_row("Pre-Follow Comment Probability", str(round(pre_follow_comment_probability, 3)))
+    defaults.add_row("Pre-Follow Highlight", "true" if enable_pre_follow_highlight else "false")
+    defaults.add_row("Pre-Follow Highlight Probability", str(round(pre_follow_highlight_probability, 3)))
     defaults.add_row(
         "Pre-Follow Comment Templates",
         str(len([item for item in pre_follow_comment_templates_raw.split("||") if item.strip()])),
@@ -2258,6 +2303,8 @@ def _run_start_menu(
             enable_pre_follow_clap=enable_pre_follow_clap,
             enable_pre_follow_comment=enable_pre_follow_comment,
             pre_follow_comment_probability=pre_follow_comment_probability,
+            enable_pre_follow_highlight=settings.enable_pre_follow_highlight,
+            pre_follow_highlight_probability=settings.pre_follow_highlight_probability,
             pre_follow_comment_templates_raw=pre_follow_comment_templates_raw,
             graph_sync_auto_enabled=graph_sync_auto_enabled,
             graph_sync_freshness_window_minutes=graph_sync_freshness_window_minutes,
@@ -2450,6 +2497,20 @@ def _run_start_menu(
             back_choice = options[-1][0]
             style = _START_MENU_SECTION_STYLES.get(title, "white")
             while True:
+                if title == "Growth Policy":
+                    template_count = len(
+                        [item for item in pre_follow_comment_templates_raw.split("||") if item.strip()]
+                    )
+                    comment_default_label = "enabled" if enable_pre_follow_comment else "runtime-enabled"
+                    _print_notice(
+                        "Mode 3 public-touch config: "
+                        f"comments={comment_default_label}, "
+                        f"comment_probability={round(pre_follow_comment_probability, 3)}, "
+                        f"highlight_probability={round(settings.pre_follow_highlight_probability, 3)}, "
+                        f"budget_per_day={settings.max_comment_actions_per_day}, "
+                        f"templates={template_count}.",
+                        level="info",
+                    )
                 _render_start_submenu(title=title, options=options, style=style)
                 submenu_choice = str(typer.prompt("Select option", default=default_choice)).strip().lower()
                 if submenu_choice in {"b", "back"}:
@@ -4329,6 +4390,23 @@ def run_command(
         or (GrowthPolicy.WARM_ENGAGE_RARE_COMMENT if mode == GrowthMode.SMART else None)
         or settings.default_growth_policy
     )
+    runtime_settings, forced_comment_enable = _runtime_settings_for_growth_policy(
+        settings,
+        growth_policy=resolved_growth_policy,
+    )
+    if forced_comment_enable:
+        _print_notice(
+            "Mode 3 coherence: enabling pre-follow comments for this run (runtime override only).",
+            level="info",
+        )
+    if resolved_growth_policy == GrowthPolicy.WARM_ENGAGE_RARE_COMMENT:
+        _print_notice(
+            "Mode 3 public-touch config: "
+            f"comment_probability={round(runtime_settings.pre_follow_comment_probability, 3)}, "
+            f"highlight_probability={round(runtime_settings.pre_follow_highlight_probability, 3)}, "
+            f"budget_per_day={runtime_settings.max_comment_actions_per_day}.",
+            level="info",
+        )
     ignored_discovery_inputs = bool(
         growth_sources
         or seed_user_refs
@@ -4370,14 +4448,14 @@ def run_command(
 
     try:
         try:
-            _, repository = _build_runner(settings)
+            _, repository = _build_runner(runtime_settings)
 
             async def _run() -> DailyRunOutcome:
                 nonlocal sync_outcome
                 nonlocal runtime_client_metrics
-                async with MediumAsyncClient(settings) as client:
+                async with MediumAsyncClient(runtime_settings) as client:
                     try:
-                        runner = DailyRunner(settings=settings, client=client, repository=repository)
+                        runner = DailyRunner(settings=runtime_settings, client=client, repository=repository)
                         if auto_sync:
                             sync_outcome_local = await runner.sync_social_graph(
                                 dry_run=not live,
@@ -4388,13 +4466,13 @@ def run_command(
                                 _render_graph_sync_outcome(sync_outcome_local)
                             sync_outcome = sync_outcome_local
                         if live_session_enabled:
-                            resolved_session_minutes = session_minutes or settings.live_session_duration_minutes
-                            resolved_target_follows = target_follows or settings.live_session_target_follow_attempts
+                            resolved_session_minutes = session_minutes or runtime_settings.live_session_duration_minutes
+                            resolved_target_follows = target_follows or runtime_settings.live_session_target_follow_attempts
                             resolved_min_follows = min(
-                                settings.live_session_min_follow_attempts,
+                                runtime_settings.live_session_min_follow_attempts,
                                 resolved_target_follows,
                             )
-                            resolved_session_max_passes = session_max_passes or settings.live_session_max_passes
+                            resolved_session_max_passes = session_max_passes or runtime_settings.live_session_max_passes
                             _print_notice(
                                 "Live session targets: "
                                 f"duration={resolved_session_minutes}m, "
@@ -4465,7 +4543,7 @@ def run_command(
         if not payload_ok:
             raise RuntimeError(f"run artifact payload schema validation failed: {', '.join(payload_issues)}")
         artifact_path = write_run_artifact(
-            artifacts_dir=settings.run_artifacts_dir,
+            artifacts_dir=runtime_settings.run_artifacts_dir,
             run_id=run_id,
             payload=artifact_payload,
         )

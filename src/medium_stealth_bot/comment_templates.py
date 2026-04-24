@@ -61,15 +61,48 @@ def _dedupe_preserving_order(items: Iterable[str]) -> list[str]:
     return ordered
 
 
+def _clip_excerpt(text: str | None, *, limit: int = 72) -> str | None:
+    if not text:
+        return None
+    normalized = " ".join(text.split()).strip(" .,:;!?\"'()[]{}")
+    if not normalized:
+        return None
+    if len(normalized) <= limit:
+        return normalized
+    clipped = normalized[:limit].rstrip()
+    if " " in clipped:
+        clipped = clipped.rsplit(" ", 1)[0]
+    return clipped.strip(" .,:;!?\"'()[]{}") or None
+
+
 def build_comment_template_pool(
     *,
     candidate_title: str | None,
     candidate_bio: str | None,
+    post_lead_text: str | None = None,
+    post_closing_text: str | None = None,
     base_templates: list[str] | None = None,
 ) -> list[str]:
-    text = f"{candidate_title or ''} {candidate_bio or ''}".lower()
+    lead_excerpt = _clip_excerpt(post_lead_text)
+    closing_excerpt = _clip_excerpt(post_closing_text)
+    text = f"{candidate_title or ''} {candidate_bio or ''} {lead_excerpt or ''} {closing_excerpt or ''}".lower()
     templates: list[str] = list(base_templates or DEFAULT_PRE_FOLLOW_COMMENT_TEMPLATES)
     templates.extend(EXTENDED_GENERAL_COMMENT_TEMPLATES)
+
+    if lead_excerpt:
+        templates.extend(
+            (
+                f'The opening point around "{lead_excerpt}" made the rest very easy to follow.',
+                f'I liked how you opened with "{lead_excerpt}" and then built from it.',
+            )
+        )
+    if closing_excerpt:
+        templates.extend(
+            (
+                f'The closing line on "{closing_excerpt}" landed cleanly.',
+                f'Your ending around "{closing_excerpt}" tied the post together well.',
+            )
+        )
 
     if any(token in text for token in ("guide", "how to", "checklist", "framework", "tutorial", "step")):
         templates.extend(GUIDE_COMMENT_TEMPLATES)

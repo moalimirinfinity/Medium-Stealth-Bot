@@ -34,6 +34,21 @@ def _default_implementation_ops_registry_path() -> Path:
     return Path(candidate.strip())
 
 
+def _resolve_implementation_ops_registry_path(candidate: Path | str | None) -> Path:
+    preferred = Path(candidate) if candidate else _default_implementation_ops_registry_path()
+    if preferred.exists():
+        return preferred
+
+    manifest_default = _default_implementation_ops_registry_path()
+    if manifest_default.exists():
+        return manifest_default
+
+    if DEFAULT_IMPLEMENTATION_OPS_REGISTRY_PATH.exists():
+        return DEFAULT_IMPLEMENTATION_OPS_REGISTRY_PATH
+
+    return preferred
+
+
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -420,12 +435,19 @@ class AppSettings(BaseSettings):
     own_followers_scan_limit: int = Field(default=80, ge=1, le=500, validation_alias="OWN_FOLLOWERS_SCAN_LIMIT")
 
     enable_pre_follow_clap: bool = Field(default=True, validation_alias="ENABLE_PRE_FOLLOW_CLAP")
-    enable_pre_follow_comment: bool = Field(default=False, validation_alias="ENABLE_PRE_FOLLOW_COMMENT")
+    enable_pre_follow_comment: bool = Field(default=True, validation_alias="ENABLE_PRE_FOLLOW_COMMENT")
     pre_follow_comment_probability: float = Field(
         default=0.15,
         ge=0.0,
         le=1.0,
         validation_alias="PRE_FOLLOW_COMMENT_PROBABILITY",
+    )
+    enable_pre_follow_highlight: bool = Field(default=False, validation_alias="ENABLE_PRE_FOLLOW_HIGHLIGHT")
+    pre_follow_highlight_probability: float = Field(
+        default=0.08,
+        ge=0.0,
+        le=1.0,
+        validation_alias="PRE_FOLLOW_HIGHLIGHT_PROBABILITY",
     )
     pre_follow_comment_templates_raw: str = Field(
         default=DEFAULT_PRE_FOLLOW_COMMENT_TEMPLATES_RAW,
@@ -578,6 +600,11 @@ class AppSettings(BaseSettings):
         if not normalized:
             raise ValueError(f"{info.field_name} must not be empty.")
         return normalized
+
+    @field_validator("implementation_ops_registry_path", mode="after")
+    @classmethod
+    def resolve_registry_path(cls, value: Path) -> Path:
+        return _resolve_implementation_ops_registry_path(value)
 
     @field_validator(
         "bio_keywords_raw",

@@ -165,7 +165,7 @@ Growth policies exposed in the menu:
 
 - `Follow-Only`
 - `Warm-Engage`
-- `Warm-Engage+Comment`
+- `Warm-Engage++`
 
 Growth runtimes exposed in the menu:
 

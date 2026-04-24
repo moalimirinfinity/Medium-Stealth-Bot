@@ -3,6 +3,7 @@ import math
 import random
 import re
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import structlog
@@ -36,8 +37,11 @@ from medium_stealth_bot.timing import HumanTimingController
 from medium_stealth_bot.typed_payloads import (
     UserNode,
     parse_clap_count,
+    parse_create_quote_id,
+    parse_delete_quote_success,
     parse_delete_response_success,
     parse_latest_post_preview,
+    parse_recent_post_contexts,
     parse_post_response_creators,
     parse_publish_threaded_response_id,
     parse_recommended_publishers_users,
@@ -56,10 +60,14 @@ ACTION_SUBSCRIBE = "follow_subscribe_attempt"
 ACTION_UNFOLLOW = "cleanup_unfollow"
 ACTION_CLAP = "clap_pre_follow"
 ACTION_CLAP_SKIPPED = "clap_pre_follow_skipped"
+ACTION_PUBLIC_TOUCH_SKIPPED = "public_touch_pre_follow_skipped"
 ACTION_COMMENT = "comment_pre_follow"
 ACTION_COMMENT_SKIPPED = "comment_pre_follow_skipped"
+ACTION_HIGHLIGHT = "highlight_pre_follow"
+ACTION_HIGHLIGHT_SKIPPED = "highlight_pre_follow_skipped"
 ACTION_UNDO_CLAP = "cleanup_undo_clap"
 ACTION_DELETE_COMMENT = "cleanup_delete_comment"
+ACTION_DELETE_HIGHLIGHT = "cleanup_delete_highlight"
 ACTION_FOLLOW_VERIFIED = "follow_verified"
 FOLLOW_COOLDOWN_ACTION_TYPES: tuple[str, ...] = (
     ACTION_SUBSCRIBE,
@@ -72,6 +80,48 @@ TRACKED_DAILY_ACTION_TYPES: tuple[str, ...] = (
     ACTION_CLAP,
     ACTION_COMMENT,
 )
+RECENT_POST_CONTEXT_LIMIT = 3
+LEAD_CLOSING_PARAGRAPH_WINDOW = 2
+HIGHLIGHT_SENTENCE_MIN_CHARS = 45
+HIGHLIGHT_SENTENCE_MAX_CHARS = 240
+HIGHLIGHT_SENTENCE_MIN_WORDS = 8
+HIGHLIGHT_SENTENCE_MAX_WORDS = 45
+
+
+@dataclass(slots=True)
+class ParagraphContext:
+    name: str
+    text: str
+    paragraph_type: str | int | None
+    index: int
+    section: str
+
+
+@dataclass(slots=True)
+class SentenceSpan:
+    paragraph_name: str
+    text: str
+    start_offset: int
+    end_offset: int
+    section: str
+
+
+@dataclass(slots=True)
+class PostContext:
+    recent_rank: int
+    post_id: str
+    post_title: str | None
+    post_version_id: str | None
+    paragraphs: list[ParagraphContext]
+    paragraph_text_by_name: dict[str, str]
+    sentence_spans: list[SentenceSpan]
+
+
+@dataclass(slots=True)
+class PublicTouchPlan:
+    touch_type: str
+    comment_text: str | None = None
+    sentence_span: SentenceSpan | None = None
 
 
 class DailyRunner:
@@ -87,7 +137,9 @@ class DailyRunner:
         self._session_mutations_enabled_override: bool | None = None
         self._mutations_suspended_until_monotonic = 0.0
         self._comment_mutation_supported = True
+        self._highlight_mutation_supported = True
         self._persist_decision_observations = True
+        self._candidate_recent_posts_cache: dict[str, list[PostContext]] = {}
         self._normalize_pacing_configuration()
 
     async def _maybe_recover_stealth_preflight_challenge(self, *, dry_run: bool) -> None:
@@ -363,8 +415,12 @@ class DailyRunner:
                 follow_verified,
                 clap_attempted,
                 clap_verified,
+                public_touch_attempted,
+                public_touch_verified,
                 comment_attempted,
                 comment_verified,
+                highlight_attempted,
+                highlight_verified,
                 source_follow_verified_counts,
             ) = (
                 await self._execute_follow_pipeline(
@@ -382,14 +438,18 @@ class DailyRunner:
             follow_verified = 0
             clap_attempted = 0
             clap_verified = 0
+            public_touch_attempted = 0
+            public_touch_verified = 0
             comment_attempted = 0
             comment_verified = 0
+            highlight_attempted = 0
+            highlight_verified = 0
             source_follow_verified_counts = {}
         executed_candidates = follow_attempted
         followed_candidates = follow_verified
         action_counts[ACTION_SUBSCRIBE] += follow_attempted
         action_counts[ACTION_CLAP] += clap_attempted
-        action_counts[ACTION_COMMENT] += comment_attempted
+        action_counts[ACTION_COMMENT] += public_touch_attempted
         action_remaining[ACTION_SUBSCRIBE] = max(0, action_limits[ACTION_SUBSCRIBE] - action_counts[ACTION_SUBSCRIBE])
         action_remaining[ACTION_CLAP] = max(0, action_limits[ACTION_CLAP] - action_counts[ACTION_CLAP])
         action_remaining[ACTION_COMMENT] = max(0, action_limits[ACTION_COMMENT] - action_counts[ACTION_COMMENT])
@@ -415,8 +475,12 @@ class DailyRunner:
             eligible_candidates=len(eligible),
             clap_attempted=clap_attempted,
             clap_verified=clap_verified,
+            public_touch_attempted=public_touch_attempted,
+            public_touch_verified=public_touch_verified,
             comment_attempted=comment_attempted,
             comment_verified=comment_verified,
+            highlight_attempted=highlight_attempted,
+            highlight_verified=highlight_verified,
         )
         kpis.update(self.repository.follow_cycle_kpis())
         (
@@ -514,8 +578,12 @@ class DailyRunner:
             follow_verified=follow_verified,
             clap_attempted=clap_attempted,
             clap_verified=clap_verified,
+            public_touch_attempted=public_touch_attempted,
+            public_touch_verified=public_touch_verified,
             comment_attempted=comment_attempted,
             comment_verified=comment_verified,
+            highlight_attempted=highlight_attempted,
+            highlight_verified=highlight_verified,
             cleanup_attempted=cleanup_attempted,
             cleanup_verified=cleanup_verified,
             actions_today=actions_today_end,
@@ -566,8 +634,12 @@ class DailyRunner:
             follow_actions_verified=follow_verified,
             clap_actions_attempted=clap_attempted,
             clap_actions_verified=clap_verified,
+            public_touch_actions_attempted=public_touch_attempted,
+            public_touch_actions_verified=public_touch_verified,
             comment_actions_attempted=comment_attempted,
             comment_actions_verified=comment_verified,
+            highlight_actions_attempted=highlight_attempted,
+            highlight_actions_verified=highlight_verified,
             cleanup_actions_attempted=cleanup_attempted,
             cleanup_actions_verified=cleanup_verified,
             source_candidate_counts=source_candidate_counts,
@@ -690,8 +762,12 @@ class DailyRunner:
         total_follow_verified = 0
         total_clap_attempted = 0
         total_clap_verified = 0
+        total_public_touch_attempted = 0
+        total_public_touch_verified = 0
         total_comment_attempted = 0
         total_comment_verified = 0
+        total_highlight_attempted = 0
+        total_highlight_verified = 0
         total_cleanup_attempted = 0
         total_cleanup_verified = 0
         total_source_candidate_counts: dict[str, int] = {}
@@ -779,8 +855,12 @@ class DailyRunner:
                 total_follow_verified += outcome.follow_actions_verified
                 total_clap_attempted += outcome.clap_actions_attempted
                 total_clap_verified += outcome.clap_actions_verified
+                total_public_touch_attempted += outcome.public_touch_actions_attempted
+                total_public_touch_verified += outcome.public_touch_actions_verified
                 total_comment_attempted += outcome.comment_actions_attempted
                 total_comment_verified += outcome.comment_actions_verified
+                total_highlight_attempted += outcome.highlight_actions_attempted
+                total_highlight_verified += outcome.highlight_actions_verified
                 total_cleanup_attempted += outcome.cleanup_actions_attempted
                 total_cleanup_verified += outcome.cleanup_actions_verified
                 self._merge_int_counts(total_source_candidate_counts, outcome.source_candidate_counts)
@@ -825,9 +905,15 @@ class DailyRunner:
                     follow_attempted_this_pass=outcome.follow_actions_attempted,
                     follow_attempted_total=total_follow_attempted,
                     follow_verified_total=total_follow_verified,
+                    public_touch_attempted_this_pass=outcome.public_touch_actions_attempted,
+                    public_touch_attempted_total=total_public_touch_attempted,
+                    public_touch_verified_total=total_public_touch_verified,
                     comment_attempted_this_pass=outcome.comment_actions_attempted,
                     comment_attempted_total=total_comment_attempted,
                     comment_verified_total=total_comment_verified,
+                    highlight_attempted_this_pass=outcome.highlight_actions_attempted,
+                    highlight_attempted_total=total_highlight_attempted,
+                    highlight_verified_total=total_highlight_verified,
                     cleanup_attempted_this_pass=outcome.cleanup_actions_attempted,
                     cleanup_verified_total=total_cleanup_verified,
                     budget_exhausted=outcome.budget_exhausted,
@@ -946,8 +1032,12 @@ class DailyRunner:
             eligible_candidates=total_eligible,
             clap_attempted=total_clap_attempted,
             clap_verified=total_clap_verified,
+            public_touch_attempted=total_public_touch_attempted,
+            public_touch_verified=total_public_touch_verified,
             comment_attempted=total_comment_attempted,
             comment_verified=total_comment_verified,
+            highlight_attempted=total_highlight_attempted,
+            highlight_verified=total_highlight_verified,
         )
         kpis.update(self.repository.follow_cycle_kpis())
         (
@@ -1024,8 +1114,12 @@ class DailyRunner:
             follow_actions_verified=total_follow_verified,
             clap_actions_attempted=total_clap_attempted,
             clap_actions_verified=total_clap_verified,
+            public_touch_actions_attempted=total_public_touch_attempted,
+            public_touch_actions_verified=total_public_touch_verified,
             comment_actions_attempted=total_comment_attempted,
             comment_actions_verified=total_comment_verified,
+            highlight_actions_attempted=total_highlight_attempted,
+            highlight_actions_verified=total_highlight_verified,
             cleanup_actions_attempted=total_cleanup_attempted,
             cleanup_actions_verified=total_cleanup_verified,
             source_candidate_counts=total_source_candidate_counts,
@@ -1058,8 +1152,12 @@ class DailyRunner:
             followed_candidates=total_followed,
             follow_attempted=total_follow_attempted,
             follow_verified=total_follow_verified,
+            public_touch_attempted=total_public_touch_attempted,
+            public_touch_verified=total_public_touch_verified,
             comment_attempted=total_comment_attempted,
             comment_verified=total_comment_verified,
+            highlight_attempted=total_highlight_attempted,
+            highlight_verified=total_highlight_verified,
             follow_target_min=resolved_min_follows,
             growth_policy=resolved_growth_policy.value,
             growth_sources=[source.value for source in resolved_growth_sources],
@@ -1387,12 +1485,12 @@ class DailyRunner:
     @staticmethod
     def _is_mutation_task(task_name: str) -> bool:
         lowered = task_name.lower()
-        mutation_tokens = ("mutation", "subscribe", "unfollow", "clap", "comment")
+        mutation_tokens = ("mutation", "subscribe", "unfollow", "clap", "comment", "highlight", "quote")
         return any(token in lowered for token in mutation_tokens)
 
     def _retry_budget_for_task(self, task_name: str) -> int:
         lowered = task_name.lower()
-        if any(token in lowered for token in ("mutation", "subscribe", "unfollow", "clap", "comment")):
+        if any(token in lowered for token in ("mutation", "subscribe", "unfollow", "clap", "comment", "highlight", "quote")):
             return self.settings.mutation_max_retries
         if any(token in lowered for token in ("verify", "viewer_edge", "reconcile")):
             return self.settings.verify_max_retries
@@ -2183,16 +2281,20 @@ class DailyRunner:
         dry_run: bool,
         decisions: list[CandidateDecision],
         growth_policy: GrowthPolicy,
-    ) -> tuple[int, int, int, int, int, int, dict[str, int]]:
+    ) -> tuple[int, int, int, int, int, int, int, int, int, int, dict[str, int]]:
         attempted = 0
         verified = 0
         clap_attempted = 0
         clap_verified = 0
+        public_touch_attempted = 0
+        public_touch_verified = 0
         comment_attempted = 0
         comment_verified = 0
+        highlight_attempted = 0
+        highlight_verified = 0
         source_follow_verified_counts: dict[str, int] = {}
         clap_enabled = self._pre_follow_clap_enabled(growth_policy)
-        comment_enabled = self._pre_follow_comment_enabled(growth_policy)
+        public_touch_enabled = self._pre_follow_public_touch_enabled(growth_policy)
         for candidate in eligible_candidates[:max_to_run]:
             self._assert_operator_not_stopped(task_name="follow_pipeline")
 
@@ -2202,15 +2304,24 @@ class DailyRunner:
                     clap_budget_remaining -= 1
                     clap_attempted += 1
                     await self._sleep_action_gap(action_type=ACTION_CLAP, target_user_id=candidate.user_id)
-                if (
-                    comment_enabled
-                    and comment_budget_remaining > 0
-                    and self.settings.pre_follow_comment_templates
-                    and self._should_attempt_pre_follow_comment()
-                ):
+                if public_touch_enabled and comment_budget_remaining > 0:
+                    touch_plan = self._plan_pre_follow_public_touch(
+                        candidate,
+                        growth_policy=growth_policy,
+                        public_touch_budget_remaining=comment_budget_remaining,
+                        post_context=None,
+                        dry_run=True,
+                    )
+                else:
+                    touch_plan = None
+                if touch_plan is not None:
                     comment_budget_remaining -= 1
-                    comment_attempted += 1
-                    await self._sleep_action_gap(action_type=ACTION_COMMENT, target_user_id=candidate.user_id)
+                    public_touch_attempted += 1
+                    if touch_plan.touch_type == ACTION_COMMENT:
+                        comment_attempted += 1
+                    elif touch_plan.touch_type == ACTION_HIGHLIGHT:
+                        highlight_attempted += 1
+                    await self._sleep_action_gap(action_type=touch_plan.touch_type, target_user_id=candidate.user_id)
                 await self._sleep_action_gap(action_type=ACTION_SUBSCRIBE, target_user_id=candidate.user_id)
                 self._append_decision(
                     decisions,
@@ -2250,8 +2361,9 @@ class DailyRunner:
             (
                 clap_used,
                 clap_is_verified,
-                comment_used,
-                comment_is_verified,
+                public_touch_used,
+                public_touch_is_verified,
+                touch_type,
             ) = await self._execute_pre_follow_engagement(
                 candidate,
                 growth_policy=growth_policy,
@@ -2263,11 +2375,19 @@ class DailyRunner:
                 clap_attempted += 1
             if clap_is_verified:
                 clap_verified += 1
-            if comment_used:
+            if public_touch_used:
                 comment_budget_remaining -= 1
-                comment_attempted += 1
-            if comment_is_verified:
-                comment_verified += 1
+                public_touch_attempted += 1
+                if touch_type == ACTION_COMMENT:
+                    comment_attempted += 1
+                elif touch_type == ACTION_HIGHLIGHT:
+                    highlight_attempted += 1
+            if public_touch_is_verified:
+                public_touch_verified += 1
+                if touch_type == ACTION_COMMENT:
+                    comment_verified += 1
+                elif touch_type == ACTION_HIGHLIGHT:
+                    highlight_verified += 1
 
             await self._sleep_action_gap(action_type=ACTION_SUBSCRIBE, target_user_id=candidate.user_id)
             mutation = await self._execute_with_retry(
@@ -2383,8 +2503,12 @@ class DailyRunner:
             verified,
             clap_attempted,
             clap_verified,
+            public_touch_attempted,
+            public_touch_verified,
             comment_attempted,
             comment_verified,
+            highlight_attempted,
+            highlight_verified,
             source_follow_verified_counts,
         )
 
@@ -2455,15 +2579,14 @@ class DailyRunner:
         growth_policy: GrowthPolicy,
         clap_budget_remaining: int,
         comment_budget_remaining: int,
-    ) -> tuple[bool, bool, bool, bool]:
+    ) -> tuple[bool, bool, bool, bool, str | None]:
         clap_enabled = self._pre_follow_clap_enabled(growth_policy)
-        comment_enabled = self._pre_follow_comment_enabled(growth_policy)
-        if not clap_enabled and not comment_enabled:
-            return False, False, False, False
+        public_touch_enabled = self._pre_follow_public_touch_enabled(growth_policy)
+        if not clap_enabled and not public_touch_enabled:
+            return False, False, False, False, None
 
         clap_should_attempt = False
-        comment_should_attempt = False
-        comment_text: str | None = None
+        touch_should_plan = False
 
         if clap_enabled:
             if clap_budget_remaining <= 0:
@@ -2473,60 +2596,497 @@ class DailyRunner:
             else:
                 clap_should_attempt = True
 
-        if comment_enabled:
+        if public_touch_enabled:
             if comment_budget_remaining <= 0:
-                self.repository.record_action(ACTION_COMMENT_SKIPPED, candidate.user_id, "budget_exhausted")
-            elif not self._comment_mutation_supported:
-                self.repository.record_action(ACTION_COMMENT_SKIPPED, candidate.user_id, "api_drift_detected")
-            elif not self._should_attempt_pre_follow_comment():
-                self.repository.record_action(ACTION_COMMENT_SKIPPED, candidate.user_id, "probability_gate")
+                self.repository.record_action(ACTION_PUBLIC_TOUCH_SKIPPED, candidate.user_id, "budget_exhausted")
             else:
-                comment_text = self._select_pre_follow_comment_text(candidate)
-                if not comment_text:
-                    self.repository.record_action(ACTION_COMMENT_SKIPPED, candidate.user_id, "no_template")
-                else:
-                    comment_should_attempt = True
+                touch_should_plan = True
 
-        if not clap_should_attempt and not comment_should_attempt:
-            return False, False, False, False
+        if not clap_should_attempt and not touch_should_plan:
+            return False, False, False, False, None
 
-        post_id = await self._resolve_candidate_latest_post_id(candidate)
-        if not post_id:
+        post_context = await self._resolve_candidate_post_context(
+            candidate,
+            include_extended_context=touch_should_plan,
+        )
+        if not post_context:
             if clap_should_attempt:
                 self.repository.record_action(ACTION_CLAP_SKIPPED, candidate.user_id, "no_post")
-            if comment_should_attempt:
-                self.repository.record_action(ACTION_COMMENT_SKIPPED, candidate.user_id, "no_post")
-            return False, False, False, False
+            if touch_should_plan:
+                self.repository.record_action(ACTION_PUBLIC_TOUCH_SKIPPED, candidate.user_id, "no_post")
+            return False, False, False, False, None
+
+        touch_plan = None
+        if touch_should_plan:
+            touch_plan = self._plan_pre_follow_public_touch(
+                candidate,
+                growth_policy=growth_policy,
+                public_touch_budget_remaining=comment_budget_remaining,
+                post_context=post_context,
+                dry_run=False,
+            )
+
+        if not clap_should_attempt and touch_plan is None:
+            return False, False, False, False, None
 
         if self.settings.pre_follow_read_wait_seconds > 0:
             await self._sleep_read_delay(target_user_id=candidate.user_id)
 
         clap_verified = False
-        comment_verified = False
+        touch_verified = False
+        touch_type: str | None = touch_plan.touch_type if touch_plan else None
         if clap_should_attempt:
-            clap_verified = await self._perform_pre_follow_clap(candidate, post_id=post_id)
-        if comment_should_attempt and comment_text:
-            comment_verified = await self._perform_pre_follow_comment(
-                candidate,
-                post_id=post_id,
-                comment_text=comment_text,
-            )
-        return clap_should_attempt, clap_verified, comment_should_attempt, comment_verified
+            clap_verified = await self._perform_pre_follow_clap(candidate, post_id=post_context.post_id)
+        if touch_plan is not None:
+            if touch_plan.touch_type == ACTION_COMMENT and touch_plan.comment_text:
+                touch_verified = await self._perform_pre_follow_comment(
+                    candidate,
+                    post_id=post_context.post_id,
+                    comment_text=touch_plan.comment_text,
+                )
+            elif touch_plan.touch_type == ACTION_HIGHLIGHT and touch_plan.sentence_span is not None:
+                touch_verified = await self._perform_pre_follow_highlight(
+                    candidate,
+                    post_context=post_context,
+                    sentence_span=touch_plan.sentence_span,
+                )
+
+        return clap_should_attempt, clap_verified, touch_plan is not None, touch_verified, touch_type
 
     async def _resolve_candidate_latest_post_id(self, candidate: CandidateUser) -> str | None:
-        post_id = candidate.latest_post_id
-        if post_id:
-            return post_id
+        context = await self._resolve_candidate_post_context(candidate, include_extended_context=False)
+        return context.post_id if context else None
+
+    async def _resolve_candidate_post_context(
+        self,
+        candidate: CandidateUser,
+        *,
+        include_extended_context: bool,
+    ) -> PostContext | None:
+        _ = include_extended_context
+        contexts = await self._resolve_candidate_recent_post_contexts(candidate)
+        if contexts:
+            selected = self._select_best_recent_post_context(contexts)
+            if selected is not None:
+                candidate.latest_post_id = selected.post_id
+                if selected.post_title:
+                    candidate.latest_post_title = selected.post_title
+                return selected
+
+        # Fallback keeps screening behavior intact when extended post context is unavailable.
         latest_post = await self._execute_with_retry(
             "pre_follow_latest_post",
             operations.user_latest_post(user_id=candidate.user_id, username=candidate.username),
         )
         post_id, post_title = parse_latest_post_preview(latest_post)
-        if post_id:
-            candidate.latest_post_id = post_id
+        if not post_id:
+            cached_post_id = candidate.latest_post_id
+            if not cached_post_id:
+                return None
+            paragraphs = self._build_post_paragraph_contexts([], fallback_title=candidate.latest_post_title)
+            paragraph_text_by_name = {paragraph.name: paragraph.text for paragraph in paragraphs}
+            return PostContext(
+                recent_rank=0,
+                post_id=cached_post_id,
+                post_title=candidate.latest_post_title,
+                post_version_id=None,
+                paragraphs=paragraphs,
+                paragraph_text_by_name=paragraph_text_by_name,
+                sentence_spans=self._candidate_sentence_spans(paragraphs),
+            )
+        candidate.latest_post_id = post_id
         if post_title:
             candidate.latest_post_title = post_title
-        return post_id
+        paragraphs = self._build_post_paragraph_contexts([], fallback_title=post_title)
+        paragraph_text_by_name = {paragraph.name: paragraph.text for paragraph in paragraphs}
+        return PostContext(
+            recent_rank=0,
+            post_id=post_id,
+            post_title=post_title,
+            post_version_id=None,
+            paragraphs=paragraphs,
+            paragraph_text_by_name=paragraph_text_by_name,
+            sentence_spans=self._candidate_sentence_spans(paragraphs),
+        )
+
+    async def _resolve_candidate_recent_post_contexts(self, candidate: CandidateUser) -> list[PostContext]:
+        cached = self._candidate_recent_posts_cache.get(candidate.user_id)
+        if cached is not None:
+            return cached
+
+        context_result = await self._execute_with_retry(
+            "pre_follow_recent_posts_context",
+            operations.user_latest_post_context(user_id=candidate.user_id, username=candidate.username),
+        )
+        contexts: list[PostContext] = []
+        for rank, (post_id, post_title, post_version_id, raw_paragraphs) in enumerate(
+            parse_recent_post_contexts(context_result)[:RECENT_POST_CONTEXT_LIMIT]
+        ):
+            paragraphs = self._build_post_paragraph_contexts(raw_paragraphs, fallback_title=post_title)
+            paragraph_text_by_name = {paragraph.name: paragraph.text for paragraph in paragraphs}
+            contexts.append(
+                PostContext(
+                    recent_rank=rank,
+                    post_id=post_id,
+                    post_title=post_title,
+                    post_version_id=post_version_id,
+                    paragraphs=paragraphs,
+                    paragraph_text_by_name=paragraph_text_by_name,
+                    sentence_spans=self._candidate_sentence_spans(paragraphs),
+                )
+            )
+
+        if contexts:
+            self._candidate_recent_posts_cache[candidate.user_id] = contexts
+        return contexts
+
+    def _build_post_paragraph_contexts(
+        self,
+        raw_paragraphs: list[tuple[str, str | int | None, str]],
+        *,
+        fallback_title: str | None,
+    ) -> list[ParagraphContext]:
+        ordered: list[tuple[str, str | int | None, str]] = []
+        seen_names: set[str] = set()
+        for paragraph_name, paragraph_type, paragraph_text in raw_paragraphs:
+            name = (paragraph_name or "").strip()
+            text = self._normalized_paragraph_text(paragraph_text)
+            if not name or not text or name in seen_names:
+                continue
+            seen_names.add(name)
+            ordered.append((name, paragraph_type, text))
+
+        if not ordered:
+            fallback_text = self._normalized_paragraph_text(fallback_title)
+            if fallback_text:
+                ordered.append(("p000", None, fallback_text))
+
+        total = len(ordered)
+        lead_indices = set(range(min(LEAD_CLOSING_PARAGRAPH_WINDOW, total)))
+        closing_start = max(0, total - LEAD_CLOSING_PARAGRAPH_WINDOW)
+        closing_indices = set(range(closing_start, total))
+
+        paragraphs: list[ParagraphContext] = []
+        for index, (name, paragraph_type, text) in enumerate(ordered):
+            in_lead = index in lead_indices
+            in_closing = index in closing_indices
+            if in_lead and in_closing:
+                section = "lead_closing"
+            elif in_lead:
+                section = "lead"
+            elif in_closing:
+                section = "closing"
+            else:
+                section = "body"
+            paragraphs.append(
+                ParagraphContext(
+                    name=name,
+                    text=text,
+                    paragraph_type=paragraph_type,
+                    index=index,
+                    section=section,
+                )
+            )
+        return paragraphs
+
+    @staticmethod
+    def _normalized_paragraph_text(value: str | None) -> str:
+        return " ".join((value or "").split()).strip()
+
+    @staticmethod
+    def _looks_like_code_text(text: str) -> bool:
+        normalized = text.strip().lower()
+        if not normalized:
+            return False
+        if "```" in normalized or "`" in normalized:
+            return True
+        if re.search(r"\b(def|class|function)\s+[a-z_]", normalized):
+            return True
+        if re.search(r"\b(import|from)\s+[a-z_]", normalized):
+            return True
+        if re.search(r"\b(const|let|var)\s+[a-z_$][\w$]*\s*=", normalized):
+            return True
+        symbol_count = sum(1 for char in normalized if char in "{}[]();=<>")
+        return len(normalized) >= 40 and (symbol_count / max(1, len(normalized))) >= 0.12
+
+    @staticmethod
+    def _looks_like_list_text(text: str) -> bool:
+        normalized = text.strip()
+        if not normalized:
+            return False
+        return bool(
+            re.match(r"^([-*•]\s+|\d+[.)]\s+)", normalized)
+            or re.search(r"(?:\s[-*•]\s+\w+){2,}", normalized)
+        )
+
+    @staticmethod
+    def _looks_like_quote_text(text: str) -> bool:
+        normalized = text.strip()
+        if not normalized:
+            return False
+        if normalized.startswith(">"):
+            return True
+        return bool(re.match(r'^[\"“][^\"”]{12,}[\"”]$', normalized))
+
+    def _is_non_prose_text(self, text: str) -> bool:
+        return (
+            self._looks_like_code_text(text)
+            or self._looks_like_list_text(text)
+            or self._looks_like_quote_text(text)
+        )
+
+    @staticmethod
+    def _paragraph_type_is_non_prose(paragraph_type: str | int | None) -> bool:
+        if paragraph_type is None:
+            return False
+        normalized = str(paragraph_type).strip().upper()
+        if not normalized:
+            return False
+        non_prose_types = {
+            "IMG",
+            "IFRAME",
+            "MIXTAPE_EMBED",
+            "PRE",
+            "CODE_BLOCK",
+            "CODE",
+            "BLOCKQUOTE",
+            "BQ",
+            "QUOTE",
+            "OLI",
+            "ULI",
+            "LI",
+            "HR",
+            "SEPARATOR",
+        }
+        return normalized in non_prose_types or normalized.endswith("_LI")
+
+    def _paragraph_is_highlight_eligible(self, paragraph: ParagraphContext) -> bool:
+        if paragraph.section not in {"lead", "closing", "lead_closing"}:
+            return False
+        if self._paragraph_type_is_non_prose(paragraph.paragraph_type):
+            return False
+        text = paragraph.text.strip()
+        if not text:
+            return False
+        if len(text) < HIGHLIGHT_SENTENCE_MIN_CHARS:
+            return False
+        if self._is_non_prose_text(text):
+            return False
+        return True
+
+    def _is_highlight_sentence_eligible(self, sentence: str) -> bool:
+        if len(sentence) < HIGHLIGHT_SENTENCE_MIN_CHARS or len(sentence) > HIGHLIGHT_SENTENCE_MAX_CHARS:
+            return False
+        word_count = len(re.findall(r"\b[\w'-]+\b", sentence))
+        if word_count < HIGHLIGHT_SENTENCE_MIN_WORDS or word_count > HIGHLIGHT_SENTENCE_MAX_WORDS:
+            return False
+        if self._is_non_prose_text(sentence):
+            return False
+        return True
+
+    def _candidate_sentence_spans(self, paragraphs: list[ParagraphContext]) -> list[SentenceSpan]:
+        spans: list[SentenceSpan] = []
+        for paragraph in paragraphs:
+            if not self._paragraph_is_highlight_eligible(paragraph):
+                continue
+            matches = list(re.finditer(r"[^.!?]+[.!?]", paragraph.text))
+            if not matches:
+                matches = list(re.finditer(r"[^.!?]+", paragraph.text))
+            for match in matches:
+                raw_sentence = match.group(0)
+                stripped_sentence = self._normalized_paragraph_text(raw_sentence)
+                if not self._is_highlight_sentence_eligible(stripped_sentence):
+                    continue
+                leading = len(raw_sentence) - len(raw_sentence.lstrip())
+                trailing = len(raw_sentence) - len(raw_sentence.rstrip())
+                start_offset = match.start() + leading
+                end_offset = match.end() - trailing
+                if end_offset <= start_offset:
+                    continue
+                spans.append(
+                    SentenceSpan(
+                        paragraph_name=paragraph.name,
+                        text=stripped_sentence,
+                        start_offset=start_offset,
+                        end_offset=end_offset,
+                        section=paragraph.section,
+                    )
+                )
+        return spans
+
+    def _select_pre_follow_highlight_span(self, post_context: PostContext) -> SentenceSpan | None:
+        if not post_context.sentence_spans:
+            return None
+        lead_spans = [span for span in post_context.sentence_spans if span.section in {"lead", "lead_closing"}]
+        closing_spans = [span for span in post_context.sentence_spans if span.section in {"closing", "lead_closing"}]
+        if lead_spans and closing_spans:
+            pool = lead_spans if random.random() < 0.5 else closing_spans
+            return random.choice(pool)
+        if lead_spans:
+            return random.choice(lead_spans)
+        if closing_spans:
+            return random.choice(closing_spans)
+        return None
+
+    def _select_best_recent_post_context(self, contexts: list[PostContext]) -> PostContext | None:
+        best: PostContext | None = None
+        best_score = float("-inf")
+        for context in contexts[:RECENT_POST_CONTEXT_LIMIT]:
+            score = self._score_recent_post_context(context)
+            if best is None or score > best_score:
+                best = context
+                best_score = score
+                continue
+            if math.isclose(score, best_score, rel_tol=1e-9, abs_tol=1e-9) and best is not None:
+                if context.recent_rank < best.recent_rank:
+                    best = context
+                    best_score = score
+        return best
+
+    def _score_recent_post_context(self, context: PostContext) -> float:
+        freshness_score = max(0.0, 1.0 - (context.recent_rank * 0.35))
+        commentability_score = self._commentability_score(context)
+        if not context.post_version_id:
+            highlightability_score = 0.0
+        else:
+            sentence_count = len(context.sentence_spans)
+            highlightability_score = 0.0
+            if sentence_count == 1:
+                highlightability_score = 0.6
+            elif sentence_count >= 2:
+                highlightability_score = 1.0
+        return (freshness_score * 0.55) + (commentability_score * 0.25) + (highlightability_score * 0.20)
+
+    def _commentability_score(self, context: PostContext) -> float:
+        prose_paragraphs = [paragraph for paragraph in context.paragraphs if not self._is_non_prose_text(paragraph.text)]
+        total_words = sum(len(re.findall(r"\b[\w'-]+\b", paragraph.text)) for paragraph in prose_paragraphs)
+        if total_words >= 180:
+            score = 1.0
+        elif total_words >= 100:
+            score = 0.82
+        elif total_words >= 50:
+            score = 0.64
+        elif total_words >= 20:
+            score = 0.42
+        else:
+            score = 0.2 if context.post_title else 0.0
+
+        has_lead = any(paragraph.section in {"lead", "lead_closing"} for paragraph in prose_paragraphs)
+        has_closing = any(paragraph.section in {"closing", "lead_closing"} for paragraph in prose_paragraphs)
+        if has_lead and has_closing:
+            score += 0.1
+        return min(1.0, score)
+
+    def _post_context_section_excerpt(self, post_context: PostContext | None, *, section: str) -> str | None:
+        if post_context is None:
+            return None
+        section_set = {"lead", "lead_closing"} if section == "lead" else {"closing", "lead_closing"}
+        for span in post_context.sentence_spans:
+            if span.section in section_set:
+                return span.text
+        for paragraph in post_context.paragraphs:
+            if paragraph.section not in section_set or self._is_non_prose_text(paragraph.text):
+                continue
+            snippet_match = re.search(r"[^.!?]+[.!?]", paragraph.text)
+            snippet = snippet_match.group(0) if snippet_match else paragraph.text
+            normalized = self._normalized_paragraph_text(snippet)
+            if not normalized:
+                continue
+            if len(normalized) > 160:
+                truncated = normalized[:160].rstrip()
+                if " " in truncated:
+                    truncated = truncated.rsplit(" ", 1)[0]
+                normalized = f"{truncated.strip()}..."
+            return normalized
+        return None
+
+    def _plan_pre_follow_public_touch(
+        self,
+        candidate: CandidateUser,
+        *,
+        growth_policy: GrowthPolicy,
+        public_touch_budget_remaining: int,
+        post_context: PostContext | None,
+        dry_run: bool,
+    ) -> PublicTouchPlan | None:
+        if not self._pre_follow_public_touch_enabled(growth_policy):
+            return None
+        if public_touch_budget_remaining <= 0:
+            self.repository.record_action(ACTION_PUBLIC_TOUCH_SKIPPED, candidate.user_id, "budget_exhausted")
+            return None
+
+        plans: list[PublicTouchPlan] = []
+        comment_plan = self._build_comment_touch_plan(
+            candidate,
+            growth_policy=growth_policy,
+            post_context=post_context,
+        )
+        if comment_plan is not None:
+            plans.append(comment_plan)
+
+        highlight_plan = self._build_highlight_touch_plan(
+            candidate,
+            growth_policy=growth_policy,
+            post_context=post_context,
+            dry_run=dry_run,
+        )
+        if highlight_plan is not None:
+            plans.append(highlight_plan)
+
+        if not plans:
+            return None
+        return random.choice(plans)
+
+    def _build_comment_touch_plan(
+        self,
+        candidate: CandidateUser,
+        *,
+        growth_policy: GrowthPolicy,
+        post_context: PostContext | None,
+    ) -> PublicTouchPlan | None:
+        if not self._pre_follow_comment_enabled(growth_policy):
+            return None
+        if not self._comment_mutation_supported:
+            self.repository.record_action(ACTION_COMMENT_SKIPPED, candidate.user_id, "api_drift_detected")
+            return None
+        if not self._should_attempt_pre_follow_comment():
+            self.repository.record_action(ACTION_COMMENT_SKIPPED, candidate.user_id, "probability_gate")
+            return None
+        comment_text = self._select_pre_follow_comment_text(candidate, post_context=post_context)
+        if not comment_text:
+            self.repository.record_action(ACTION_COMMENT_SKIPPED, candidate.user_id, "no_template")
+            return None
+        return PublicTouchPlan(touch_type=ACTION_COMMENT, comment_text=comment_text)
+
+    def _build_highlight_touch_plan(
+        self,
+        candidate: CandidateUser,
+        *,
+        growth_policy: GrowthPolicy,
+        post_context: PostContext | None,
+        dry_run: bool,
+    ) -> PublicTouchPlan | None:
+        if not self._pre_follow_highlight_enabled(growth_policy):
+            return None
+        if not self._highlight_mutation_supported:
+            self.repository.record_action(ACTION_HIGHLIGHT_SKIPPED, candidate.user_id, "api_drift_detected")
+            return None
+        if not self._should_attempt_pre_follow_highlight():
+            self.repository.record_action(ACTION_HIGHLIGHT_SKIPPED, candidate.user_id, "probability_gate")
+            return None
+        if post_context is None:
+            if dry_run:
+                return PublicTouchPlan(touch_type=ACTION_HIGHLIGHT, sentence_span=None)
+            self.repository.record_action(ACTION_HIGHLIGHT_SKIPPED, candidate.user_id, "no_post_context")
+            return None
+        if not post_context.post_version_id:
+            self.repository.record_action(ACTION_HIGHLIGHT_SKIPPED, candidate.user_id, "missing_post_version")
+            return None
+        span = self._select_pre_follow_highlight_span(post_context)
+        if span is None:
+            self.repository.record_action(ACTION_HIGHLIGHT_SKIPPED, candidate.user_id, "no_sentence_span")
+            return None
+        return PublicTouchPlan(touch_type=ACTION_HIGHLIGHT, sentence_span=span)
 
     async def _perform_pre_follow_clap(self, candidate: CandidateUser, *, post_id: str) -> bool:
         actor_user_id = self.settings.medium_user_ref
@@ -2597,6 +3157,63 @@ class DailyRunner:
             action_key=comment_action_key,
         )
         return comment_verified
+
+    async def _perform_pre_follow_highlight(
+        self,
+        candidate: CandidateUser,
+        *,
+        post_context: PostContext,
+        sentence_span: SentenceSpan,
+    ) -> bool:
+        if not post_context.post_version_id:
+            self.repository.record_action(ACTION_HIGHLIGHT_SKIPPED, candidate.user_id, "missing_post_version")
+            return False
+
+        await self._sleep_action_gap(action_type=ACTION_HIGHLIGHT, target_user_id=candidate.user_id)
+        highlight_result = await self._execute_with_retry(
+            "highlight_pre_follow",
+            operations.create_quote_highlight(
+                target_post_id=post_context.post_id,
+                target_post_version_id=post_context.post_version_id,
+                target_paragraph_names=[sentence_span.paragraph_name],
+                start_offset=sentence_span.start_offset,
+                end_offset=sentence_span.end_offset,
+            ),
+        )
+        quote_id = parse_create_quote_id(highlight_result)
+        drift_detected = self._highlight_api_drift_detected(highlight_result)
+        if drift_detected:
+            self._highlight_mutation_supported = False
+            self.log.warning(
+                "highlight_mutation_api_drift_detected",
+                status_code=highlight_result.status_code,
+                error_messages=[error.message for error in highlight_result.errors],
+            )
+
+        # Keep highlight attempts in the same daily-budget stream as comments.
+        budget_action_key = self._daily_action_key(ACTION_COMMENT, candidate.user_id, extra=post_context.post_id)
+        self.repository.record_action(
+            ACTION_COMMENT,
+            candidate.user_id,
+            "shadow:highlight",
+            action_key=budget_action_key,
+        )
+
+        highlight_verified = highlight_result.status_code == 200 and not highlight_result.has_errors and bool(quote_id)
+        highlight_action_key = self._daily_action_key(ACTION_HIGHLIGHT, candidate.user_id, extra=post_context.post_id)
+        if highlight_verified and quote_id:
+            status_label = f"verified:quote_id={quote_id};post_id={post_context.post_id}"
+        elif drift_detected:
+            status_label = f"failed:api_drift;post_id={post_context.post_id}"
+        else:
+            status_label = f"failed:post_id={post_context.post_id}"
+        self.repository.record_action(
+            ACTION_HIGHLIGHT,
+            candidate.user_id,
+            status_label,
+            action_key=highlight_action_key,
+        )
+        return highlight_verified
 
     def _resolve_growth_policy(
         self,
@@ -2733,16 +3350,35 @@ class DailyRunner:
             and self.settings.enable_pre_follow_clap
         )
 
+    @staticmethod
+    def _pre_follow_public_touch_enabled(growth_policy: GrowthPolicy) -> bool:
+        return growth_policy == GrowthPolicy.WARM_ENGAGE_RARE_COMMENT
+
     def _pre_follow_comment_enabled(self, growth_policy: GrowthPolicy) -> bool:
         return growth_policy == GrowthPolicy.WARM_ENGAGE_RARE_COMMENT and self.settings.enable_pre_follow_comment
+
+    def _pre_follow_highlight_enabled(self, growth_policy: GrowthPolicy) -> bool:
+        return growth_policy == GrowthPolicy.WARM_ENGAGE_RARE_COMMENT and self.settings.enable_pre_follow_highlight
 
     def _should_attempt_pre_follow_comment(self) -> bool:
         return random.random() < self.settings.pre_follow_comment_probability
 
-    def _select_pre_follow_comment_text(self, candidate: CandidateUser) -> str | None:
+    def _should_attempt_pre_follow_highlight(self) -> bool:
+        return random.random() < self.settings.pre_follow_highlight_probability
+
+    def _select_pre_follow_comment_text(
+        self,
+        candidate: CandidateUser,
+        *,
+        post_context: PostContext | None,
+    ) -> str | None:
+        lead_excerpt = self._post_context_section_excerpt(post_context, section="lead")
+        closing_excerpt = self._post_context_section_excerpt(post_context, section="closing")
         templates = build_comment_template_pool(
-            candidate_title=candidate.latest_post_title,
+            candidate_title=(post_context.post_title if post_context and post_context.post_title else candidate.latest_post_title),
             candidate_bio=candidate.bio,
+            post_lead_text=lead_excerpt,
+            post_closing_text=closing_excerpt,
             base_templates=self.settings.pre_follow_comment_templates,
         )
         if not templates:
@@ -2758,6 +3394,21 @@ class DailyRunner:
             'field "insert" is not defined by type "delta"',
             'value "public" does not exist in "responsedistributiontype" enum',
             "malformed deltas",
+        )
+        return any(
+            any(token in error.message.lower() for token in drift_tokens)
+            for error in result.errors
+        )
+
+    @staticmethod
+    def _highlight_api_drift_detected(result: GraphQLResult) -> bool:
+        if not result.errors:
+            return False
+        drift_tokens = (
+            'unknown argument "targetpostversionid"',
+            'field "createquote" is not defined',
+            'unknown type "streamitemquotetype"',
+            'unknown argument "targetparagraphnames"',
         )
         return any(
             any(token in error.message.lower() for token in drift_tokens)
@@ -3058,6 +3709,7 @@ class DailyRunner:
 
     async def _rollback_public_engagement(self, *, user_id: str) -> None:
         await self._undo_verified_claps(user_id=user_id)
+        await self._delete_verified_highlights(user_id=user_id)
         await self._delete_verified_comments(user_id=user_id)
 
     async def _undo_verified_claps(self, *, user_id: str) -> None:
@@ -3121,6 +3773,40 @@ class DailyRunner:
             status_label = f"verified:{comment_id}" if rollback_verified else f"failed:{comment_id}"
             self.repository.record_action(
                 ACTION_DELETE_COMMENT,
+                user_id,
+                status_label,
+                action_key=rollback_key,
+            )
+
+    async def _delete_verified_highlights(self, *, user_id: str) -> None:
+        for row in self.repository.verified_actions_for_target(
+            target_id=user_id,
+            action_type=ACTION_HIGHLIGHT,
+            rollback_action_type=ACTION_DELETE_HIGHLIGHT,
+        ):
+            quote_id, post_id = self._verified_highlight_payload(
+                status=row.get("status"),
+                action_key=row.get("action_key"),
+            )
+            if not quote_id or not post_id:
+                continue
+
+            rollback_key = self._rollback_action_key(ACTION_DELETE_HIGHLIGHT, row.get("action_key"))
+            await self._sleep_action_gap(action_type=ACTION_DELETE_HIGHLIGHT, target_user_id=user_id)
+            rollback = await self._execute_with_retry(
+                "cleanup_delete_highlight",
+                operations.delete_quote(target_post_id=post_id, target_quote_id=quote_id),
+            )
+            rollback_ok = rollback.status_code == 200 and not rollback.has_errors
+            rollback_deleted = parse_delete_quote_success(rollback) is True
+            rollback_verified = rollback_ok and rollback_deleted
+            status_label = (
+                f"verified:quote_id={quote_id};post_id={post_id}"
+                if rollback_verified
+                else f"failed:quote_id={quote_id};post_id={post_id}"
+            )
+            self.repository.record_action(
+                ACTION_DELETE_HIGHLIGHT,
                 user_id,
                 status_label,
                 action_key=rollback_key,
@@ -3401,20 +4087,28 @@ class DailyRunner:
         eligible_candidates: int,
         clap_attempted: int,
         clap_verified: int,
-        comment_attempted: int,
-        comment_verified: int,
+        public_touch_attempted: int = 0,
+        public_touch_verified: int = 0,
+        comment_attempted: int = 0,
+        comment_verified: int = 0,
+        highlight_attempted: int = 0,
+        highlight_verified: int = 0,
     ) -> dict[str, float | int]:
         follow_verify_rate = (follow_verified / follow_attempted) if follow_attempted > 0 else 0.0
         cleanup_verify_rate = (cleanup_verified / cleanup_attempted) if cleanup_attempted > 0 else 0.0
         eligible_conversion_rate = (follow_verified / eligible_candidates) if eligible_candidates > 0 else 0.0
         clap_verify_rate = (clap_verified / clap_attempted) if clap_attempted > 0 else 0.0
+        public_touch_verify_rate = (public_touch_verified / public_touch_attempted) if public_touch_attempted > 0 else 0.0
         comment_verify_rate = (comment_verified / comment_attempted) if comment_attempted > 0 else 0.0
+        highlight_verify_rate = (highlight_verified / highlight_attempted) if highlight_attempted > 0 else 0.0
         return {
             "follow_verify_rate": round(follow_verify_rate, 4),
             "cleanup_verify_rate": round(cleanup_verify_rate, 4),
             "eligible_conversion_rate": round(eligible_conversion_rate, 4),
             "clap_verify_rate": round(clap_verify_rate, 4),
+            "public_touch_verify_rate": round(public_touch_verify_rate, 4),
             "comment_verify_rate": round(comment_verify_rate, 4),
+            "highlight_verify_rate": round(highlight_verify_rate, 4),
             "net_follow_delta": follow_verified - cleanup_verified,
         }
 
@@ -3451,6 +4145,20 @@ class DailyRunner:
             return None
         value = status.split(":", 1)[1].strip()
         return value or None
+
+    @staticmethod
+    def _verified_highlight_payload(
+        *,
+        status: str | None,
+        action_key: str | None,
+    ) -> tuple[str | None, str | None]:
+        if not status or not status.startswith("verified:"):
+            return None, None
+        quote_match = re.search(r"quote_id=([^;]+)", status)
+        post_match = re.search(r"post_id=([^;]+)", status)
+        quote_id = quote_match.group(1).strip() if quote_match else None
+        post_id = post_match.group(1).strip() if post_match else DailyRunner._action_key_extra(action_key)
+        return (quote_id or None), (post_id or None)
 
     @staticmethod
     def _verified_clap_count(status: str | None) -> int | None:
