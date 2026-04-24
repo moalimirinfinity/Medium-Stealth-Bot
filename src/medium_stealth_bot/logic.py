@@ -397,10 +397,11 @@ class DailyRunner:
         if execution_pool_limit <= 0:
             eligible = []
         elif queue_only_execution:
-            # Discovery already filtered these rows into execution-ready queue state.
-            # Growth should drain that queue and only re-check live follow state right
-            # before mutation so queue-driven runs do not spend whole passes re-screening.
-            eligible = list(execution_pool)
+            eligible = self._screen_queued_execution_candidates(
+                execution_pool,
+                decisions=decisions,
+                persist_observations=not dry_run,
+            )
         else:
             eligible = await self._evaluate_candidates(
                 execution_pool,
@@ -2271,6 +2272,158 @@ class DailyRunner:
 
         return eligible
 
+    def _screen_queued_execution_candidates(
+        self,
+        candidates: list[CandidateUser],
+        *,
+        decisions: list[CandidateDecision],
+        persist_observations: bool,
+    ) -> list[CandidateUser]:
+        eligible: list[CandidateUser] = []
+        for candidate in candidates:
+            if self.repository.is_blacklisted(candidate.user_id):
+                if persist_observations:
+                    self.repository.mark_growth_candidate_queue_state(
+                        candidate.user_id,
+                        queue_state="rejected",
+                        reason="skip:blacklisted",
+                        candidate=candidate,
+                    )
+                self._append_decision(decisions, candidate, eligible=False, reason="skip:blacklisted")
+                continue
+
+            cooldown_retry_after = self.repository.recent_action_retry_after(
+                candidate.user_id,
+                within_hours=self.settings.follow_cooldown_hours,
+                action_types=FOLLOW_COOLDOWN_ACTION_TYPES,
+            )
+            if cooldown_retry_after is not None:
+                if persist_observations:
+                    self.repository.mark_growth_candidate_queue_state(
+                        candidate.user_id,
+                        queue_state="deferred",
+                        reason="skip:cooldown_active",
+                        candidate=candidate,
+                        retry_after_at=cooldown_retry_after,
+                    )
+                self._append_decision(decisions, candidate, eligible=False, reason="skip:cooldown_active")
+                continue
+
+            local_state = self.repository.get_relationship_state(candidate.user_id)
+            if local_state and local_state.user_follow_state == UserFollowState.FOLLOWING:
+                if persist_observations:
+                    self.repository.remove_growth_candidate(candidate.user_id)
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason="skip:already_following_local_state",
+                    needs_reconcile=False,
+                )
+                continue
+
+            ratio = self._following_follower_ratio(candidate)
+            if ratio < self.settings.min_following_follower_ratio:
+                reason = f"skip:ratio_below_threshold ratio={ratio:.2f}"
+                if persist_observations:
+                    self.repository.mark_growth_candidate_queue_state(
+                        candidate.user_id,
+                        queue_state="rejected",
+                        reason=reason,
+                        candidate=candidate,
+                    )
+                self._append_decision(decisions, candidate, eligible=False, reason=reason)
+                continue
+            if ratio > self.settings.max_following_follower_ratio:
+                reason = f"skip:ratio_above_threshold ratio={ratio:.2f}"
+                if persist_observations:
+                    self.repository.mark_growth_candidate_queue_state(
+                        candidate.user_id,
+                        queue_state="rejected",
+                        reason=reason,
+                        candidate=candidate,
+                    )
+                self._append_decision(decisions, candidate, eligible=False, reason=reason)
+                continue
+
+            volume_filter_reason = self._candidate_volume_filter_reason(candidate)
+            if volume_filter_reason:
+                if persist_observations:
+                    self.repository.mark_growth_candidate_queue_state(
+                        candidate.user_id,
+                        queue_state="rejected",
+                        reason=volume_filter_reason,
+                        candidate=candidate,
+                    )
+                self._append_decision(decisions, candidate, eligible=False, reason=volume_filter_reason)
+                continue
+
+            if self.settings.require_candidate_bio and not (candidate.bio or "").strip():
+                if persist_observations:
+                    self.repository.mark_growth_candidate_queue_state(
+                        candidate.user_id,
+                        queue_state="rejected",
+                        reason="skip:no_bio",
+                        candidate=candidate,
+                    )
+                self._append_decision(decisions, candidate, eligible=False, reason="skip:no_bio")
+                continue
+
+            candidate.matched_keywords = self._match_keywords(candidate.bio)
+            if self.settings.require_bio_keyword_match and not candidate.matched_keywords:
+                if persist_observations:
+                    self.repository.mark_growth_candidate_queue_state(
+                        candidate.user_id,
+                        queue_state="rejected",
+                        reason="skip:no_keyword_match",
+                        candidate=candidate,
+                    )
+                self._append_decision(decisions, candidate, eligible=False, reason="skip:no_keyword_match")
+                continue
+
+            if not candidate.newsletter_v3_id:
+                if persist_observations:
+                    self.repository.mark_growth_candidate_queue_state(
+                        candidate.user_id,
+                        queue_state="rejected",
+                        reason="skip:no_newsletter_v3_id",
+                        candidate=candidate,
+                    )
+                self._append_decision(decisions, candidate, eligible=False, reason="skip:no_newsletter_v3_id")
+                continue
+
+            if self.settings.require_candidate_latest_post and not candidate.latest_post_id:
+                if persist_observations:
+                    self.repository.mark_growth_candidate_queue_state(
+                        candidate.user_id,
+                        queue_state="rejected",
+                        reason="skip:no_latest_post",
+                        candidate=candidate,
+                    )
+                self._append_decision(decisions, candidate, eligible=False, reason="skip:no_latest_post")
+                continue
+
+            if not self._candidate_has_recent_activity(candidate):
+                if persist_observations:
+                    self.repository.mark_growth_candidate_queue_state(
+                        candidate.user_id,
+                        queue_state="rejected",
+                        reason="skip:inactive_author",
+                        candidate=candidate,
+                    )
+                self._append_decision(decisions, candidate, eligible=False, reason="skip:inactive_author")
+                continue
+
+            eligible.append(candidate)
+            self._append_decision(
+                decisions,
+                candidate,
+                eligible=True,
+                reason="eligible:queue_execution_ready",
+            )
+
+        return eligible
+
     async def _execute_follow_pipeline(
         self,
         *,
@@ -2300,17 +2453,33 @@ class DailyRunner:
 
             if dry_run:
                 attempted += 1
-                if clap_enabled and clap_budget_remaining > 0:
+                should_resolve_post_context = (
+                    (clap_enabled and clap_budget_remaining > 0)
+                    or (public_touch_enabled and comment_budget_remaining > 0)
+                )
+                post_context = (
+                    await self._resolve_candidate_post_context(
+                        candidate,
+                        include_extended_context=public_touch_enabled and comment_budget_remaining > 0,
+                    )
+                    if should_resolve_post_context
+                    else None
+                )
+                if clap_enabled and clap_budget_remaining > 0 and post_context is not None:
                     clap_budget_remaining -= 1
                     clap_attempted += 1
                     await self._sleep_action_gap(action_type=ACTION_CLAP, target_user_id=candidate.user_id)
                 if public_touch_enabled and comment_budget_remaining > 0:
-                    touch_plan = self._plan_pre_follow_public_touch(
-                        candidate,
-                        growth_policy=growth_policy,
-                        public_touch_budget_remaining=comment_budget_remaining,
-                        post_context=None,
-                        dry_run=True,
+                    touch_plan = (
+                        self._plan_pre_follow_public_touch(
+                            candidate,
+                            growth_policy=growth_policy,
+                            public_touch_budget_remaining=comment_budget_remaining,
+                            post_context=post_context,
+                            dry_run=True,
+                        )
+                        if post_context is not None
+                        else None
                     )
                 else:
                     touch_plan = None
@@ -4032,7 +4201,7 @@ class DailyRunner:
             return "skipped"
         if "failed" in reason or "uncertain" in reason or "unavailable" in reason:
             return "failed"
-        if reason == "eligible":
+        if reason == "eligible" or reason.startswith("eligible:"):
             return "eligible"
         if reason.startswith("cleanup:"):
             return "cleanup"

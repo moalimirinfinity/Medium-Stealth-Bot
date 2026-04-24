@@ -1643,6 +1643,18 @@ def setup_command(
         )
     )
     pre_follow_comment_probability = max(0.0, min(1.0, pre_follow_comment_probability))
+    enable_pre_follow_highlight = typer.confirm(
+        "Enable optional pre-follow highlight for smart mode?",
+        default=settings.enable_pre_follow_highlight,
+    )
+    pre_follow_highlight_probability = float(
+        typer.prompt(
+            "Pre-follow highlight probability per smart candidate (0.0-1.0)",
+            default=settings.pre_follow_highlight_probability,
+            type=float,
+        )
+    )
+    pre_follow_highlight_probability = max(0.0, min(1.0, pre_follow_highlight_probability))
     comment_templates_default = " || ".join(settings.pre_follow_comment_templates)
     pre_follow_comment_templates_raw = str(
         typer.prompt(
@@ -1800,6 +1812,8 @@ def setup_command(
         "ENABLE_PRE_FOLLOW_CLAP": "true" if enable_pre_follow_clap else "false",
         "ENABLE_PRE_FOLLOW_COMMENT": "true" if enable_pre_follow_comment else "false",
         "PRE_FOLLOW_COMMENT_PROBABILITY": str(pre_follow_comment_probability),
+        "ENABLE_PRE_FOLLOW_HIGHLIGHT": "true" if enable_pre_follow_highlight else "false",
+        "PRE_FOLLOW_HIGHLIGHT_PROBABILITY": str(pre_follow_highlight_probability),
         "PRE_FOLLOW_COMMENT_TEMPLATES": pre_follow_comment_templates_raw,
         "MAX_MUTATIONS_PER_10_MINUTES": str(max(1, max_mutations_per_10_minutes)),
         "MIN_VERIFY_GAP_SECONDS": str(max(0, min_verify_gap_seconds)),
@@ -2141,6 +2155,8 @@ def _run_start_menu(
     initial_enable_pre_follow_clap: bool,
     initial_enable_pre_follow_comment: bool,
     initial_pre_follow_comment_probability: float,
+    initial_enable_pre_follow_highlight: bool,
+    initial_pre_follow_highlight_probability: float,
     initial_pre_follow_comment_templates_raw: str,
     initial_graph_sync_auto_enabled: bool,
     initial_graph_sync_freshness_window_minutes: int,
@@ -2211,6 +2227,8 @@ def _run_start_menu(
     enable_pre_follow_clap = initial_enable_pre_follow_clap
     enable_pre_follow_comment = initial_enable_pre_follow_comment
     pre_follow_comment_probability = max(0.0, min(1.0, initial_pre_follow_comment_probability))
+    enable_pre_follow_highlight = initial_enable_pre_follow_highlight
+    pre_follow_highlight_probability = max(0.0, min(1.0, initial_pre_follow_highlight_probability))
     pre_follow_comment_templates_raw = initial_pre_follow_comment_templates_raw
     target_user_refs_for_growth: list[str] | None = None
     graph_sync_auto_enabled = initial_graph_sync_auto_enabled
@@ -2303,8 +2321,8 @@ def _run_start_menu(
             enable_pre_follow_clap=enable_pre_follow_clap,
             enable_pre_follow_comment=enable_pre_follow_comment,
             pre_follow_comment_probability=pre_follow_comment_probability,
-            enable_pre_follow_highlight=settings.enable_pre_follow_highlight,
-            pre_follow_highlight_probability=settings.pre_follow_highlight_probability,
+            enable_pre_follow_highlight=enable_pre_follow_highlight,
+            pre_follow_highlight_probability=pre_follow_highlight_probability,
             pre_follow_comment_templates_raw=pre_follow_comment_templates_raw,
             graph_sync_auto_enabled=graph_sync_auto_enabled,
             graph_sync_freshness_window_minutes=graph_sync_freshness_window_minutes,
@@ -2408,6 +2426,8 @@ def _run_start_menu(
             nonlocal enable_pre_follow_clap
             nonlocal enable_pre_follow_comment
             nonlocal pre_follow_comment_probability
+            nonlocal enable_pre_follow_highlight
+            nonlocal pre_follow_highlight_probability
             nonlocal pre_follow_comment_templates_raw
             nonlocal graph_sync_auto_enabled
             nonlocal graph_sync_freshness_window_minutes
@@ -2473,6 +2493,8 @@ def _run_start_menu(
             enable_pre_follow_clap = refreshed_settings.enable_pre_follow_clap
             enable_pre_follow_comment = refreshed_settings.enable_pre_follow_comment
             pre_follow_comment_probability = refreshed_settings.pre_follow_comment_probability
+            enable_pre_follow_highlight = refreshed_settings.enable_pre_follow_highlight
+            pre_follow_highlight_probability = refreshed_settings.pre_follow_highlight_probability
             pre_follow_comment_templates_raw = refreshed_settings.pre_follow_comment_templates_raw
             graph_sync_auto_enabled = refreshed_settings.graph_sync_auto_enabled
             graph_sync_freshness_window_minutes = refreshed_settings.graph_sync_freshness_window_minutes
@@ -2506,7 +2528,8 @@ def _run_start_menu(
                         "Mode 3 public-touch config: "
                         f"comments={comment_default_label}, "
                         f"comment_probability={round(pre_follow_comment_probability, 3)}, "
-                        f"highlight_probability={round(settings.pre_follow_highlight_probability, 3)}, "
+                        f"highlights={'enabled' if enable_pre_follow_highlight else 'disabled'}, "
+                        f"highlight_probability={round(pre_follow_highlight_probability, 3)}, "
                         f"budget_per_day={settings.max_comment_actions_per_day}, "
                         f"templates={template_count}.",
                         level="info",
@@ -2576,6 +2599,8 @@ def _run_start_menu(
             nonlocal enable_pre_follow_clap
             nonlocal enable_pre_follow_comment
             nonlocal pre_follow_comment_probability
+            nonlocal enable_pre_follow_highlight
+            nonlocal pre_follow_highlight_probability
             nonlocal pre_follow_comment_templates_raw
             nonlocal graph_sync_auto_enabled
             nonlocal graph_sync_freshness_window_minutes
@@ -2955,6 +2980,22 @@ def _run_start_menu(
             else:
                 pre_follow_comment_probability = pre_follow_comment_probability_value
 
+            enable_pre_follow_highlight = typer.confirm(
+                "Enable optional pre-follow highlight for smart mode?",
+                default=enable_pre_follow_highlight,
+            )
+            pre_follow_highlight_probability_value = float(
+                typer.prompt(
+                    "Pre-follow highlight probability per smart candidate (0.0-1.0)",
+                    default=pre_follow_highlight_probability,
+                    type=float,
+                )
+            )
+            if pre_follow_highlight_probability_value < 0.0 or pre_follow_highlight_probability_value > 1.0:
+                _print_notice("Pre-follow highlight probability must be between 0 and 1. Keeping previous value.", level="warning")
+            else:
+                pre_follow_highlight_probability = pre_follow_highlight_probability_value
+
             pre_follow_comment_templates_input = str(
                 typer.prompt(
                     "Pre-follow comment templates (`||` separated, '-' to clear)",
@@ -3326,6 +3367,8 @@ def _run_start_menu(
                 "ENABLE_PRE_FOLLOW_CLAP": "true" if enable_pre_follow_clap else "false",
                 "ENABLE_PRE_FOLLOW_COMMENT": "true" if enable_pre_follow_comment else "false",
                 "PRE_FOLLOW_COMMENT_PROBABILITY": str(pre_follow_comment_probability),
+                "ENABLE_PRE_FOLLOW_HIGHLIGHT": "true" if enable_pre_follow_highlight else "false",
+                "PRE_FOLLOW_HIGHLIGHT_PROBABILITY": str(pre_follow_highlight_probability),
                 "PRE_FOLLOW_COMMENT_TEMPLATES": pre_follow_comment_templates_raw,
                 "LIVE_SESSION_DURATION_MINUTES": str(live_session_minutes),
                 "LIVE_SESSION_TARGET_FOLLOW_ATTEMPTS": str(live_session_target_follows),
@@ -3793,6 +3836,8 @@ def start_command(
             initial_enable_pre_follow_clap=settings.enable_pre_follow_clap,
             initial_enable_pre_follow_comment=settings.enable_pre_follow_comment,
             initial_pre_follow_comment_probability=settings.pre_follow_comment_probability,
+            initial_enable_pre_follow_highlight=settings.enable_pre_follow_highlight,
+            initial_pre_follow_highlight_probability=settings.pre_follow_highlight_probability,
             initial_pre_follow_comment_templates_raw=settings.pre_follow_comment_templates_raw,
             initial_graph_sync_auto_enabled=settings.graph_sync_auto_enabled,
             initial_graph_sync_freshness_window_minutes=settings.graph_sync_freshness_window_minutes,
@@ -4402,7 +4447,9 @@ def run_command(
     if resolved_growth_policy == GrowthPolicy.WARM_ENGAGE_RARE_COMMENT:
         _print_notice(
             "Mode 3 public-touch config: "
+            f"comments={'enabled' if runtime_settings.enable_pre_follow_comment else 'disabled'}, "
             f"comment_probability={round(runtime_settings.pre_follow_comment_probability, 3)}, "
+            f"highlights={'enabled' if runtime_settings.enable_pre_follow_highlight else 'disabled'}, "
             f"highlight_probability={round(runtime_settings.pre_follow_highlight_probability, 3)}, "
             f"budget_per_day={runtime_settings.max_comment_actions_per_day}.",
             level="info",
