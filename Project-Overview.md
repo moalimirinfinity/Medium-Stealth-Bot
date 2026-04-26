@@ -60,7 +60,10 @@ Growth is queue-driven execution only. It drains execution-ready candidates alre
 
 - `follow-only`
 - `warm-engage`
-- `warm-engage-plus-rare-comment`
+- `warm-engage-plus-comment`
+- `warm-engage-plus-highlight`
+
+`warm-engage-plus-rare-comment` is preserved as a deprecated alias for `warm-engage-plus-comment`.
 
 Growth does not perform discovery source selection anymore; legacy source flags remain only for compatibility.
 Growth also does not re-score or re-filter queued candidates by candidate-quality rules such as ratio, follower/following bounds, bio, keywords, latest post, or recent activity. Those checks belong to discovery before enqueueing.

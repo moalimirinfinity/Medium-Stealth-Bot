@@ -115,8 +115,9 @@ _GROWTH_SOURCE_MENU_CHOICE_MAP: dict[str, GrowthSource] = {
 _GROWTH_POLICY_MENU_OPTIONS: tuple[tuple[str, str, str], ...] = (
     ("1", "Follow-Only", "Follow suitable users without pre-follow engagement."),
     ("2", "Warm-Engage", "Read and clap before following."),
-    ("3", "Warm-Engage++", "Read, clap, and add a rare public touch (comment/highlight) before following."),
-    ("4", "Back", "Return to growth source selection"),
+    ("3", "Warm-Engage + Comment", "Read, clap, and comment before following."),
+    ("4", "Warm-Engage + Highlight", "Read, clap, and highlight a deliberate span before following."),
+    ("5", "Back", "Return to growth source selection"),
 )
 
 _DISCOVERY_RUNTIME_MENU_OPTIONS: tuple[tuple[str, str, str], ...] = (
@@ -168,7 +169,17 @@ _SETTINGS_MENU_OPTIONS: tuple[tuple[str, str, str], ...] = (
     ("3", "Auth", "Refresh auth session"),
     ("4", "Back", "Return to the start sections"),
 )
-_GROWTH_POLICY_CHOICES = ", ".join(policy.value for policy in GrowthPolicy)
+_CANONICAL_GROWTH_POLICIES: tuple[GrowthPolicy, ...] = (
+    GrowthPolicy.FOLLOW_ONLY,
+    GrowthPolicy.WARM_ENGAGE,
+    GrowthPolicy.WARM_ENGAGE_COMMENT,
+    GrowthPolicy.WARM_ENGAGE_HIGHLIGHT,
+)
+_GROWTH_POLICY_CHOICES = ", ".join(policy.value for policy in _CANONICAL_GROWTH_POLICIES)
+_GROWTH_POLICY_HELP = (
+    "Growth policy. `follow-only`, `warm-engage`, `warm-engage-plus-comment`, "
+    "or `warm-engage-plus-highlight`. Deprecated alias: `warm-engage-plus-rare-comment`."
+)
 _GROWTH_SOURCE_CHOICES = ", ".join(source.value for source in GrowthSource)
 
 
@@ -260,9 +271,14 @@ def _prompt_growth_policy_choice(prompt_text: str, *, default: GrowthPolicy) -> 
     while True:
         raw_value = str(typer.prompt(prompt_text, default=default.value)).strip().lower()
         try:
-            return GrowthPolicy(raw_value)
+            return _canonical_growth_policy(GrowthPolicy(raw_value))
         except ValueError:
-            _print_notice(f"Invalid growth policy. Choose one of {_GROWTH_POLICY_CHOICES}.", level="warning")
+            _print_notice(
+                "Invalid growth policy. Choose one of "
+                f"{_GROWTH_POLICY_CHOICES}; deprecated alias "
+                f"{GrowthPolicy.WARM_ENGAGE_RARE_COMMENT.value} is still accepted.",
+                level="warning",
+            )
 
 
 def _parse_growth_sources(raw_value: str) -> list[GrowthSource]:
@@ -368,17 +384,39 @@ def _bootstrap_settings(*, env_path: Path | None = None) -> AppSettings:
     return settings
 
 
+def _canonical_growth_policy(growth_policy: GrowthPolicy) -> GrowthPolicy:
+    if growth_policy == GrowthPolicy.WARM_ENGAGE_RARE_COMMENT:
+        return GrowthPolicy.WARM_ENGAGE_COMMENT
+    return growth_policy
+
+
+def _resolve_growth_policy_option(
+    *,
+    growth_policy: GrowthPolicy | None,
+    mode: GrowthMode | None,
+    default: GrowthPolicy,
+) -> GrowthPolicy:
+    if growth_policy is not None:
+        return _canonical_growth_policy(growth_policy)
+    if mode == GrowthMode.SIMPLE:
+        return GrowthPolicy.FOLLOW_ONLY
+    if mode == GrowthMode.SMART:
+        return GrowthPolicy.WARM_ENGAGE_COMMENT
+    return _canonical_growth_policy(default)
+
+
 def _runtime_settings_for_growth_policy(
     settings: AppSettings,
     *,
     growth_policy: GrowthPolicy,
 ) -> tuple[AppSettings, bool]:
-    if growth_policy != GrowthPolicy.WARM_ENGAGE_RARE_COMMENT:
+    resolved_policy = _canonical_growth_policy(growth_policy)
+    if resolved_policy not in {GrowthPolicy.WARM_ENGAGE_COMMENT, GrowthPolicy.WARM_ENGAGE_HIGHLIGHT}:
         return settings, False
     updates: dict[str, object] = {}
-    if not settings.enable_pre_follow_comment:
+    if resolved_policy == GrowthPolicy.WARM_ENGAGE_COMMENT and not settings.enable_pre_follow_comment:
         updates["enable_pre_follow_comment"] = True
-    if not settings.enable_pre_follow_highlight:
+    if resolved_policy == GrowthPolicy.WARM_ENGAGE_HIGHLIGHT and not settings.enable_pre_follow_highlight:
         updates["enable_pre_follow_highlight"] = True
     if not updates:
         return settings, False
@@ -564,7 +602,7 @@ def _render_daily_run(outcome: DailyRunOutcome) -> None:
         f"{outcome.clap_actions_attempted} / {outcome.clap_actions_verified}",
     )
     if (
-        outcome.growth_policy == GrowthPolicy.WARM_ENGAGE_RARE_COMMENT
+        outcome.growth_policy in {GrowthPolicy.WARM_ENGAGE_COMMENT, GrowthPolicy.WARM_ENGAGE_HIGHLIGHT}
         or outcome.public_touch_actions_attempted > 0
         or outcome.public_touch_actions_verified > 0
     ):
@@ -573,7 +611,7 @@ def _render_daily_run(outcome: DailyRunOutcome) -> None:
             f"{outcome.public_touch_actions_attempted} / {outcome.public_touch_actions_verified}",
         )
     if (
-        outcome.growth_policy == GrowthPolicy.WARM_ENGAGE_RARE_COMMENT
+        outcome.growth_policy == GrowthPolicy.WARM_ENGAGE_COMMENT
         or outcome.comment_actions_attempted > 0
         or outcome.comment_actions_verified > 0
     ):
@@ -581,7 +619,11 @@ def _render_daily_run(outcome: DailyRunOutcome) -> None:
             "Comment Attempted / Verified",
             f"{outcome.comment_actions_attempted} / {outcome.comment_actions_verified}",
         )
-    if outcome.highlight_actions_attempted > 0 or outcome.highlight_actions_verified > 0:
+    if (
+        outcome.growth_policy == GrowthPolicy.WARM_ENGAGE_HIGHLIGHT
+        or outcome.highlight_actions_attempted > 0
+        or outcome.highlight_actions_verified > 0
+    ):
         summary_table.add_row(
             "Highlight Attempted / Verified",
             f"{outcome.highlight_actions_attempted} / {outcome.highlight_actions_verified}",
@@ -1169,6 +1211,7 @@ def _render_status(artifact: dict, *, artifact_path: Path, settings: AppSettings
     growth_defaults.add_row("Max Follow Actions Per Cycle", str(settings.max_follow_actions_per_run))
     growth_defaults.add_row("Max Subscribe Actions Per Day", str(settings.max_subscribe_actions_per_day))
     growth_defaults.add_row("Max Comment Actions Per Day", str(settings.max_comment_actions_per_day))
+    growth_defaults.add_row("Max Highlight Actions Per Day", str(settings.max_highlight_actions_per_day))
     growth_defaults.add_row("Max Mutations / 10m", str(settings.max_mutations_per_10_minutes))
     growth_defaults.add_row("Verify Gap (s)", f"{settings.min_verify_gap_seconds}-{settings.max_verify_gap_seconds}")
     growth_defaults.add_row("Pass Cooldown (s)", f"{settings.pass_cooldown_min_seconds}-{settings.pass_cooldown_max_seconds}")
@@ -1413,6 +1456,9 @@ def setup_command(
     )
     max_comment = int(
         typer.prompt("Max comment actions per day", default=settings.max_comment_actions_per_day, type=int)
+    )
+    max_highlight = int(
+        typer.prompt("Max highlight actions per day", default=settings.max_highlight_actions_per_day, type=int)
     )
     max_follow_per_run = int(
         typer.prompt("Max follow actions per run", default=settings.max_follow_actions_per_run, type=int)
@@ -1659,24 +1705,24 @@ def setup_command(
         default=settings.enable_pre_follow_clap,
     )
     enable_pre_follow_comment = typer.confirm(
-        "Enable optional pre-follow comment for smart mode?",
+        "Enable optional pre-follow comment for comment policy?",
         default=settings.enable_pre_follow_comment,
     )
     pre_follow_comment_probability = float(
         typer.prompt(
-            "Pre-follow comment probability per smart candidate (0.0-1.0)",
+            "Pre-follow comment probability per comment-policy candidate (0.0-1.0)",
             default=settings.pre_follow_comment_probability,
             type=float,
         )
     )
     pre_follow_comment_probability = max(0.0, min(1.0, pre_follow_comment_probability))
     enable_pre_follow_highlight = typer.confirm(
-        "Enable optional pre-follow highlight for smart mode?",
+        "Enable optional pre-follow highlight for highlight policy?",
         default=settings.enable_pre_follow_highlight,
     )
     pre_follow_highlight_probability = float(
         typer.prompt(
-            "Pre-follow highlight probability per smart candidate (0.0-1.0)",
+            "Pre-follow highlight probability per highlight-policy candidate (0.0-1.0)",
             default=settings.pre_follow_highlight_probability,
             type=float,
         )
@@ -1786,6 +1832,7 @@ def setup_command(
         "MAX_SUBSCRIBE_ACTIONS_PER_DAY": str(max_subscribe),
         "MAX_UNFOLLOW_ACTIONS_PER_DAY": str(max_unfollow),
         "MAX_COMMENT_ACTIONS_PER_DAY": str(max(0, max_comment)),
+        "MAX_HIGHLIGHT_ACTIONS_PER_DAY": str(max(0, max_highlight)),
         "MAX_FOLLOW_ACTIONS_PER_RUN": str(max_follow_per_run),
         "DEFAULT_GROWTH_POLICY": default_growth_policy.value,
         "DEFAULT_GROWTH_SOURCES": ",".join(source.value for source in default_growth_sources),
@@ -2560,12 +2607,13 @@ def _run_start_menu(
                     )
                     comment_default_label = "enabled" if enable_pre_follow_comment else "runtime-enabled"
                     _print_notice(
-                        "Mode 3 public-touch config: "
+                        "Public-touch config: "
                         f"comments={comment_default_label}, "
                         f"comment_probability={round(pre_follow_comment_probability, 3)}, "
-                        f"highlights={'enabled' if enable_pre_follow_highlight else 'disabled'}, "
+                        f"comment_budget_per_day={settings.max_comment_actions_per_day}, "
+                        f"highlights={'enabled' if enable_pre_follow_highlight else 'runtime-enabled'}, "
                         f"highlight_probability={round(pre_follow_highlight_probability, 3)}, "
-                        f"budget_per_day={settings.max_comment_actions_per_day}, "
+                        f"highlight_budget_per_day={settings.max_highlight_actions_per_day}, "
                         f"templates={template_count}.",
                         level="info",
                     )
@@ -3013,12 +3061,12 @@ def _run_start_menu(
                 default=enable_pre_follow_clap,
             )
             enable_pre_follow_comment = typer.confirm(
-                "Enable optional pre-follow comment for smart mode?",
+                "Enable optional pre-follow comment for comment policy?",
                 default=enable_pre_follow_comment,
             )
             pre_follow_comment_probability_value = float(
                 typer.prompt(
-                    "Pre-follow comment probability per smart candidate (0.0-1.0)",
+                    "Pre-follow comment probability per comment-policy candidate (0.0-1.0)",
                     default=pre_follow_comment_probability,
                     type=float,
                 )
@@ -3029,12 +3077,12 @@ def _run_start_menu(
                 pre_follow_comment_probability = pre_follow_comment_probability_value
 
             enable_pre_follow_highlight = typer.confirm(
-                "Enable optional pre-follow highlight for smart mode?",
+                "Enable optional pre-follow highlight for highlight policy?",
                 default=enable_pre_follow_highlight,
             )
             pre_follow_highlight_probability_value = float(
                 typer.prompt(
-                    "Pre-follow highlight probability per smart candidate (0.0-1.0)",
+                    "Pre-follow highlight probability per highlight-policy candidate (0.0-1.0)",
                     default=pre_follow_highlight_probability,
                     type=float,
                 )
@@ -3668,7 +3716,8 @@ def _run_start_menu(
             selected_growth_policy = {
                 "1": GrowthPolicy.FOLLOW_ONLY,
                 "2": GrowthPolicy.WARM_ENGAGE,
-                "3": GrowthPolicy.WARM_ENGAGE_RARE_COMMENT,
+                "3": GrowthPolicy.WARM_ENGAGE_COMMENT,
+                "4": GrowthPolicy.WARM_ENGAGE_HIGHLIGHT,
             }[growth_policy_choice]
             growth_policy = selected_growth_policy
 
@@ -3799,7 +3848,7 @@ def start_command(
         None,
         "--policy",
         case_sensitive=False,
-        help="Growth policy. `follow-only`, `warm-engage`, or `warm-engage-plus-rare-comment`.",
+        help=_GROWTH_POLICY_HELP,
     ),
     growth_sources: list[GrowthSource] | None = typer.Option(
         None,
@@ -3825,11 +3874,10 @@ def start_command(
     settings = _bootstrap_settings()
     quick_live_discovery_inputs = bool(growth_sources or seed_user_refs)
     resolved_seeds = _normalize_seed_user_refs(seed_user_refs if seed_user_refs else settings.discovery_seed_users)
-    resolved_growth_policy = (
-        growth_policy
-        or (GrowthPolicy.FOLLOW_ONLY if mode == GrowthMode.SIMPLE else None)
-        or (GrowthPolicy.WARM_ENGAGE_RARE_COMMENT if mode == GrowthMode.SMART else None)
-        or settings.default_growth_policy
+    resolved_growth_policy = _resolve_growth_policy_option(
+        growth_policy=growth_policy,
+        mode=mode,
+        default=settings.default_growth_policy,
     )
     resolved_growth_sources = list(growth_sources or settings.default_growth_sources)
 
@@ -4393,7 +4441,7 @@ def run_command(
         None,
         "--policy",
         case_sensitive=False,
-        help="Growth policy. `follow-only`, `warm-engage`, or `warm-engage-plus-rare-comment`.",
+        help=_GROWTH_POLICY_HELP,
     ),
     growth_sources: list[GrowthSource] | None = typer.Option(
         None,
@@ -4456,10 +4504,10 @@ def run_command(
         max=500,
         help="Optional cap on growth-cycle passes in one live session. Defaults to LIVE_SESSION_MAX_PASSES.",
     ),
-    auto_sync: bool = typer.Option(
-        False,
+    auto_sync: bool | None = typer.Option(
+        None,
         "--auto-sync/--no-auto-sync",
-        help="Refresh local social-graph cache before execution.",
+        help="Refresh local social-graph cache before execution. Defaults to GRAPH_SYNC_AUTO_ENABLED.",
     ),
 ) -> None:
     """
@@ -4476,15 +4524,14 @@ def run_command(
     session_minutes = _coerce_optioninfo(session_minutes, default=None)
     target_follows = _coerce_optioninfo(target_follows, default=None)
     session_max_passes = _coerce_optioninfo(session_max_passes, default=None)
-    auto_sync = _coerce_optioninfo(auto_sync, default=False)
+    auto_sync = _coerce_optioninfo(auto_sync, default=None)
 
     settings = _bootstrap_settings()
     _require_session(settings)
-    resolved_growth_policy = (
-        growth_policy
-        or (GrowthPolicy.FOLLOW_ONLY if mode == GrowthMode.SIMPLE else None)
-        or (GrowthPolicy.WARM_ENGAGE_RARE_COMMENT if mode == GrowthMode.SMART else None)
-        or settings.default_growth_policy
+    resolved_growth_policy = _resolve_growth_policy_option(
+        growth_policy=growth_policy,
+        mode=mode,
+        default=settings.default_growth_policy,
     )
     runtime_settings, forced_public_touch_enable = _runtime_settings_for_growth_policy(
         settings,
@@ -4492,19 +4539,21 @@ def run_command(
     )
     if forced_public_touch_enable:
         _print_notice(
-            "Mode 3 coherence: enabling pre-follow public touches for this run (runtime override only).",
+            "Policy coherence: enabling the selected pre-follow public touch for this run (runtime override only).",
             level="info",
         )
-    if resolved_growth_policy == GrowthPolicy.WARM_ENGAGE_RARE_COMMENT:
+    if resolved_growth_policy in {GrowthPolicy.WARM_ENGAGE_COMMENT, GrowthPolicy.WARM_ENGAGE_HIGHLIGHT}:
         _print_notice(
-            "Mode 3 public-touch config: "
+            "Public-touch config: "
             f"comments={'enabled' if runtime_settings.enable_pre_follow_comment else 'disabled'}, "
             f"comment_probability={round(runtime_settings.pre_follow_comment_probability, 3)}, "
+            f"comment_budget_per_day={runtime_settings.max_comment_actions_per_day}, "
             f"highlights={'enabled' if runtime_settings.enable_pre_follow_highlight else 'disabled'}, "
             f"highlight_probability={round(runtime_settings.pre_follow_highlight_probability, 3)}, "
-            f"budget_per_day={runtime_settings.max_comment_actions_per_day}.",
+            f"highlight_budget_per_day={runtime_settings.max_highlight_actions_per_day}.",
             level="info",
         )
+    resolved_auto_sync = runtime_settings.graph_sync_auto_enabled if auto_sync is None else bool(auto_sync)
     ignored_discovery_inputs = bool(
         growth_sources
         or seed_user_refs
@@ -4554,7 +4603,7 @@ def run_command(
                 async with MediumAsyncClient(runtime_settings) as client:
                     try:
                         runner = DailyRunner(settings=runtime_settings, client=client, repository=repository)
-                        if auto_sync:
+                        if resolved_auto_sync:
                             sync_outcome_local = await runner.sync_social_graph(
                                 dry_run=not live,
                                 mode="auto",
@@ -5389,7 +5438,7 @@ def growth_session_command(
         None,
         "--policy",
         case_sensitive=False,
-        help="Growth policy. `follow-only`, `warm-engage`, or `warm-engage-plus-rare-comment`.",
+        help=_GROWTH_POLICY_HELP,
     ),
     mode: GrowthMode | None = typer.Option(
         None,
@@ -5456,7 +5505,7 @@ def growth_cycle_command(
         None,
         "--policy",
         case_sensitive=False,
-        help="Growth policy. `follow-only`, `warm-engage`, or `warm-engage-plus-rare-comment`.",
+        help=_GROWTH_POLICY_HELP,
     ),
     mode: GrowthMode | None = typer.Option(
         None,
@@ -5464,10 +5513,10 @@ def growth_cycle_command(
         case_sensitive=False,
         help="Legacy compatibility alias for growth policy.",
     ),
-    auto_sync: bool = typer.Option(
-        False,
+    auto_sync: bool | None = typer.Option(
+        None,
         "--auto-sync/--no-auto-sync",
-        help="Refresh local social-graph cache before execution.",
+        help="Refresh local social-graph cache before execution. Defaults to GRAPH_SYNC_AUTO_ENABLED.",
     ),
 ) -> None:
     """
@@ -5494,7 +5543,7 @@ def growth_preflight_command(
         None,
         "--policy",
         case_sensitive=False,
-        help="Growth policy. `follow-only`, `warm-engage`, or `warm-engage-plus-rare-comment`.",
+        help=_GROWTH_POLICY_HELP,
     ),
     mode: GrowthMode | None = typer.Option(
         None,
@@ -5523,10 +5572,10 @@ def growth_preflight_command(
         max=500,
         help="Optional cap on growth-cycle passes in one live session. Defaults to LIVE_SESSION_MAX_PASSES.",
     ),
-    auto_sync: bool = typer.Option(
-        False,
+    auto_sync: bool | None = typer.Option(
+        None,
         "--auto-sync/--no-auto-sync",
-        help="Refresh local social-graph cache before execution.",
+        help="Refresh local social-graph cache before execution. Defaults to GRAPH_SYNC_AUTO_ENABLED.",
     ),
 ) -> None:
     """

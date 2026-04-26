@@ -29,10 +29,17 @@ class UserNode(_Model):
     newsletter_v3: NewsletterV3 | None = Field(default=None, alias="newsletterV3")
 
 
+class PostMarkup(_Model):
+    type: str | None = None
+    start: int | None = None
+    end: int | None = None
+
+
 class PostParagraph(_Model):
     name: str | None = None
     text: str | None = None
     type: str | int | None = None
+    markups: list[PostMarkup] = Field(default_factory=list)
 
 
 class PostBodyModel(_Model):
@@ -323,7 +330,7 @@ def parse_latest_post_preview(result: GraphQLResult) -> tuple[str | None, str | 
 
 def parse_recent_post_contexts(
     result: GraphQLResult,
-) -> list[tuple[str, str | None, str | None, list[tuple[str, str | int | None, str]]]]:
+) -> list[tuple[str, str | None, str | None, list[tuple[str, str | int | None, str, list[dict[str, int | str | None]]]]]]:
     payload = UserLatestPostData.model_validate(result.data or {})
     if not payload.user_result or not payload.user_result.homepage_posts_connection:
         return []
@@ -331,7 +338,7 @@ def parse_recent_post_contexts(
     if not posts:
         return []
 
-    contexts: list[tuple[str, str | None, str | None, list[tuple[str, str | int | None, str]]]] = []
+    contexts: list[tuple[str, str | None, str | None, list[tuple[str, str | int | None, str, list[dict[str, int | str | None]]]]]] = []
     for post in posts:
         if not post.id:
             continue
@@ -343,15 +350,20 @@ def parse_recent_post_contexts(
             else:
                 version_id = latest_version.id
 
-        paragraphs: list[tuple[str, str | int | None, str]] = []
+        paragraphs: list[tuple[str, str | int | None, str, list[dict[str, int | str | None]]]] = []
         body_model = post.content.body_model if post.content else None
         if body_model:
             for paragraph in body_model.paragraphs:
                 name = (paragraph.name or "").strip()
-                text = " ".join((paragraph.text or "").split()).strip()
-                if not name or not text:
+                text = paragraph.text or ""
+                if not name or not text.strip():
                     continue
-                paragraphs.append((name, paragraph.type, text))
+                markups = [
+                    markup.model_dump()
+                    for markup in paragraph.markups
+                    if markup.type and markup.start is not None and markup.end is not None
+                ]
+                paragraphs.append((name, paragraph.type, text, markups))
 
         contexts.append((post.id, post.title, version_id, paragraphs))
 
@@ -365,7 +377,7 @@ def parse_latest_post_context(
     if not contexts:
         return None, None, None, []
     post_id, title, version_id, paragraphs_with_type = contexts[0]
-    paragraphs = [(name, text) for name, _paragraph_type, text in paragraphs_with_type]
+    paragraphs = [(name, text) for name, _paragraph_type, text, _markups in paragraphs_with_type]
     return post_id, title, version_id, paragraphs
 
 

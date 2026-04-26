@@ -122,7 +122,7 @@ uv run bot run --policy warm-engage --session
 ### Preflight
 
 ```bash
-uv run bot growth cycle --policy warm-engage --dry-run
+uv run bot growth cycle --policy warm-engage-plus-comment --dry-run
 ```
 
 ### Hybrid preflight + live session
@@ -140,6 +140,8 @@ Expected result:
 - post context is resolved only as action preparation for clap/comment/highlight
 - live follow state is re-checked right before mutation
 - if the ready queue is empty, stop and run discovery first
+- supported Growth policies are `follow-only`, `warm-engage`, `warm-engage-plus-comment`, and `warm-engage-plus-highlight`
+- `warm-engage-plus-rare-comment` is deprecated and maps to `warm-engage-plus-comment`
 
 Important:
 

@@ -7,7 +7,7 @@ Local-first Medium automation with explicit discovery, queue-driven growth execu
 The project is now organized around separate operational pipelines:
 
 - `Discovery`: collect, score, filter, and persist execution-ready candidates into the local queue
-- `Growth`: drain the execution-ready queue using `follow-only`, `warm-engage`, or `warm-engage-plus-rare-comment`
+- `Growth`: drain the execution-ready queue using `follow-only`, `warm-engage`, `warm-engage-plus-comment`, or `warm-engage-plus-highlight`
 - `Unfollow`: run cleanup-only unfollow workflows
 - `Maintenance`: sync local graph state, reconcile follow state, and prune stale DB rows
 - `Diagnostics` / `Observability`: contract checks, probes, queue status, and artifact validation
@@ -97,7 +97,8 @@ uv run bot growth followers --target-user id:USER_ID --scan-limit 200 --dry-run
 ```bash
 uv run bot run --policy follow-only --single-cycle
 uv run bot run --policy warm-engage --session
-uv run bot run --policy warm-engage-plus-rare-comment --dry-run --single-cycle
+uv run bot run --policy warm-engage-plus-comment --dry-run --single-cycle
+uv run bot run --policy warm-engage-plus-highlight --dry-run --single-cycle
 uv run bot growth cycle --policy warm-engage --live
 uv run bot growth session --policy warm-engage --session-minutes 90 --target-follows 120
 uv run bot growth cycle --policy follow-only --dry-run
@@ -108,6 +109,7 @@ Notes:
 
 - `run` is growth execution only. Discovery inputs such as `--source`, `--seed-user`, and `--target-user` are kept only as legacy compatibility flags and are ignored there.
 - Combined discovery+growth cycles are rejected at runtime; run `bot discover` first, then `bot run`.
+- Canonical Growth policies are `follow-only`, `warm-engage`, `warm-engage-plus-comment`, and `warm-engage-plus-highlight`; `warm-engage-plus-rare-comment` remains accepted as a deprecated alias for `warm-engage-plus-comment`.
 - `growth cycle --dry-run` is the grouped alias for a dry-run single pass.
 - `growth preflight` currently runs a dry-run single pass and then continues into a live growth session, matching quick-live hybrid behavior.
 - Discovery targets `DISCOVERY_ELIGIBLE_PER_RUN` execution-ready candidates per live run, default `100`, while respecting `GROWTH_CANDIDATE_QUEUE_MAX_SIZE`, default `700`.
@@ -223,7 +225,7 @@ Start from [.env.example](/Users/moalimir/Project%20World/Medium-Stealth-Bot/.en
 - Discovery/scoring: `DISCOVERY_ELIGIBLE_PER_RUN`, `GROWTH_CANDIDATE_QUEUE_MAX_SIZE`, queue buffer targets, candidate bounds, ratio thresholds, layered topic keywords, negative keyword penalty/rejection, source-quality overrides, adaptive learning settings, and follow-back/topic/source/newsletter/presence/activity score weights
 - Session targets: `LIVE_SESSION_DURATION_MINUTES`, `LIVE_SESSION_TARGET_FOLLOW_ATTEMPTS`, `LIVE_SESSION_MIN_FOLLOW_ATTEMPTS`, `LIVE_SESSION_MAX_PASSES`
 - Pacing: read delay, verify gap, action gap, pass cooldown, mutation window, session warmup
-- Graph sync: auto-sync, freshness window, GraphQL following, scrape fallback
+- Graph sync: auto-sync via `GRAPH_SYNC_AUTO_ENABLED`, freshness window, GraphQL following, scrape fallback
 - Cleanup: nonreciprocal window, cleanup limit, whitelist threshold
 - Queue and DB hygiene: queue retry/prune windows, operational retention windows, and optional post-cleanup vacuum
 

@@ -170,6 +170,11 @@ class AppSettings(BaseSettings):
         ge=0,
         validation_alias="MAX_COMMENT_ACTIONS_PER_DAY",
     )
+    max_highlight_actions_per_day: int = Field(
+        default=8,
+        ge=0,
+        validation_alias="MAX_HIGHLIGHT_ACTIONS_PER_DAY",
+    )
     live_session_duration_minutes: int = Field(
         default=60,
         ge=1,
@@ -862,12 +867,14 @@ class AppSettings(BaseSettings):
 
     @model_validator(mode="after")
     def reconcile_legacy_growth_defaults(self) -> "AppSettings":
+        if self.default_growth_policy == GrowthPolicy.WARM_ENGAGE_RARE_COMMENT:
+            self.default_growth_policy = GrowthPolicy.WARM_ENGAGE_COMMENT
         if self.legacy_default_growth_mode is not None:
             if self.default_growth_policy == GrowthPolicy.WARM_ENGAGE:
                 self.default_growth_policy = (
                     GrowthPolicy.FOLLOW_ONLY
                     if self.legacy_default_growth_mode == GrowthMode.SIMPLE
-                    else GrowthPolicy.WARM_ENGAGE_RARE_COMMENT
+                    else GrowthPolicy.WARM_ENGAGE_COMMENT
                 )
         return self
 

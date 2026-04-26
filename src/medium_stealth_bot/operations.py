@@ -174,6 +174,11 @@ query UserLatestPostQuery($id: ID, $username: ID) {
                 name
                 type
                 text
+                markups {
+                  type
+                  start
+                  end
+                }
               }
             }
           }

@@ -12,6 +12,7 @@ from medium_stealth_bot.models import (
 
 GROWTH_QUEUE_READY_REASON = "eligible:execution_ready"
 GROWTH_QUEUE_ACTION_RETRY_REASONS = (
+    "follow_attempt:claimed",
     "follow_attempt:started",
     "follow_failed:mutation_error",
     "follow_failed:verification_failed",
@@ -1118,6 +1119,75 @@ class ActionRepository:
 
             rows = [*due_rows, *queued_rows, *extra_due_rows]
             return [self._candidate_from_growth_queue_row(row) for row in rows]
+
+    def claim_growth_candidate_for_execution(
+        self,
+        user_id: str,
+        *,
+        candidate: CandidateUser | None = None,
+        retry_after_at: str | None = None,
+    ) -> bool:
+        action_retry_placeholders = ",".join("?" for _ in GROWTH_QUEUE_ACTION_RETRY_REASONS)
+        query = f"""
+        UPDATE growth_candidate_queue
+        SET queue_state = 'deferred',
+            last_reason = 'follow_attempt:claimed',
+            username = COALESCE(?, username),
+            name = COALESCE(?, name),
+            bio = COALESCE(?, bio),
+            newsletter_v3_id = COALESCE(?, newsletter_v3_id),
+            source_labels = COALESCE(?, source_labels),
+            queued_score = COALESCE(?, queued_score),
+            score_breakdown_json = COALESCE(?, score_breakdown_json),
+            follower_count = COALESCE(?, follower_count),
+            following_count = COALESCE(?, following_count),
+            latest_post_id = COALESCE(?, latest_post_id),
+            latest_post_title = COALESCE(?, latest_post_title),
+            last_post_created_at = COALESCE(?, last_post_created_at),
+            retry_after_at = COALESCE(?, retry_after_at),
+            last_screened_at = CURRENT_TIMESTAMP
+        WHERE user_id = ?
+          AND (
+              (queue_state = 'queued' AND last_reason = ?)
+              OR (
+                  queue_state = 'deferred'
+                  AND last_reason IN ({action_retry_placeholders})
+                  AND (
+                      retry_after_at IS NULL
+                      OR datetime(retry_after_at) <= datetime('now', 'utc')
+                  )
+              )
+          )
+        """
+        serialized_sources = None
+        serialized_score_breakdown = None
+        if candidate is not None:
+            serialized_sources = self._serialize_source_labels([source.value for source in candidate.sources])
+            serialized_score_breakdown = self._serialize_score_breakdown(candidate.score_breakdown)
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                query,
+                (
+                    candidate.username if candidate is not None else None,
+                    candidate.name if candidate is not None else None,
+                    candidate.bio if candidate is not None else None,
+                    candidate.newsletter_v3_id if candidate is not None else None,
+                    serialized_sources,
+                    candidate.score if candidate is not None else None,
+                    serialized_score_breakdown,
+                    candidate.follower_count if candidate is not None else None,
+                    candidate.following_count if candidate is not None else None,
+                    candidate.latest_post_id if candidate is not None else None,
+                    candidate.latest_post_title if candidate is not None else None,
+                    candidate.last_post_created_at if candidate is not None else None,
+                    retry_after_at,
+                    user_id,
+                    GROWTH_QUEUE_READY_REASON,
+                    *GROWTH_QUEUE_ACTION_RETRY_REASONS,
+                ),
+            )
+            connection.commit()
+            return cursor.rowcount > 0
 
     def prune_growth_candidate_queue(
         self,

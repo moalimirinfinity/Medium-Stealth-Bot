@@ -64,6 +64,8 @@ class GrowthDiscoveryMode(StrEnum):
 class GrowthPolicy(StrEnum):
     FOLLOW_ONLY = "follow-only"
     WARM_ENGAGE = "warm-engage"
+    WARM_ENGAGE_COMMENT = "warm-engage-plus-comment"
+    WARM_ENGAGE_HIGHLIGHT = "warm-engage-plus-highlight"
     WARM_ENGAGE_RARE_COMMENT = "warm-engage-plus-rare-comment"
 
 
