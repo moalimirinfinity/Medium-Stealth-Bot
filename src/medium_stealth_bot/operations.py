@@ -472,20 +472,22 @@ def post_responses(
     post_id: str,
     limit: int = 10,
     paging_to: str | None = None,
-    sort_type: str = "NEWEST",
+    sort_type: str | None = None,
 ) -> GraphQLOperation:
     resolved_limit = max(1, min(POST_RESPONSES_MAX_LIMIT, int(limit)))
+    variables = {
+        "postId": post_id,
+        "paging": {
+            "limit": resolved_limit,
+            "to": paging_to or "",
+        },
+    }
+    if sort_type is not None:
+        variables["sortType"] = sort_type
     return GraphQLOperation(
         operationName="PostResponsesQuery",
         query=POST_RESPONSES_QUERY,
-        variables={
-            "postId": post_id,
-            "paging": {
-                "limit": resolved_limit,
-                "to": paging_to or "",
-            },
-            "sortType": sort_type,
-        },
+        variables=variables,
     )
 
 
