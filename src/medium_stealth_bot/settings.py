@@ -234,7 +234,18 @@ class AppSettings(BaseSettings):
         le=MAX_DISCOVERY_LIMIT,
         validation_alias="TARGET_USER_FOLLOWERS_SCAN_LIMIT",
     )
-    follow_candidate_limit: int = Field(default=30, ge=1, le=MAX_DISCOVERY_LIMIT, validation_alias="FOLLOW_CANDIDATE_LIMIT")
+    discovery_eligible_per_run: int = Field(
+        default=100,
+        ge=1,
+        le=MAX_DISCOVERY_LIMIT,
+        validation_alias="DISCOVERY_ELIGIBLE_PER_RUN",
+    )
+    growth_candidate_queue_max_size: int = Field(
+        default=700,
+        ge=1,
+        le=MAX_DISCOVERY_LIMIT,
+        validation_alias="GROWTH_CANDIDATE_QUEUE_MAX_SIZE",
+    )
     growth_queue_buffer_target_min: int = Field(
         default=60,
         ge=1,
@@ -373,9 +384,52 @@ class AppSettings(BaseSettings):
     score_weight_keyword: float = Field(default=0.35, ge=0.0, le=10.0, validation_alias="SCORE_WEIGHT_KEYWORD")
     score_weight_source: float = Field(default=0.2, ge=0.0, le=10.0, validation_alias="SCORE_WEIGHT_SOURCE")
     score_weight_newsletter: float = Field(default=0.2, ge=0.0, le=10.0, validation_alias="SCORE_WEIGHT_NEWSLETTER")
+    score_weight_presence: float = Field(default=0.45, ge=0.0, le=10.0, validation_alias="SCORE_WEIGHT_PRESENCE")
+    score_weight_activity: float = Field(default=0.55, ge=0.0, le=10.0, validation_alias="SCORE_WEIGHT_ACTIVITY")
     bio_keywords_raw: str = Field(
         default="coding,software,engineer,developer,python,javascript,react",
         validation_alias="BIO_KEYWORDS",
+    )
+    topic_strong_keywords_raw: str = Field(default="", validation_alias="TOPIC_STRONG_KEYWORDS")
+    topic_soft_keywords_raw: str = Field(default="", validation_alias="TOPIC_SOFT_KEYWORDS")
+    topic_negative_keywords_raw: str = Field(default="", validation_alias="TOPIC_NEGATIVE_KEYWORDS")
+    discovery_negative_filter_mode: Literal["conservative", "balanced", "strict"] = Field(
+        default="conservative",
+        validation_alias="DISCOVERY_NEGATIVE_FILTER_MODE",
+    )
+    negative_topic_penalty: float = Field(default=0.35, ge=0.0, le=10.0, validation_alias="NEGATIVE_TOPIC_PENALTY")
+    discovery_reject_negative_keywords: bool = Field(
+        default=False,
+        validation_alias="DISCOVERY_REJECT_NEGATIVE_KEYWORDS",
+    )
+    discovery_source_quality_weights_raw: str = Field(
+        default="",
+        validation_alias="DISCOVERY_SOURCE_QUALITY_WEIGHTS",
+    )
+    discovery_learning_enabled: bool = Field(default=True, validation_alias="DISCOVERY_LEARNING_ENABLED")
+    discovery_learning_lookback_days: int = Field(
+        default=90,
+        ge=1,
+        le=3650,
+        validation_alias="DISCOVERY_LEARNING_LOOKBACK_DAYS",
+    )
+    discovery_learning_min_completed: int = Field(
+        default=20,
+        ge=1,
+        le=100000,
+        validation_alias="DISCOVERY_LEARNING_MIN_COMPLETED",
+    )
+    discovery_learning_prior_strength: int = Field(
+        default=10,
+        ge=0,
+        le=100000,
+        validation_alias="DISCOVERY_LEARNING_PRIOR_STRENGTH",
+    )
+    discovery_learning_max_delta: float = Field(
+        default=0.20,
+        ge=0.0,
+        le=1.0,
+        validation_alias="DISCOVERY_LEARNING_MAX_DELTA",
     )
     discovery_seed_users_raw: str = Field(default="", validation_alias="DISCOVERY_SEED_USERS")
     discovery_seed_followers_limit: int = Field(
@@ -608,6 +662,10 @@ class AppSettings(BaseSettings):
 
     @field_validator(
         "bio_keywords_raw",
+        "topic_strong_keywords_raw",
+        "topic_soft_keywords_raw",
+        "topic_negative_keywords_raw",
+        "discovery_source_quality_weights_raw",
         "discovery_seed_users_raw",
         "default_growth_sources_raw",
         "pre_follow_comment_templates_raw",
@@ -703,7 +761,46 @@ class AppSettings(BaseSettings):
     @computed_field
     @property
     def bio_keywords(self) -> list[str]:
-        return [item.strip().lower() for item in self.bio_keywords_raw.split(",") if item.strip()]
+        return self._parse_csv_lower(self.bio_keywords_raw)
+
+    @computed_field
+    @property
+    def topic_strong_keywords(self) -> list[str]:
+        return self._parse_csv_lower(self.topic_strong_keywords_raw)
+
+    @computed_field
+    @property
+    def topic_soft_keywords(self) -> list[str]:
+        return self._parse_csv_lower(self.topic_soft_keywords_raw)
+
+    @computed_field
+    @property
+    def topic_negative_keywords(self) -> list[str]:
+        return self._parse_csv_lower(self.topic_negative_keywords_raw)
+
+    @computed_field
+    @property
+    def discovery_source_quality_weights(self) -> dict[str, float]:
+        weights: dict[str, float] = {}
+        for token in self.discovery_source_quality_weights_raw.split(","):
+            normalized = token.strip()
+            if not normalized:
+                continue
+            if ":" in normalized:
+                raw_key, raw_value = normalized.split(":", 1)
+            elif "=" in normalized:
+                raw_key, raw_value = normalized.split("=", 1)
+            else:
+                continue
+            key = raw_key.strip().lower().replace("-", "_")
+            if not key:
+                continue
+            try:
+                value = float(raw_value.strip())
+            except ValueError:
+                continue
+            weights[key] = max(0.0, min(2.0, value))
+        return weights
 
     @computed_field
     @property
@@ -784,6 +881,15 @@ class AppSettings(BaseSettings):
             value = int(stripped)
             if 100 <= value <= 599:
                 parsed.add(value)
+        return parsed
+
+    @staticmethod
+    def _parse_csv_lower(raw: str) -> list[str]:
+        parsed: list[str] = []
+        for token in raw.split(","):
+            value = token.strip().lower()
+            if value and value not in parsed:
+                parsed.append(value)
         return parsed
 
     def ensure_directories(self) -> None:

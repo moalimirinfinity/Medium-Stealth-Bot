@@ -375,9 +375,14 @@ def _runtime_settings_for_growth_policy(
 ) -> tuple[AppSettings, bool]:
     if growth_policy != GrowthPolicy.WARM_ENGAGE_RARE_COMMENT:
         return settings, False
-    if settings.enable_pre_follow_comment:
+    updates: dict[str, object] = {}
+    if not settings.enable_pre_follow_comment:
+        updates["enable_pre_follow_comment"] = True
+    if not settings.enable_pre_follow_highlight:
+        updates["enable_pre_follow_highlight"] = True
+    if not updates:
         return settings, False
-    overridden = settings.model_copy(update={"enable_pre_follow_comment": True})
+    overridden = settings.model_copy(update=updates)
     return overridden, True
 
 
@@ -449,10 +454,16 @@ def _render_growth_queue_status(queue_counts: dict[str, int], *, title: str = "G
     table.add_column("Metric")
     table.add_column("Count")
     table.add_row("Ready", str(queue_counts.get("ready", 0)))
-    table.add_row("Queued", str(queue_counts.get("queued", 0)))
+    table.add_row("Queued (Execution-Ready)", str(queue_counts.get("queued", 0)))
+    queued_held = int(queue_counts.get("queued_held", 0) or 0)
+    if queued_held:
+        table.add_row("Queued (Held)", str(queued_held))
     table.add_row("Deferred (All)", str(queue_counts.get("deferred", 0)))
     table.add_row("Deferred (Due)", str(queue_counts.get("deferred_due", 0)))
     table.add_row("Deferred (Future)", str(queue_counts.get("deferred_future", 0)))
+    deferred_held = int(queue_counts.get("deferred_held", 0) or 0)
+    if deferred_held:
+        table.add_row("Deferred (Held)", str(deferred_held))
     table.add_row("Total", str(queue_counts.get("total", 0)))
     console.print(table)
 
@@ -520,14 +531,26 @@ def _render_daily_run(outcome: DailyRunOutcome) -> None:
             "Queue Ready/Deferred",
             f"{int(queue_ready)} / {int(queue_deferred)}",
         )
-    summary_table.add_row(
-        "Discovered / Screened",
-        f"{outcome.discovered_candidates} / {outcome.screened_candidates}",
+    discovery_enabled_value = outcome.kpis.get("growth_discovery_enabled")
+    discovery_enabled = (
+        bool(discovery_enabled_value)
+        if isinstance(discovery_enabled_value, (int, float))
+        else bool(outcome.discovered_candidates)
     )
-    summary_table.add_row(
-        "Screened / Eligible",
-        f"{outcome.screened_candidates} / {outcome.eligible_candidates}",
-    )
+    if discovery_enabled:
+        summary_table.add_row(
+            "Discovered / Queued",
+            f"{outcome.discovered_candidates} / {outcome.screened_candidates}",
+        )
+        summary_table.add_row(
+            "Queued / Execution-Ready",
+            f"{outcome.screened_candidates} / {outcome.eligible_candidates}",
+        )
+    else:
+        summary_table.add_row(
+            "Queue Fetched / Selected",
+            f"{outcome.screened_candidates} / {outcome.eligible_candidates}",
+        )
     summary_table.add_row(
         "Executed / Followed",
         f"{outcome.executed_candidates} / {outcome.followed_candidates}",
@@ -1061,7 +1084,8 @@ def _render_status(artifact: dict, *, artifact_path: Path, settings: AppSettings
     growth_defaults.add_row("Growth Policy", _format_growth_policy(settings.default_growth_policy))
     growth_defaults.add_row("Growth Sources", _format_growth_sources(settings.default_growth_sources))
     growth_defaults.add_row("Target-User Followers Scan Limit", str(settings.target_user_followers_scan_limit))
-    growth_defaults.add_row("Follow Candidate Limit", str(settings.follow_candidate_limit))
+    growth_defaults.add_row("Discovery Eligible / Run", str(settings.discovery_eligible_per_run))
+    growth_defaults.add_row("Growth Candidate DB Cap", str(settings.growth_candidate_queue_max_size))
     growth_defaults.add_row("Follow Cooldown (h)", str(settings.follow_cooldown_hours))
     growth_defaults.add_row(
         "Candidate Followers Range",
@@ -1463,8 +1487,11 @@ def setup_command(
             type=int,
         )
     )
-    follow_candidate_limit = int(
-        typer.prompt("Follow candidate limit per run", default=settings.follow_candidate_limit, type=int)
+    discovery_eligible_per_run = int(
+        typer.prompt("Discovery eligible users per run", default=settings.discovery_eligible_per_run, type=int)
+    )
+    growth_candidate_queue_max_size = int(
+        typer.prompt("Growth candidate DB cap", default=settings.growth_candidate_queue_max_size, type=int)
     )
     growth_queue_buffer_target_min = int(
         typer.prompt(
@@ -1768,7 +1795,8 @@ def setup_command(
             min(max(1, live_session_min_follow_attempts), max(1, live_session_target_follow_attempts))
         ),
         "LIVE_SESSION_MAX_PASSES": str(max(1, live_session_max_passes)),
-        "FOLLOW_CANDIDATE_LIMIT": str(max(1, follow_candidate_limit)),
+        "DISCOVERY_ELIGIBLE_PER_RUN": str(max(1, discovery_eligible_per_run)),
+        "GROWTH_CANDIDATE_QUEUE_MAX_SIZE": str(max(1, growth_candidate_queue_max_size)),
         "GROWTH_QUEUE_BUFFER_TARGET_MIN": str(max(1, growth_queue_buffer_target_min)),
         "GROWTH_QUEUE_BUFFER_TARGET_MAX": str(
             max(max(1, growth_queue_buffer_target_min), max(1, growth_queue_buffer_target_max))
@@ -1898,7 +1926,8 @@ def _render_start_menu(
     growth_policy: GrowthPolicy,
     growth_sources: list[GrowthSource],
     target_user_followers_scan_limit: int,
-    follow_candidate_limit: int,
+    discovery_eligible_per_run: int,
+    growth_candidate_queue_max_size: int,
     follow_cooldown_hours: int,
     candidate_min_followers: int,
     candidate_max_followers: int,
@@ -1970,7 +1999,8 @@ def _render_start_menu(
     defaults.add_row("Queue Rejected", str(queue_rejected_count))
     defaults.add_row("Queue Followed", str(queue_followed_count))
     defaults.add_row("Target-User Followers Scan Limit", str(target_user_followers_scan_limit))
-    defaults.add_row("Follow Candidate Limit", str(follow_candidate_limit))
+    defaults.add_row("Discovery Eligible / Run", str(discovery_eligible_per_run))
+    defaults.add_row("Growth Candidate DB Cap", str(growth_candidate_queue_max_size))
     defaults.add_row("Follow Cooldown (h)", str(follow_cooldown_hours))
     defaults.add_row(
         "Candidate Followers Range",
@@ -2121,7 +2151,8 @@ def _run_start_menu(
     initial_growth_policy: GrowthPolicy,
     initial_growth_sources: list[GrowthSource],
     initial_target_user_followers_scan_limit: int,
-    initial_follow_candidate_limit: int,
+    initial_discovery_eligible_per_run: int,
+    initial_growth_candidate_queue_max_size: int,
     initial_follow_cooldown_hours: int,
     initial_candidate_min_followers: int,
     initial_candidate_max_followers: int,
@@ -2187,7 +2218,8 @@ def _run_start_menu(
     growth_policy = initial_growth_policy
     growth_sources = list(initial_growth_sources)
     target_user_followers_scan_limit = max(1, initial_target_user_followers_scan_limit)
-    follow_candidate_limit = max(1, initial_follow_candidate_limit)
+    discovery_eligible_per_run = max(1, initial_discovery_eligible_per_run)
+    growth_candidate_queue_max_size = max(1, initial_growth_candidate_queue_max_size)
     follow_cooldown_hours = max(1, initial_follow_cooldown_hours)
     candidate_min_followers = max(0, initial_candidate_min_followers)
     candidate_max_followers = max(0, initial_candidate_max_followers)
@@ -2287,7 +2319,8 @@ def _run_start_menu(
             growth_policy=growth_policy,
             growth_sources=growth_sources,
             target_user_followers_scan_limit=target_user_followers_scan_limit,
-            follow_candidate_limit=follow_candidate_limit,
+            discovery_eligible_per_run=discovery_eligible_per_run,
+            growth_candidate_queue_max_size=growth_candidate_queue_max_size,
             follow_cooldown_hours=follow_cooldown_hours,
             candidate_min_followers=candidate_min_followers,
             candidate_max_followers=candidate_max_followers,
@@ -2392,7 +2425,8 @@ def _run_start_menu(
             nonlocal growth_policy
             nonlocal growth_sources
             nonlocal target_user_followers_scan_limit
-            nonlocal follow_candidate_limit
+            nonlocal discovery_eligible_per_run
+            nonlocal growth_candidate_queue_max_size
             nonlocal follow_cooldown_hours
             nonlocal candidate_min_followers
             nonlocal candidate_max_followers
@@ -2455,7 +2489,8 @@ def _run_start_menu(
             growth_policy = refreshed_settings.default_growth_policy
             growth_sources = list(refreshed_settings.default_growth_sources)
             target_user_followers_scan_limit = refreshed_settings.target_user_followers_scan_limit
-            follow_candidate_limit = refreshed_settings.follow_candidate_limit
+            discovery_eligible_per_run = refreshed_settings.discovery_eligible_per_run
+            growth_candidate_queue_max_size = refreshed_settings.growth_candidate_queue_max_size
             follow_cooldown_hours = refreshed_settings.follow_cooldown_hours
             candidate_min_followers = refreshed_settings.candidate_min_followers
             candidate_max_followers = refreshed_settings.candidate_max_followers
@@ -2565,7 +2600,8 @@ def _run_start_menu(
             nonlocal growth_policy
             nonlocal growth_sources
             nonlocal target_user_followers_scan_limit
-            nonlocal follow_candidate_limit
+            nonlocal discovery_eligible_per_run
+            nonlocal growth_candidate_queue_max_size
             nonlocal follow_cooldown_hours
             nonlocal candidate_min_followers
             nonlocal candidate_max_followers
@@ -2652,17 +2688,29 @@ def _run_start_menu(
             else:
                 target_user_followers_scan_limit = target_user_scan_limit_value
 
-            follow_candidate_limit_value = int(
+            discovery_eligible_per_run_value = int(
                 typer.prompt(
-                    "Follow candidate limit per run",
-                    default=follow_candidate_limit,
+                    "Discovery eligible users per run",
+                    default=discovery_eligible_per_run,
                     type=int,
                 )
             )
-            if follow_candidate_limit_value < 1:
-                _print_notice("Follow candidate limit must be >= 1. Keeping previous value.", level="warning")
+            if discovery_eligible_per_run_value < 1:
+                _print_notice("Discovery eligible users per run must be >= 1. Keeping previous value.", level="warning")
             else:
-                follow_candidate_limit = follow_candidate_limit_value
+                discovery_eligible_per_run = discovery_eligible_per_run_value
+
+            growth_candidate_queue_max_size_value = int(
+                typer.prompt(
+                    "Growth candidate DB cap",
+                    default=growth_candidate_queue_max_size,
+                    type=int,
+                )
+            )
+            if growth_candidate_queue_max_size_value < 1:
+                _print_notice("Growth candidate DB cap must be >= 1. Keeping previous value.", level="warning")
+            else:
+                growth_candidate_queue_max_size = growth_candidate_queue_max_size_value
 
             follow_cooldown_hours_value = int(
                 typer.prompt(
@@ -3351,7 +3399,8 @@ def _run_start_menu(
                 "DEFAULT_GROWTH_POLICY": growth_policy.value,
                 "DEFAULT_GROWTH_SOURCES": ",".join(source.value for source in growth_sources),
                 "TARGET_USER_FOLLOWERS_SCAN_LIMIT": str(target_user_followers_scan_limit),
-                "FOLLOW_CANDIDATE_LIMIT": str(follow_candidate_limit),
+                "DISCOVERY_ELIGIBLE_PER_RUN": str(discovery_eligible_per_run),
+                "GROWTH_CANDIDATE_QUEUE_MAX_SIZE": str(growth_candidate_queue_max_size),
                 "FOLLOW_COOLDOWN_HOURS": str(follow_cooldown_hours),
                 "CANDIDATE_MIN_FOLLOWERS": str(candidate_min_followers),
                 "CANDIDATE_MAX_FOLLOWERS": str(candidate_max_followers),
@@ -3802,7 +3851,8 @@ def start_command(
             initial_growth_policy=resolved_growth_policy,
             initial_growth_sources=resolved_growth_sources,
             initial_target_user_followers_scan_limit=settings.target_user_followers_scan_limit,
-            initial_follow_candidate_limit=settings.follow_candidate_limit,
+            initial_discovery_eligible_per_run=settings.discovery_eligible_per_run,
+            initial_growth_candidate_queue_max_size=settings.growth_candidate_queue_max_size,
             initial_follow_cooldown_hours=settings.follow_cooldown_hours,
             initial_candidate_min_followers=settings.candidate_min_followers,
             initial_candidate_max_followers=settings.candidate_max_followers,
@@ -4168,10 +4218,10 @@ def discover_command(
         max=500,
         help="Max followers to scan per target user. Defaults to TARGET_USER_FOLLOWERS_SCAN_LIMIT.",
     ),
-    auto_sync: bool = typer.Option(
-        False,
+    auto_sync: bool | None = typer.Option(
+        None,
         "--auto-sync/--no-auto-sync",
-        help="Refresh local social-graph cache before discovery execution.",
+        help="Refresh local social-graph cache before discovery execution. Defaults to GRAPH_SYNC_AUTO_ENABLED.",
     ),
 ) -> None:
     """
@@ -4182,10 +4232,11 @@ def discover_command(
     seed_user_refs = _coerce_optioninfo(seed_user_refs, default=None)
     target_user_refs = _coerce_optioninfo(target_user_refs, default=None)
     target_user_scan_limit = _coerce_optioninfo(target_user_scan_limit, default=None)
-    auto_sync = _coerce_optioninfo(auto_sync, default=False)
+    auto_sync = _coerce_optioninfo(auto_sync, default=None)
 
     settings = _bootstrap_settings()
     _require_session(settings)
+    resolved_auto_sync = settings.graph_sync_auto_enabled if auto_sync is None else bool(auto_sync)
     resolved_growth_sources = list(
         growth_sources
         or ([GrowthSource.TARGET_USER_FOLLOWERS] if discovery_mode == GrowthDiscoveryMode.TARGET_USER_FOLLOWERS else [])
@@ -4237,7 +4288,7 @@ def discover_command(
                 async with MediumAsyncClient(settings) as client:
                     try:
                         runner = DailyRunner(settings=settings, client=client, repository=repository)
-                        if auto_sync:
+                        if resolved_auto_sync:
                             sync_outcome_local = await runner.sync_social_graph(
                                 dry_run=not live,
                                 mode="auto",
@@ -4435,13 +4486,13 @@ def run_command(
         or (GrowthPolicy.WARM_ENGAGE_RARE_COMMENT if mode == GrowthMode.SMART else None)
         or settings.default_growth_policy
     )
-    runtime_settings, forced_comment_enable = _runtime_settings_for_growth_policy(
+    runtime_settings, forced_public_touch_enable = _runtime_settings_for_growth_policy(
         settings,
         growth_policy=resolved_growth_policy,
     )
-    if forced_comment_enable:
+    if forced_public_touch_enable:
         _print_notice(
-            "Mode 3 coherence: enabling pre-follow comments for this run (runtime override only).",
+            "Mode 3 coherence: enabling pre-follow public touches for this run (runtime override only).",
             level="info",
         )
     if resolved_growth_policy == GrowthPolicy.WARM_ENGAGE_RARE_COMMENT:
@@ -5298,10 +5349,10 @@ def growth_discover_command(
         max=500,
         help="Max followers to scan per target user. Defaults to TARGET_USER_FOLLOWERS_SCAN_LIMIT.",
     ),
-    auto_sync: bool = typer.Option(
-        False,
+    auto_sync: bool | None = typer.Option(
+        None,
         "--auto-sync/--no-auto-sync",
-        help="Refresh local social-graph cache before discovery execution.",
+        help="Refresh local social-graph cache before discovery execution. Defaults to GRAPH_SYNC_AUTO_ENABLED.",
     ),
 ) -> None:
     """
@@ -5367,10 +5418,10 @@ def growth_session_command(
         max=500,
         help="Optional cap on growth-cycle passes in one live session. Defaults to LIVE_SESSION_MAX_PASSES.",
     ),
-    auto_sync: bool = typer.Option(
-        False,
+    auto_sync: bool | None = typer.Option(
+        None,
         "--auto-sync/--no-auto-sync",
-        help="Refresh local social-graph cache before execution.",
+        help="Refresh local social-graph cache before execution. Defaults to GRAPH_SYNC_AUTO_ENABLED.",
     ),
 ) -> None:
     """

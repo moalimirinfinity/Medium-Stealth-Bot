@@ -1,11 +1,21 @@
 from medium_stealth_bot.database import Database
 from medium_stealth_bot.models import (
     CanonicalRelationshipState,
+    CandidateScoreBreakdown,
     CandidateSource,
     CandidateUser,
     NewsletterState,
     RelationshipConfidence,
     UserFollowState,
+)
+
+
+GROWTH_QUEUE_READY_REASON = "eligible:execution_ready"
+GROWTH_QUEUE_ACTION_RETRY_REASONS = (
+    "follow_attempt:started",
+    "follow_failed:mutation_error",
+    "follow_failed:verification_failed",
+    "skip:pre_mutation_check_unavailable",
 )
 
 
@@ -35,6 +45,21 @@ class ActionRepository:
                 parsed.append(source)
         return parsed
 
+    @staticmethod
+    def _serialize_score_breakdown(score_breakdown: CandidateScoreBreakdown | None) -> str | None:
+        if score_breakdown is None:
+            return None
+        return score_breakdown.model_dump_json(exclude_none=True)
+
+    @staticmethod
+    def _parse_score_breakdown(raw_score_breakdown: str | None) -> CandidateScoreBreakdown | None:
+        if not raw_score_breakdown:
+            return None
+        try:
+            return CandidateScoreBreakdown.model_validate_json(raw_score_breakdown)
+        except ValueError:
+            return None
+
     def _candidate_from_growth_queue_row(self, row) -> CandidateUser:
         return CandidateUser(
             user_id=row["user_id"],
@@ -48,6 +73,7 @@ class ActionRepository:
             latest_post_title=row["latest_post_title"],
             last_post_created_at=row["last_post_created_at"],
             score=float(row["queued_score"] or 0.0),
+            score_breakdown=self._parse_score_breakdown(row["score_breakdown_json"]),
             sources=self._parse_candidate_sources(row["source_labels"]),
         )
 
@@ -590,11 +616,13 @@ class ActionRepository:
         newsletter_v3_id: str | None,
         source_labels: list[str],
         score: float,
+        score_breakdown: CandidateScoreBreakdown | None,
         decision_reason: str,
         eligible: bool,
         needs_reconcile: bool = True,
     ) -> None:
         normalized_sources = sorted({label.strip() for label in source_labels if label.strip()})
+        serialized_score_breakdown = self._serialize_score_breakdown(score_breakdown)
         query = """
         INSERT INTO candidate_reconciliation (
             user_id,
@@ -602,6 +630,7 @@ class ActionRepository:
             newsletter_v3_id,
             source_labels,
             last_score,
+            last_score_breakdown_json,
             last_decision_reason,
             eligible,
             needs_reconcile,
@@ -609,7 +638,7 @@ class ActionRepository:
             first_seen_at,
             last_seen_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         ON CONFLICT(user_id) DO UPDATE SET
             username = COALESCE(excluded.username, candidate_reconciliation.username),
             newsletter_v3_id = COALESCE(excluded.newsletter_v3_id, candidate_reconciliation.newsletter_v3_id),
@@ -621,6 +650,7 @@ class ActionRepository:
                 ELSE candidate_reconciliation.source_labels || ',' || excluded.source_labels
             END,
             last_score = excluded.last_score,
+            last_score_breakdown_json = COALESCE(excluded.last_score_breakdown_json, candidate_reconciliation.last_score_breakdown_json),
             last_decision_reason = excluded.last_decision_reason,
             eligible = excluded.eligible,
             needs_reconcile = CASE
@@ -639,6 +669,7 @@ class ActionRepository:
                     newsletter_v3_id,
                     ",".join(normalized_sources),
                     score,
+                    serialized_score_breakdown,
                     decision_reason,
                     1 if eligible else 0,
                     1 if needs_reconcile else 0,
@@ -661,14 +692,45 @@ class ActionRepository:
     def growth_queue_ready_count(self) -> int:
         return self.growth_queue_state_counts()["ready"]
 
+    def growth_queue_total_count(self) -> int:
+        with self.database.connect() as connection:
+            row = connection.execute("SELECT COUNT(*) AS count FROM growth_candidate_queue").fetchone()
+            return int(row["count"] or 0) if row is not None else 0
+
+    def growth_candidate_user_ids(self) -> set[str]:
+        with self.database.connect() as connection:
+            rows = connection.execute("SELECT user_id FROM growth_candidate_queue").fetchall()
+            return {str(row["user_id"]) for row in rows}
+
     def growth_queue_state_counts(self) -> dict[str, int]:
+        action_retry_placeholders = ",".join("?" for _ in GROWTH_QUEUE_ACTION_RETRY_REASONS)
         query = """
         SELECT
             COUNT(*) AS total,
-            SUM(CASE WHEN queue_state = 'queued' THEN 1 ELSE 0 END) AS queued,
+            SUM(
+                CASE
+                    WHEN queue_state = 'queued'
+                     AND last_reason = ?
+                    THEN 1
+                    ELSE 0
+                END
+            ) AS queued_ready,
+            SUM(
+                CASE
+                    WHEN queue_state = 'queued'
+                     AND COALESCE(last_reason, '') != ?
+                    THEN 1
+                    ELSE 0
+                END
+            ) AS queued_held,
             SUM(
                 CASE
                     WHEN queue_state = 'deferred'
+                     AND last_reason IN (
+        """
+        query += action_retry_placeholders
+        query += """
+                     )
                      AND (
                          retry_after_at IS NULL
                          OR datetime(retry_after_at) <= datetime('now', 'utc')
@@ -680,42 +742,135 @@ class ActionRepository:
             SUM(
                 CASE
                     WHEN queue_state = 'deferred'
+                     AND last_reason IN (
+        """
+        query += action_retry_placeholders
+        query += """
+                     )
                      AND retry_after_at IS NOT NULL
                      AND datetime(retry_after_at) > datetime('now', 'utc')
                     THEN 1
                     ELSE 0
                 END
             ) AS deferred_future,
+            SUM(
+                CASE
+                    WHEN queue_state = 'deferred'
+                     AND (
+                         last_reason IS NULL
+                         OR last_reason NOT IN (
+        """
+        query += action_retry_placeholders
+        query += """
+                         )
+                     )
+                    THEN 1
+                    ELSE 0
+                END
+            ) AS deferred_held,
             SUM(CASE WHEN queue_state = 'rejected' THEN 1 ELSE 0 END) AS rejected,
             SUM(CASE WHEN queue_state = 'followed' THEN 1 ELSE 0 END) AS followed
         FROM growth_candidate_queue
         """
+        params: tuple[object, ...] = (
+            GROWTH_QUEUE_READY_REASON,
+            GROWTH_QUEUE_READY_REASON,
+            *GROWTH_QUEUE_ACTION_RETRY_REASONS,
+            *GROWTH_QUEUE_ACTION_RETRY_REASONS,
+            *GROWTH_QUEUE_ACTION_RETRY_REASONS,
+        )
         with self.database.connect() as connection:
-            row = connection.execute(query).fetchone()
-            queued = int(row["queued"] or 0) if row is not None else 0
+            row = connection.execute(query, params).fetchone()
+            queued_ready = int(row["queued_ready"] or 0) if row is not None else 0
+            queued_held = int(row["queued_held"] or 0) if row is not None else 0
             deferred_due = int(row["deferred_due"] or 0) if row is not None else 0
             deferred_future = int(row["deferred_future"] or 0) if row is not None else 0
+            deferred_held = int(row["deferred_held"] or 0) if row is not None else 0
             rejected = int(row["rejected"] or 0) if row is not None else 0
             followed = int(row["followed"] or 0) if row is not None else 0
             total = int(row["total"] or 0) if row is not None else 0
-            deferred = deferred_due + deferred_future
-            ready = queued + deferred_due
+            deferred = deferred_due + deferred_future + deferred_held
+            ready = queued_ready + deferred_due
             return {
                 "ready": ready,
-                "queued": queued,
+                "queued": queued_ready,
+                "queued_held": queued_held,
                 "deferred": deferred,
                 "deferred_due": deferred_due,
                 "deferred_future": deferred_future,
+                "deferred_held": deferred_held,
                 "rejected": rejected,
                 "followed": followed,
                 "total": total,
             }
+
+    def purge_non_actionable_growth_candidates(self, *, dry_run: bool = False) -> dict[str, int]:
+        action_retry_placeholders = ",".join("?" for _ in GROWTH_QUEUE_ACTION_RETRY_REASONS)
+        purge_plan: tuple[tuple[str, str, tuple[object, ...]], ...] = (
+            (
+                "queued_held",
+                """
+                queue_state = 'queued'
+                  AND COALESCE(last_reason, '') != ?
+                """,
+                (GROWTH_QUEUE_READY_REASON,),
+            ),
+            (
+                "deferred_held",
+                f"""
+                queue_state = 'deferred'
+                  AND (
+                      last_reason IS NULL
+                      OR last_reason NOT IN ({action_retry_placeholders})
+                  )
+                """,
+                GROWTH_QUEUE_ACTION_RETRY_REASONS,
+            ),
+            (
+                "terminal",
+                """
+                queue_state IN ('rejected', 'followed')
+                """,
+                (),
+            ),
+        )
+        counts = {"queued_held": 0, "deferred_held": 0, "terminal": 0}
+        with self.database.connect() as connection:
+            for key, where_clause, params in purge_plan:
+                row = connection.execute(
+                    f"""
+                    SELECT COUNT(*) AS count
+                    FROM growth_candidate_queue
+                    WHERE {where_clause}
+                    """,
+                    params,
+                ).fetchone()
+                count = int(row["count"] or 0) if row is not None else 0
+                if dry_run or count <= 0:
+                    counts[key] = count if dry_run else 0
+                    continue
+                connection.execute(
+                    f"""
+                    DELETE FROM growth_candidate_queue
+                    WHERE {where_clause}
+                    """,
+                    params,
+                )
+                deleted_row = connection.execute("SELECT changes() AS count").fetchone()
+                counts[key] = int(deleted_row["count"] or 0) if deleted_row is not None else 0
+
+            if not dry_run:
+                connection.commit()
+
+        counts["total"] = counts["queued_held"] + counts["deferred_held"] + counts["terminal"]
+        return counts
 
     def upsert_growth_candidate_buffer(
         self,
         candidates: list[CandidateUser],
         *,
         queue_reason: str,
+        max_total: int | None = None,
     ) -> int:
         if not candidates:
             return 0
@@ -750,6 +905,7 @@ class ActionRepository:
             newsletter_v3_id,
             source_labels,
             queued_score,
+            score_breakdown_json,
             follower_count,
             following_count,
             latest_post_id,
@@ -762,7 +918,7 @@ class ActionRepository:
             first_discovered_at,
             last_discovered_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         ON CONFLICT(user_id) DO UPDATE SET
             username = COALESCE(excluded.username, growth_candidate_queue.username),
             name = COALESCE(excluded.name, growth_candidate_queue.name),
@@ -770,6 +926,7 @@ class ActionRepository:
             newsletter_v3_id = COALESCE(excluded.newsletter_v3_id, growth_candidate_queue.newsletter_v3_id),
             source_labels = COALESCE(excluded.source_labels, growth_candidate_queue.source_labels),
             queued_score = excluded.queued_score,
+            score_breakdown_json = COALESCE(excluded.score_breakdown_json, growth_candidate_queue.score_breakdown_json),
             follower_count = COALESCE(excluded.follower_count, growth_candidate_queue.follower_count),
             following_count = COALESCE(excluded.following_count, growth_candidate_queue.following_count),
             latest_post_id = COALESCE(excluded.latest_post_id, growth_candidate_queue.latest_post_id),
@@ -782,44 +939,88 @@ class ActionRepository:
             last_discovered_at = CURRENT_TIMESTAMP
         """
 
-        user_rows: list[tuple[object, ...]] = []
-        queue_rows: list[tuple[object, ...]] = []
+        unique_candidates: list[CandidateUser] = []
         seen_ids: set[str] = set()
         for candidate in candidates:
             if candidate.user_id in seen_ids:
                 continue
             seen_ids.add(candidate.user_id)
-            serialized_sources = self._serialize_source_labels([source.value for source in candidate.sources])
-            user_rows.append(
-                (
-                    candidate.user_id,
-                    candidate.username,
-                    candidate.name,
-                    candidate.follower_count,
-                    candidate.following_count,
-                    candidate.newsletter_v3_id,
-                    candidate.bio,
-                )
-            )
-            queue_rows.append(
-                (
-                    candidate.user_id,
-                    candidate.username,
-                    candidate.name,
-                    candidate.bio,
-                    candidate.newsletter_v3_id,
-                    serialized_sources,
-                    candidate.score,
-                    candidate.follower_count,
-                    candidate.following_count,
-                    candidate.latest_post_id,
-                    candidate.latest_post_title,
-                    candidate.last_post_created_at,
-                    queue_reason,
-                )
-            )
+            unique_candidates.append(candidate)
+
+        if not unique_candidates:
+            return 0
 
         with self.database.connect() as connection:
+            if max_total is not None:
+                max_total = max(1, max_total)
+                current_total_row = connection.execute(
+                    "SELECT COUNT(*) AS count FROM growth_candidate_queue"
+                ).fetchone()
+                current_total = int(current_total_row["count"] or 0) if current_total_row is not None else 0
+                existing_ids: set[str] = set()
+                candidate_ids = [candidate.user_id for candidate in unique_candidates]
+                for index in range(0, len(candidate_ids), 500):
+                    chunk = candidate_ids[index : index + 500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    rows = connection.execute(
+                        f"""
+                        SELECT user_id
+                        FROM growth_candidate_queue
+                        WHERE user_id IN ({placeholders})
+                        """,
+                        tuple(chunk),
+                    ).fetchall()
+                    existing_ids.update(str(row["user_id"]) for row in rows)
+
+                open_slots = max(0, max_total - current_total)
+                accepted_candidates: list[CandidateUser] = []
+                for candidate in unique_candidates:
+                    if candidate.user_id in existing_ids:
+                        accepted_candidates.append(candidate)
+                        continue
+                    if open_slots <= 0:
+                        continue
+                    accepted_candidates.append(candidate)
+                    open_slots -= 1
+                unique_candidates = accepted_candidates
+
+            if not unique_candidates:
+                return 0
+
+            user_rows: list[tuple[object, ...]] = []
+            queue_rows: list[tuple[object, ...]] = []
+            for candidate in unique_candidates:
+                serialized_sources = self._serialize_source_labels([source.value for source in candidate.sources])
+                serialized_score_breakdown = self._serialize_score_breakdown(candidate.score_breakdown)
+                user_rows.append(
+                    (
+                        candidate.user_id,
+                        candidate.username,
+                        candidate.name,
+                        candidate.follower_count,
+                        candidate.following_count,
+                        candidate.newsletter_v3_id,
+                        candidate.bio,
+                    )
+                )
+                queue_rows.append(
+                    (
+                        candidate.user_id,
+                        candidate.username,
+                        candidate.name,
+                        candidate.bio,
+                        candidate.newsletter_v3_id,
+                        serialized_sources,
+                        candidate.score,
+                        serialized_score_breakdown,
+                        candidate.follower_count,
+                        candidate.following_count,
+                        candidate.latest_post_id,
+                        candidate.latest_post_title,
+                        candidate.last_post_created_at,
+                        queue_reason,
+                    )
+                )
             connection.executemany(user_query, user_rows)
             connection.executemany(queue_query, queue_rows)
             connection.commit()
@@ -849,6 +1050,7 @@ class ActionRepository:
             newsletter_v3_id,
             source_labels,
             queued_score,
+            score_breakdown_json,
             follower_count,
             following_count,
             latest_post_id,
@@ -856,10 +1058,12 @@ class ActionRepository:
             last_post_created_at
         FROM growth_candidate_queue
         """
+        action_retry_placeholders = ",".join("?" for _ in GROWTH_QUEUE_ACTION_RETRY_REASONS)
         queued_query = (
             base_select
             + """
         WHERE queue_state = 'queued'
+          AND last_reason = ?
         ORDER BY
             queued_score DESC,
             datetime(last_discovered_at) DESC,
@@ -871,6 +1075,12 @@ class ActionRepository:
             base_select
             + """
         WHERE queue_state = 'deferred'
+          AND last_reason IN (
+        """
+        )
+        due_deferred_query += action_retry_placeholders
+        due_deferred_query += """
+          )
           AND (
               retry_after_at IS NULL
               OR datetime(retry_after_at) <= datetime('now', 'utc')
@@ -882,17 +1092,19 @@ class ActionRepository:
             datetime(first_discovered_at) ASC
         LIMIT ? OFFSET ?
         """
-        )
 
         with self.database.connect() as connection:
             due_rows = (
-                connection.execute(due_deferred_query, (reserved_due_limit, 0)).fetchall()
+                connection.execute(
+                    due_deferred_query,
+                    (*GROWTH_QUEUE_ACTION_RETRY_REASONS, reserved_due_limit, 0),
+                ).fetchall()
                 if reserved_due_limit > 0
                 else []
             )
             queued_limit = max(0, bounded_limit - len(due_rows))
             queued_rows = (
-                connection.execute(queued_query, (queued_limit,)).fetchall()
+                connection.execute(queued_query, (GROWTH_QUEUE_READY_REASON, queued_limit)).fetchall()
                 if queued_limit > 0
                 else []
             )
@@ -901,7 +1113,7 @@ class ActionRepository:
             if filled < bounded_limit:
                 extra_due_rows = connection.execute(
                     due_deferred_query,
-                    (bounded_limit - filled, len(due_rows)),
+                    (*GROWTH_QUEUE_ACTION_RETRY_REASONS, bounded_limit - filled, len(due_rows)),
                 ).fetchall()
 
             rows = [*due_rows, *queued_rows, *extra_due_rows]
@@ -1194,6 +1406,7 @@ class ActionRepository:
             newsletter_v3_id = COALESCE(?, newsletter_v3_id),
             source_labels = COALESCE(?, source_labels),
             queued_score = COALESCE(?, queued_score),
+            score_breakdown_json = COALESCE(?, score_breakdown_json),
             follower_count = COALESCE(?, follower_count),
             following_count = COALESCE(?, following_count),
             latest_post_id = COALESCE(?, latest_post_id),
@@ -1212,8 +1425,10 @@ class ActionRepository:
         WHERE user_id = ?
         """
         serialized_sources = None
+        serialized_score_breakdown = None
         if candidate is not None:
             serialized_sources = self._serialize_source_labels([source.value for source in candidate.sources])
+            serialized_score_breakdown = self._serialize_score_breakdown(candidate.score_breakdown)
         with self.database.connect() as connection:
             connection.execute(
                 query,
@@ -1226,6 +1441,7 @@ class ActionRepository:
                     candidate.newsletter_v3_id if candidate is not None else None,
                     serialized_sources,
                     candidate.score if candidate is not None else None,
+                    serialized_score_breakdown,
                     candidate.follower_count if candidate is not None else None,
                     candidate.following_count if candidate is not None else None,
                     candidate.latest_post_id if candidate is not None else None,
@@ -1353,6 +1569,33 @@ class ActionRepository:
 
         return by_source, by_policy, by_source_policy
 
+    def discovery_learning_rows(self, *, lookback_days: int) -> list[dict[str, str | None]]:
+        lookback_days = max(0, lookback_days)
+        query = """
+        SELECT
+            cleanup_status,
+            follow_source,
+            growth_policy,
+            growth_sources,
+            score_breakdown_json
+        FROM follow_cycle
+        WHERE cleanup_status IN ('followed_back', 'unfollowed_nonreciprocal')
+          AND datetime(COALESCE(updated_at, followed_back_at, last_checked_at, followed_at))
+              >= datetime('now', 'utc', ?)
+        """
+        with self.database.connect() as connection:
+            rows = connection.execute(query, (self._utc_modifier_days(lookback_days),)).fetchall()
+            return [
+                {
+                    "cleanup_status": row["cleanup_status"],
+                    "follow_source": row["follow_source"],
+                    "growth_policy": row["growth_policy"],
+                    "growth_sources": row["growth_sources"],
+                    "score_breakdown_json": row["score_breakdown_json"],
+                }
+                for row in rows
+            ]
+
     def mark_follow_cycle_started(
         self,
         *,
@@ -1362,6 +1605,7 @@ class ActionRepository:
         grace_days: int,
         growth_policy: str | None = None,
         growth_sources: list[str] | None = None,
+        score_breakdown: CandidateScoreBreakdown | None = None,
     ) -> None:
         query = """
         INSERT INTO follow_cycle (
@@ -1371,12 +1615,13 @@ class ActionRepository:
             follow_source,
             growth_policy,
             growth_sources,
+            score_breakdown_json,
             follow_deadline_at,
             cleanup_status,
             updated_at
         )
         VALUES (
-            ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, datetime('now', 'utc', ?), 'pending', CURRENT_TIMESTAMP
+            ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, datetime('now', 'utc', ?), 'pending', CURRENT_TIMESTAMP
         )
         ON CONFLICT(user_id) DO UPDATE SET
             username = COALESCE(excluded.username, follow_cycle.username),
@@ -1384,12 +1629,14 @@ class ActionRepository:
             follow_source = excluded.follow_source,
             growth_policy = excluded.growth_policy,
             growth_sources = excluded.growth_sources,
+            score_breakdown_json = COALESCE(excluded.score_breakdown_json, follow_cycle.score_breakdown_json),
             follow_deadline_at = datetime('now', 'utc', ?),
             cleanup_status = 'pending',
             updated_at = CURRENT_TIMESTAMP
         """
         modifier = f"+{grace_days} day"
         serialized_sources = ",".join(sorted({item.strip() for item in (growth_sources or []) if item and item.strip()})) or None
+        serialized_score_breakdown = self._serialize_score_breakdown(score_breakdown)
         with self.database.connect() as connection:
             connection.execute(
                 query,
@@ -1399,6 +1646,7 @@ class ActionRepository:
                     source,
                     growth_policy,
                     serialized_sources,
+                    serialized_score_breakdown,
                     modifier,
                     modifier,
                 ),

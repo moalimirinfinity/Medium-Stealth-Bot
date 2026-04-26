@@ -98,6 +98,11 @@ uv run bot discover --dry-run --source responders --tag programming
 Expected result:
 
 - ready queue grows when useful candidates are found
+- live discovery targets `DISCOVERY_ELIGIBLE_PER_RUN` new execution-ready candidates, default `100`
+- the growth candidate queue remains capped by `GROWTH_CANDIDATE_QUEUE_MAX_SIZE`, default `700`
+- candidate eligibility checks happen here before enqueueing
+- queued candidates retain score breakdown JSON for auditability and conservative follow-back learning
+- ineligible candidates are not stored in the growth queue
 - no follow/clap/comment mutations occur in discovery
 
 ## Growth SOP
@@ -117,14 +122,29 @@ uv run bot run --policy warm-engage --session
 ### Preflight
 
 ```bash
+uv run bot growth cycle --policy warm-engage --dry-run
+```
+
+### Hybrid preflight + live session
+
+```bash
 uv run bot growth preflight --policy warm-engage
 ```
 
 Expected result:
 
 - growth drains execution-ready queue only
-- follow state is re-checked right before mutation
+- growth does not re-score or re-filter queued candidates by ratio, follower counts, bio, keywords, latest post, or recent activity
+- live growth purges non-actionable legacy queue rows before selecting candidates
+- verified follows and already-following action guards remove candidates from the queue
+- post context is resolved only as action preparation for clap/comment/highlight
+- live follow state is re-checked right before mutation
 - if the ready queue is empty, stop and run discovery first
+
+Important:
+
+- The interactive menu's `Preflight` option is dry-run only.
+- The grouped `growth preflight` command currently runs a dry-run single pass and then continues into a live growth session.
 
 ## Maintenance SOP
 

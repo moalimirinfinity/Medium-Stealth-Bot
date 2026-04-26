@@ -11,6 +11,7 @@ The project now has two separate operational loops:
 
 The bundled runner in `scripts/run_daily_live.sh` is for the guided live workflow driven by `bot start --quick-live --dry-run-first`.
 In the current project model, treat scheduled growth and scheduled discovery as separate concerns.
+Discovery is responsible for candidate screening before rows enter the queue. Scheduled growth assumes the ready queue has already been evaluated and only performs action-time guards such as budgets, pacing, post-context preparation, and the final live follow-state check. Live discovery targets 100 eligible candidates per run by default, while the growth candidate queue is capped at 700 rows. Score explanations are persisted with queued candidates and follow-cycle rows so conservative learning can adjust future ranking from completed outcomes. Live discovery/growth runs purge non-actionable legacy queue rows before selecting work.
 
 ## Prerequisites
 

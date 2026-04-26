@@ -190,6 +190,29 @@ class CandidateSource(StrEnum):
     POST_RESPONDERS = "post_responders"
 
 
+class CandidateScoreBreakdown(BaseModel):
+    version: int = 1
+    raw_components: dict[str, float] = Field(default_factory=dict)
+    weighted_components: dict[str, float] = Field(default_factory=dict)
+    base_score: float = 0.0
+    penalty_total: float = 0.0
+    score_before_learning: float = 0.0
+    learning_multiplier: float = 1.0
+    final_score: float = 0.0
+    matched_keywords: dict[str, list[str]] = Field(default_factory=dict)
+    primary_topic_keywords: list[str] = Field(default_factory=list)
+    secondary_topic_keywords: list[str] = Field(default_factory=list)
+    negative_keywords: list[str] = Field(default_factory=list)
+    source_weights: dict[str, float] = Field(default_factory=dict)
+    learning_keys: list[str] = Field(default_factory=list)
+    learning_bucket_samples: dict[str, int] = Field(default_factory=dict)
+    learning_bucket_rates: dict[str, float] = Field(default_factory=dict)
+    ratio_band: str | None = None
+    presence_band: str | None = None
+    activity_band: str | None = None
+    filter_reasons: list[str] = Field(default_factory=list)
+
+
 class CandidateUser(BaseModel):
     user_id: str
     username: str | None = None
@@ -203,6 +226,7 @@ class CandidateUser(BaseModel):
     last_post_created_at: str | None = None
     score: float = 0.0
     matched_keywords: list[str] = Field(default_factory=list)
+    score_breakdown: CandidateScoreBreakdown | None = None
     sources: list[CandidateSource] = Field(default_factory=list)
 
 

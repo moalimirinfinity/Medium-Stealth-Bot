@@ -44,7 +44,7 @@ The current project is separated into explicit pipelines.
 
 ### Discovery
 
-Discovery reads Medium, scores/filter candidates, and persists execution-ready queue rows. It does not follow, clap, or comment.
+Discovery reads Medium, scores and filters candidates, and persists only execution-ready queue rows. It is the candidate eligibility boundary and does not follow, clap, or comment. A live discovery run targets 100 newly eligible queue entries by default and stops earlier when the 700-row growth candidate queue cap is reached. Candidate ranking stores a score breakdown that combines bounded follow-back likelihood, layered topic affinity, source quality, newsletter availability, Medium presence, recent activity, negative-topic penalties, and conservative adaptive learning from completed follow cycles.
 
 Current discovery sources:
 
@@ -63,6 +63,9 @@ Growth is queue-driven execution only. It drains execution-ready candidates alre
 - `warm-engage-plus-rare-comment`
 
 Growth does not perform discovery source selection anymore; legacy source flags remain only for compatibility.
+Growth also does not re-score or re-filter queued candidates by candidate-quality rules such as ratio, follower/following bounds, bio, keywords, latest post, or recent activity. Those checks belong to discovery before enqueueing.
+The growth queue is kept actionable and capped: non-actionable legacy rows are purged, total candidate rows are limited to 700 by default, and verified follows remove the candidate row.
+The runtime rejects combined discovery+growth cycles; run discovery first, then run growth against the stored queue.
 
 ### Unfollow / cleanup
 
@@ -143,6 +146,7 @@ Growth candidates are persisted with queue-oriented state and metadata such as:
 - rejection / followed terminal state
 - source labels
 - score
+- score breakdown JSON for auditability and learning
 - freshness / reason fields
 
 ### Migration strategy
@@ -158,10 +162,10 @@ Growth candidates are persisted with queue-oriented state and metadata such as:
 Pipeline stages:
 
 1. optional graph sync
-2. collect source candidates
-3. score and filter
+2. collect source candidates, including paginated follower pages for seed and target-user sources
+3. score with persisted component breakdowns and filter
 4. evaluate discovery-readiness
-5. persist queue rows and reconciliation notes
+5. persist queue rows and reconciliation notes until the per-run eligible target or queue cap is reached
 6. emit run artifact
 
 Output: execution-ready queue entries only.
@@ -171,11 +175,14 @@ Output: execution-ready queue entries only.
 Pipeline stages:
 
 1. optional graph sync
-2. fetch execution-ready queue candidates
-3. apply growth policy
-4. re-check follow state immediately before mutation
-5. record attempts, verification, and queue state changes
-6. emit run artifact
+2. purge non-actionable legacy queue rows
+3. fetch execution-ready queue candidates
+4. apply growth policy
+5. resolve post context only when needed for clap/comment/highlight action execution
+6. re-check live follow state immediately before mutation
+7. remove candidates after verified follows or already-following action guards
+8. record attempts, verification, and queue state changes
+9. emit run artifact
 
 Output: follow/clap/comment execution against queued candidates.
 
@@ -248,7 +255,7 @@ Grouped aliases:
 - `growth queue`
 - `growth session`
 - `growth cycle`
-- `growth preflight`
+- `growth preflight` (hybrid: dry-run preflight, then live session)
 - `growth followers`
 - `unfollow cleanup`
 - `maintenance sync`
@@ -272,6 +279,8 @@ Grouped aliases:
 - `6` observability
 - `7` settings/auth
 - `8` exit
+
+Within the growth menu, `Preflight` is a dry-run single pass and `Hybrid` is dry-run preflight followed by a live session. The grouped CLI alias `uv run bot growth preflight` currently maps to the hybrid behavior.
 
 ## 10. Operational Contracts
 

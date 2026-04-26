@@ -14,6 +14,7 @@ from medium_stealth_bot.comment_templates import build_comment_template_pool
 from medium_stealth_bot.graph_sync import GraphSyncService
 from medium_stealth_bot.models import (
     CandidateDecision,
+    CandidateScoreBreakdown,
     CandidateSource,
     CandidateUser,
     DailyRunOutcome,
@@ -139,6 +140,8 @@ class DailyRunner:
         self._comment_mutation_supported = True
         self._highlight_mutation_supported = True
         self._persist_decision_observations = True
+        self._discovery_learning_cache: dict[str, object] | None = None
+        self._active_growth_policy_for_scoring: GrowthPolicy = settings.default_growth_policy
         self._candidate_recent_posts_cache: dict[str, list[PostContext]] = {}
         self._normalize_pacing_configuration()
 
@@ -242,8 +245,12 @@ class DailyRunner:
         self._assert_operator_not_stopped(task_name="run_daily_cycle")
         if not discovery_enabled and not execution_enabled:
             raise ValueError("At least one of discovery_enabled or execution_enabled must be true.")
+        if discovery_enabled and execution_enabled:
+            raise ValueError("Discovery and growth execution must run separately.")
         await self._maybe_recover_stealth_preflight_challenge(dry_run=dry_run)
         resolved_growth_policy = self._resolve_growth_policy(growth_policy=growth_policy, growth_mode=growth_mode)
+        self._active_growth_policy_for_scoring = resolved_growth_policy
+        self._discovery_learning_cache = None
         resolved_growth_sources = (
             self._resolve_growth_sources(
                 growth_sources=growth_sources,
@@ -325,30 +332,33 @@ class DailyRunner:
         discovery_source_candidate_counts: dict[str, int] = {}
         source_candidate_counts: dict[str, int] = {}
         discovery_buffered: list[CandidateUser] = []
+        queue_cleaned_counts = {"queued_held": 0, "deferred_held": 0, "terminal": 0, "total": 0}
         queue_pruned_counts = {"followed": 0, "rejected": 0, "stale": 0, "total": 0}
-        discovery_target = (
-            self._discovery_buffer_target(
-                growth_sources=resolved_growth_sources,
-                target_user_scan_limit=resolved_target_user_scan_limit,
-                target_user_refs=resolved_target_user_refs,
-            )
-            if discovery_enabled
-            else 0
-        )
+        queue_cleaned_counts = self.repository.purge_non_actionable_growth_candidates(dry_run=dry_run)
         if not dry_run:
             queue_pruned_counts = self.repository.prune_growth_candidate_queue(
                 followed_after_days=self.settings.growth_queue_prune_followed_after_days,
                 rejected_after_days=self.settings.growth_queue_prune_rejected_after_days,
                 stale_after_days=self.settings.growth_queue_prune_stale_after_days,
             )
-        queue_ready_before = self.repository.growth_queue_ready_count()
+        queue_counts_before = self.repository.growth_queue_state_counts()
+        queue_ready_before = queue_counts_before["ready"]
         queue_ready_after = queue_ready_before
+        effective_queue_total = max(0, queue_counts_before["total"] - (queue_cleaned_counts["total"] if dry_run else 0))
+        queue_capacity = max(0, self.settings.growth_candidate_queue_max_size - effective_queue_total)
+        discovery_target = (
+            min(self.settings.discovery_eligible_per_run, queue_capacity)
+            if discovery_enabled
+            else 0
+        )
+        discovery_scan_limit = self._discovery_candidate_scan_limit(discovery_target) if discovery_target > 0 else 0
         discovery_enqueued = 0
         discovery_replenished = False
 
-        if discovery_enabled and (dry_run or queue_ready_before < discovery_target):
+        if discovery_enabled and discovery_target > 0:
             probe = await self.probe(tag_slug=tag_slug) if self._growth_sources_need_probe(resolved_growth_sources) else None
             seed_refs = (seed_user_refs or []) + self.settings.discovery_seed_users
+            existing_growth_candidate_ids = self.repository.growth_candidate_user_ids()
             discovery_candidates = await self._build_candidates(
                 tag_slug=tag_slug,
                 probe=probe,
@@ -356,25 +366,38 @@ class DailyRunner:
                 growth_sources=resolved_growth_sources,
                 target_user_refs=resolved_target_user_refs,
                 target_user_scan_limit=resolved_target_user_scan_limit,
+                candidate_scan_limit=discovery_scan_limit,
             )
-            discovery_candidates = discovery_candidates[:discovery_target]
             discovery_source_candidate_counts = self._source_counts(discovery_candidates)
-            discovery_buffered = self._screen_discovery_candidates(
+            discovery_screened = self._screen_discovery_candidates(
                 discovery_candidates,
                 decisions=decisions,
+                persist_observations=not dry_run,
+                existing_growth_candidate_ids=existing_growth_candidate_ids,
+            )
+            discovery_buffered = await self._evaluate_discovery_candidates(
+                discovery_screened,
+                decisions=decisions,
+                persist_observations=not dry_run,
+                max_eligible=discovery_target,
             )
             discovery_enqueued = len(discovery_buffered)
             discovery_replenished = True
             if not dry_run:
                 discovery_enqueued = self.repository.upsert_growth_candidate_buffer(
                     discovery_buffered,
-                    queue_reason="queued:discovery_buffered",
+                    queue_reason="eligible:execution_ready",
+                    max_total=self.settings.growth_candidate_queue_max_size,
                 )
                 queue_ready_after = self.repository.growth_queue_ready_count()
             else:
                 queue_ready_after = len(discovery_buffered)
-
-        queue_only_execution = execution_enabled and not discovery_enabled
+        elif discovery_enabled:
+            self.log.info(
+                "discovery_queue_capacity_exhausted",
+                queue_total=queue_counts_before["total"],
+                queue_max=self.settings.growth_candidate_queue_max_size,
+            )
 
         if discovery_enabled and not execution_enabled:
             execution_pool = list(discovery_buffered)
@@ -396,18 +419,11 @@ class DailyRunner:
         considered_candidates = screened_candidates
         if execution_pool_limit <= 0:
             eligible = []
-        elif queue_only_execution:
-            eligible = self._screen_queued_execution_candidates(
-                execution_pool,
-                decisions=decisions,
-                persist_observations=not dry_run,
-            )
         else:
-            eligible = await self._evaluate_candidates(
-                execution_pool,
-                decisions=decisions,
-                persist_observations=not dry_run,
-            )
+            # Queue-only growth trusts discovery as the eligibility boundary.
+            # Growth only applies budgets, pacing, action preparation, and the
+            # final live follow-state gate immediately before mutation.
+            eligible = list(execution_pool)
 
         if execution_enabled:
             follow_slots = min(max_follow_attempts_for_cycle, len(eligible))
@@ -500,6 +516,9 @@ class DailyRunner:
             3,
         )
         kpis["growth_queue_discovery_target"] = discovery_target
+        kpis["growth_queue_discovery_scan_limit"] = discovery_scan_limit
+        kpis["growth_queue_candidate_cap"] = self.settings.growth_candidate_queue_max_size
+        kpis["growth_queue_capacity_before_discovery"] = queue_capacity
         kpis["growth_queue_discovery_enqueued"] = discovery_enqueued
         kpis["growth_queue_discovery_candidates"] = discovered_candidates
         kpis["growth_queue_execution_pool"] = screened_candidates
@@ -508,15 +527,21 @@ class DailyRunner:
         kpis["growth_queue_executed_candidates"] = executed_candidates
         kpis["growth_queue_followed_candidates"] = followed_candidates
         kpis["growth_queue_replenished"] = 1 if discovery_replenished else 0
+        kpis["growth_queue_cleaned_queued_held"] = queue_cleaned_counts["queued_held"]
+        kpis["growth_queue_cleaned_deferred_held"] = queue_cleaned_counts["deferred_held"]
+        kpis["growth_queue_cleaned_terminal"] = queue_cleaned_counts["terminal"]
+        kpis["growth_queue_cleaned_total"] = queue_cleaned_counts["total"]
         kpis["growth_queue_pruned_followed"] = queue_pruned_counts["followed"]
         kpis["growth_queue_pruned_rejected"] = queue_pruned_counts["rejected"]
         kpis["growth_queue_pruned_stale"] = queue_pruned_counts["stale"]
         kpis["growth_queue_pruned_total"] = queue_pruned_counts["total"]
         kpis["growth_queue_ready"] = queue_counts["ready"]
         kpis["growth_queue_queued"] = queue_counts["queued"]
+        kpis["growth_queue_queued_held"] = queue_counts.get("queued_held", 0)
         kpis["growth_queue_deferred"] = queue_counts["deferred"]
         kpis["growth_queue_deferred_due"] = queue_counts["deferred_due"]
         kpis["growth_queue_deferred_future"] = queue_counts["deferred_future"]
+        kpis["growth_queue_deferred_held"] = queue_counts.get("deferred_held", 0)
         kpis["growth_queue_rejected"] = queue_counts["rejected"]
         kpis["growth_queue_followed"] = queue_counts["followed"]
         kpis["growth_queue_total"] = queue_counts["total"]
@@ -572,6 +597,7 @@ class DailyRunner:
             queue_ready_before=queue_ready_before,
             queue_ready_after=queue_ready_after,
             queue_counts=queue_counts,
+            queue_cleaned_counts=queue_cleaned_counts,
             queue_pruned_counts=queue_pruned_counts,
             discovery_enqueued=discovery_enqueued,
             execution_pool=len(execution_pool),
@@ -716,7 +742,7 @@ class DailyRunner:
         discovery_mode: GrowthDiscoveryMode | None = None,
         target_user_refs: list[str] | None = None,
         target_user_scan_limit: int | None = None,
-        discovery_enabled: bool = True,
+        discovery_enabled: bool = False,
     ) -> DailyRunOutcome:
         self._assert_operator_not_stopped(task_name="run_live_session")
         resolved_growth_policy = self._resolve_growth_policy(growth_policy=growth_policy, growth_mode=growth_mode)
@@ -1566,6 +1592,7 @@ class DailyRunner:
         growth_sources: list[GrowthSource],
         target_user_refs: list[str],
         target_user_scan_limit: int | None,
+        candidate_scan_limit: int,
     ) -> list[CandidateUser]:
         pool: dict[str, CandidateUser] = {}
 
@@ -1575,12 +1602,19 @@ class DailyRunner:
                 self._extract_topic_who_to_follow_candidates(probe, pool)
                 self._extract_who_to_follow_module_candidates(probe, pool)
         if GrowthSource.SEED_FOLLOWERS in growth_sources:
-            await self._extract_seed_followers_candidates(seed_user_refs, pool)
+            await self._extract_seed_followers_candidates(
+                seed_user_refs,
+                pool,
+                scan_limit=candidate_scan_limit,
+            )
         if GrowthSource.TARGET_USER_FOLLOWERS in growth_sources:
             await self._extract_target_user_followers_candidates(
                 target_user_refs=target_user_refs,
                 pool=pool,
-                per_target_scan_limit=self._resolve_target_user_scan_limit(target_user_scan_limit),
+                per_target_scan_limit=max(
+                    self._resolve_target_user_scan_limit(target_user_scan_limit),
+                    candidate_scan_limit,
+                ),
             )
         if GrowthSource.PUBLICATION_ADJACENT in growth_sources:
             await self._extract_topic_curated_candidates(tag_slug=tag_slug, pool=pool)
@@ -1588,17 +1622,7 @@ class DailyRunner:
             await self._extract_topic_responder_candidates(tag_slug=tag_slug, probe=probe, pool=pool)
 
         for candidate in pool.values():
-            candidate.matched_keywords = self._match_keywords(candidate.bio)
-            ratio = self._following_follower_ratio(candidate)
-            keyword_bonus = self.settings.score_weight_keyword * len(candidate.matched_keywords)
-            source_bonus = self.settings.score_weight_source * len(candidate.sources)
-            newsletter_bonus = self.settings.score_weight_newsletter if candidate.newsletter_v3_id else 0.0
-            candidate.score = (
-                (self.settings.score_weight_ratio * ratio)
-                + keyword_bonus
-                + source_bonus
-                + newsletter_bonus
-            )
+            self._refresh_candidate_scoring(candidate)
 
         ordered = sorted(pool.values(), key=lambda item: item.score, reverse=True)
         self.log.info(
@@ -1608,6 +1632,7 @@ class DailyRunner:
             seed_sources=len(seed_user_refs),
             target_sources=len(target_user_refs),
             target_user_scan_limit=target_user_scan_limit,
+            candidate_scan_limit=candidate_scan_limit,
         )
         return ordered
 
@@ -1647,20 +1672,16 @@ class DailyRunner:
         self,
         seed_user_refs: list[str],
         pool: dict[str, CandidateUser],
+        *,
+        scan_limit: int,
     ) -> None:
+        per_seed_limit = max(self.settings.discovery_seed_followers_limit, scan_limit)
         for seed_ref in seed_user_refs:
-            user_id, username = self._parse_user_ref(seed_ref)
-            if not user_id and not username:
-                continue
-            result = await self._execute_with_retry(
-                "seed_user_followers",
-                operations.user_followers(
-                    user_id=user_id,
-                    username=username,
-                    limit=self.settings.discovery_seed_followers_limit,
-                ),
+            first_hop_users = await self._fetch_user_followers_nodes(
+                user_ref=seed_ref,
+                limit=per_seed_limit,
+                task_name="seed_user_followers",
             )
-            first_hop_users = parse_user_followers_users(result)
             for node in first_hop_users:
                 candidate = self._candidate_from_user_node(node, source=CandidateSource.SEED_FOLLOWERS)
                 if candidate:
@@ -1882,10 +1903,24 @@ class DailyRunner:
         candidates: list[CandidateUser],
         *,
         decisions: list[CandidateDecision],
+        persist_observations: bool,
+        existing_growth_candidate_ids: set[str],
     ) -> list[CandidateUser]:
         buffered: list[CandidateUser] = []
         for candidate in candidates:
+            if candidate.user_id in existing_growth_candidate_ids:
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason="skip:already_in_growth_queue",
+                    needs_reconcile=False,
+                )
+                continue
+
             if self.repository.is_blacklisted(candidate.user_id):
+                if persist_observations:
+                    self.repository.remove_growth_candidate(candidate.user_id)
                 self._append_decision(
                     decisions,
                     candidate,
@@ -1899,6 +1934,8 @@ class DailyRunner:
                 within_hours=self.settings.follow_cooldown_hours,
                 action_types=FOLLOW_COOLDOWN_ACTION_TYPES,
             ):
+                if persist_observations:
+                    self.repository.remove_growth_candidate(candidate.user_id)
                 self._append_decision(
                     decisions,
                     candidate,
@@ -1909,6 +1946,8 @@ class DailyRunner:
 
             local_state = self.repository.get_relationship_state(candidate.user_id)
             if local_state and local_state.user_follow_state == UserFollowState.FOLLOWING:
+                if persist_observations:
+                    self.repository.remove_growth_candidate(candidate.user_id)
                 self._append_decision(
                     decisions,
                     candidate,
@@ -1918,26 +1957,33 @@ class DailyRunner:
                 )
                 continue
 
-            ratio = self._following_follower_ratio(candidate)
-            if ratio < self.settings.min_following_follower_ratio:
-                self._append_decision(
-                    decisions,
-                    candidate,
-                    eligible=False,
-                    reason=f"skip:ratio_below_threshold ratio={ratio:.2f}",
-                )
-                continue
-            if ratio > self.settings.max_following_follower_ratio:
-                self._append_decision(
-                    decisions,
-                    candidate,
-                    eligible=False,
-                    reason=f"skip:ratio_above_threshold ratio={ratio:.2f}",
-                )
-                continue
+            if candidate.follower_count is not None and candidate.following_count is not None:
+                ratio = self._following_follower_ratio(candidate)
+                if ratio < self.settings.min_following_follower_ratio:
+                    if persist_observations:
+                        self.repository.remove_growth_candidate(candidate.user_id)
+                    self._append_decision(
+                        decisions,
+                        candidate,
+                        eligible=False,
+                        reason=f"skip:ratio_below_threshold ratio={ratio:.2f}",
+                    )
+                    continue
+                if ratio > self.settings.max_following_follower_ratio:
+                    if persist_observations:
+                        self.repository.remove_growth_candidate(candidate.user_id)
+                    self._append_decision(
+                        decisions,
+                        candidate,
+                        eligible=False,
+                        reason=f"skip:ratio_above_threshold ratio={ratio:.2f}",
+                    )
+                    continue
 
             volume_filter_reason = self._candidate_volume_filter_reason(candidate)
             if volume_filter_reason:
+                if persist_observations:
+                    self.repository.remove_growth_candidate(candidate.user_id)
                 self._append_decision(
                     decisions,
                     candidate,
@@ -1946,31 +1992,17 @@ class DailyRunner:
                 )
                 continue
 
-            if self.settings.require_candidate_bio and not (candidate.bio or "").strip():
-                self._append_decision(
-                    decisions,
-                    candidate,
-                    eligible=False,
-                    reason="skip:no_bio",
-                )
-                continue
+            self._refresh_candidate_scoring(candidate)
 
-            candidate.matched_keywords = self._match_keywords(candidate.bio)
-            if self.settings.require_bio_keyword_match and not candidate.matched_keywords:
+            negative_filter_reason = self._candidate_negative_filter_reason(candidate)
+            if negative_filter_reason:
+                if persist_observations:
+                    self.repository.remove_growth_candidate(candidate.user_id)
                 self._append_decision(
                     decisions,
                     candidate,
                     eligible=False,
-                    reason="skip:no_keyword_match",
-                )
-                continue
-
-            if not candidate.newsletter_v3_id:
-                self._append_decision(
-                    decisions,
-                    candidate,
-                    eligible=False,
-                    reason="skip:no_newsletter_v3_id",
+                    reason=negative_filter_reason,
                 )
                 continue
 
@@ -1979,6 +2011,8 @@ class DailyRunner:
                 and candidate.last_post_created_at
                 and not self._candidate_has_recent_activity(candidate)
             ):
+                if persist_observations:
+                    self.repository.remove_growth_candidate(candidate.user_id)
                 self._append_decision(
                     decisions,
                     candidate,
@@ -1992,28 +2026,27 @@ class DailyRunner:
                 decisions,
                 candidate,
                 eligible=True,
-                reason="queued:discovery_buffered",
+                reason="discovery:locally_screened",
             )
 
         return buffered
 
-    async def _evaluate_candidates(
+    async def _evaluate_discovery_candidates(
         self,
         candidates: list[CandidateUser],
         *,
         decisions: list[CandidateDecision],
         persist_observations: bool,
+        max_eligible: int | None = None,
     ) -> list[CandidateUser]:
         eligible: list[CandidateUser] = []
         for candidate in candidates:
+            if max_eligible is not None and len(eligible) >= max_eligible:
+                break
+
             if self.repository.is_blacklisted(candidate.user_id):
                 if persist_observations:
-                    self.repository.mark_growth_candidate_queue_state(
-                        candidate.user_id,
-                        queue_state="rejected",
-                        reason="skip:blacklisted",
-                        candidate=candidate,
-                    )
+                    self.repository.remove_growth_candidate(candidate.user_id)
                 self._append_decision(
                     decisions,
                     candidate,
@@ -2029,13 +2062,7 @@ class DailyRunner:
             )
             if cooldown_retry_after is not None:
                 if persist_observations:
-                    self.repository.mark_growth_candidate_queue_state(
-                        candidate.user_id,
-                        queue_state="deferred",
-                        reason="skip:cooldown_active",
-                        candidate=candidate,
-                        retry_after_at=cooldown_retry_after,
-                    )
+                    self.repository.remove_growth_candidate(candidate.user_id)
                 self._append_decision(
                     decisions,
                     candidate,
@@ -2062,6 +2089,7 @@ class DailyRunner:
                 operations.user_viewer_edge(candidate.user_id),
             )
             self._hydrate_candidate_from_user_viewer_edge(candidate, edge_result)
+            self._refresh_candidate_scoring(candidate)
             is_following = parse_user_viewer_is_following(edge_result)
             if is_following is True:
                 if persist_observations:
@@ -2085,16 +2113,7 @@ class DailyRunner:
                 continue
             if is_following is None:
                 if persist_observations:
-                    self.repository.mark_growth_candidate_queue_state(
-                        candidate.user_id,
-                        queue_state="deferred",
-                        reason="skip:live_check_unavailable",
-                        candidate=candidate,
-                        retry_after_at=self._growth_queue_deferred_retry_at(
-                            user_id=candidate.user_id,
-                            reason="skip:live_check_unavailable",
-                        ),
-                    )
+                    self.repository.remove_growth_candidate(candidate.user_id)
                 self._append_decision(
                     decisions,
                     candidate,
@@ -2117,13 +2136,7 @@ class DailyRunner:
             ratio = self._following_follower_ratio(candidate)
             if ratio < self.settings.min_following_follower_ratio:
                 if persist_observations:
-                    self.repository.mark_growth_candidate_queue_state(
-                        candidate.user_id,
-                        queue_state="rejected",
-                        reason=f"skip:ratio_below_threshold ratio={ratio:.2f}",
-                        candidate=candidate,
-                        observed_follow_state=UserFollowState.NOT_FOLLOWING,
-                    )
+                    self.repository.remove_growth_candidate(candidate.user_id)
                 self._append_decision(
                     decisions,
                     candidate,
@@ -2133,13 +2146,7 @@ class DailyRunner:
                 continue
             if ratio > self.settings.max_following_follower_ratio:
                 if persist_observations:
-                    self.repository.mark_growth_candidate_queue_state(
-                        candidate.user_id,
-                        queue_state="rejected",
-                        reason=f"skip:ratio_above_threshold ratio={ratio:.2f}",
-                        candidate=candidate,
-                        observed_follow_state=UserFollowState.NOT_FOLLOWING,
-                    )
+                    self.repository.remove_growth_candidate(candidate.user_id)
                 self._append_decision(
                     decisions,
                     candidate,
@@ -2151,13 +2158,7 @@ class DailyRunner:
             volume_filter_reason = self._candidate_volume_filter_reason(candidate)
             if volume_filter_reason:
                 if persist_observations:
-                    self.repository.mark_growth_candidate_queue_state(
-                        candidate.user_id,
-                        queue_state="rejected",
-                        reason=volume_filter_reason,
-                        candidate=candidate,
-                        observed_follow_state=UserFollowState.NOT_FOLLOWING,
-                    )
+                    self.repository.remove_growth_candidate(candidate.user_id)
                 self._append_decision(
                     decisions,
                     candidate,
@@ -2168,13 +2169,7 @@ class DailyRunner:
 
             if self.settings.require_candidate_bio and not (candidate.bio or "").strip():
                 if persist_observations:
-                    self.repository.mark_growth_candidate_queue_state(
-                        candidate.user_id,
-                        queue_state="rejected",
-                        reason="skip:no_bio",
-                        candidate=candidate,
-                        observed_follow_state=UserFollowState.NOT_FOLLOWING,
-                    )
+                    self.repository.remove_growth_candidate(candidate.user_id)
                 self._append_decision(
                     decisions,
                     candidate,
@@ -2183,16 +2178,22 @@ class DailyRunner:
                 )
                 continue
 
-            candidate.matched_keywords = self._match_keywords(candidate.bio)
+            self._refresh_candidate_scoring(candidate)
+            negative_filter_reason = self._candidate_negative_filter_reason(candidate)
+            if negative_filter_reason:
+                if persist_observations:
+                    self.repository.remove_growth_candidate(candidate.user_id)
+                self._append_decision(
+                    decisions,
+                    candidate,
+                    eligible=False,
+                    reason=negative_filter_reason,
+                )
+                continue
+
             if self.settings.require_bio_keyword_match and not candidate.matched_keywords:
                 if persist_observations:
-                    self.repository.mark_growth_candidate_queue_state(
-                        candidate.user_id,
-                        queue_state="rejected",
-                        reason="skip:no_keyword_match",
-                        candidate=candidate,
-                        observed_follow_state=UserFollowState.NOT_FOLLOWING,
-                    )
+                    self.repository.remove_growth_candidate(candidate.user_id)
                 self._append_decision(
                     decisions,
                     candidate,
@@ -2203,13 +2204,7 @@ class DailyRunner:
 
             if not candidate.newsletter_v3_id:
                 if persist_observations:
-                    self.repository.mark_growth_candidate_queue_state(
-                        candidate.user_id,
-                        queue_state="rejected",
-                        reason="skip:no_newsletter_v3_id",
-                        candidate=candidate,
-                        observed_follow_state=UserFollowState.NOT_FOLLOWING,
-                    )
+                    self.repository.remove_growth_candidate(candidate.user_id)
                 self._append_decision(
                     decisions,
                     candidate,
@@ -2220,15 +2215,10 @@ class DailyRunner:
 
             if self.settings.require_candidate_latest_post:
                 post_id = await self._resolve_candidate_latest_post_id(candidate)
+                self._refresh_candidate_scoring(candidate)
                 if not post_id:
                     if persist_observations:
-                        self.repository.mark_growth_candidate_queue_state(
-                            candidate.user_id,
-                            queue_state="rejected",
-                            reason="skip:no_latest_post",
-                            candidate=candidate,
-                            observed_follow_state=UserFollowState.NOT_FOLLOWING,
-                        )
+                        self.repository.remove_growth_candidate(candidate.user_id)
                     self._append_decision(
                         decisions,
                         candidate,
@@ -2239,13 +2229,7 @@ class DailyRunner:
 
             if not self._candidate_has_recent_activity(candidate):
                 if persist_observations:
-                    self.repository.mark_growth_candidate_queue_state(
-                        candidate.user_id,
-                        queue_state="rejected",
-                        reason="skip:inactive_author",
-                        candidate=candidate,
-                        observed_follow_state=UserFollowState.NOT_FOLLOWING,
-                    )
+                    self.repository.remove_growth_candidate(candidate.user_id)
                 self._append_decision(
                     decisions,
                     candidate,
@@ -2255,171 +2239,11 @@ class DailyRunner:
                 continue
 
             eligible.append(candidate)
-            if persist_observations:
-                self.repository.mark_growth_candidate_queue_state(
-                    candidate.user_id,
-                    queue_state="queued",
-                    reason="eligible:execution_ready",
-                    candidate=candidate,
-                    observed_follow_state=UserFollowState.NOT_FOLLOWING,
-                )
             self._append_decision(
                 decisions,
                 candidate,
                 eligible=True,
                 reason="eligible:execution_ready",
-            )
-
-        return eligible
-
-    def _screen_queued_execution_candidates(
-        self,
-        candidates: list[CandidateUser],
-        *,
-        decisions: list[CandidateDecision],
-        persist_observations: bool,
-    ) -> list[CandidateUser]:
-        eligible: list[CandidateUser] = []
-        for candidate in candidates:
-            if self.repository.is_blacklisted(candidate.user_id):
-                if persist_observations:
-                    self.repository.mark_growth_candidate_queue_state(
-                        candidate.user_id,
-                        queue_state="rejected",
-                        reason="skip:blacklisted",
-                        candidate=candidate,
-                    )
-                self._append_decision(decisions, candidate, eligible=False, reason="skip:blacklisted")
-                continue
-
-            cooldown_retry_after = self.repository.recent_action_retry_after(
-                candidate.user_id,
-                within_hours=self.settings.follow_cooldown_hours,
-                action_types=FOLLOW_COOLDOWN_ACTION_TYPES,
-            )
-            if cooldown_retry_after is not None:
-                if persist_observations:
-                    self.repository.mark_growth_candidate_queue_state(
-                        candidate.user_id,
-                        queue_state="deferred",
-                        reason="skip:cooldown_active",
-                        candidate=candidate,
-                        retry_after_at=cooldown_retry_after,
-                    )
-                self._append_decision(decisions, candidate, eligible=False, reason="skip:cooldown_active")
-                continue
-
-            local_state = self.repository.get_relationship_state(candidate.user_id)
-            if local_state and local_state.user_follow_state == UserFollowState.FOLLOWING:
-                if persist_observations:
-                    self.repository.remove_growth_candidate(candidate.user_id)
-                self._append_decision(
-                    decisions,
-                    candidate,
-                    eligible=False,
-                    reason="skip:already_following_local_state",
-                    needs_reconcile=False,
-                )
-                continue
-
-            ratio = self._following_follower_ratio(candidate)
-            if ratio < self.settings.min_following_follower_ratio:
-                reason = f"skip:ratio_below_threshold ratio={ratio:.2f}"
-                if persist_observations:
-                    self.repository.mark_growth_candidate_queue_state(
-                        candidate.user_id,
-                        queue_state="rejected",
-                        reason=reason,
-                        candidate=candidate,
-                    )
-                self._append_decision(decisions, candidate, eligible=False, reason=reason)
-                continue
-            if ratio > self.settings.max_following_follower_ratio:
-                reason = f"skip:ratio_above_threshold ratio={ratio:.2f}"
-                if persist_observations:
-                    self.repository.mark_growth_candidate_queue_state(
-                        candidate.user_id,
-                        queue_state="rejected",
-                        reason=reason,
-                        candidate=candidate,
-                    )
-                self._append_decision(decisions, candidate, eligible=False, reason=reason)
-                continue
-
-            volume_filter_reason = self._candidate_volume_filter_reason(candidate)
-            if volume_filter_reason:
-                if persist_observations:
-                    self.repository.mark_growth_candidate_queue_state(
-                        candidate.user_id,
-                        queue_state="rejected",
-                        reason=volume_filter_reason,
-                        candidate=candidate,
-                    )
-                self._append_decision(decisions, candidate, eligible=False, reason=volume_filter_reason)
-                continue
-
-            if self.settings.require_candidate_bio and not (candidate.bio or "").strip():
-                if persist_observations:
-                    self.repository.mark_growth_candidate_queue_state(
-                        candidate.user_id,
-                        queue_state="rejected",
-                        reason="skip:no_bio",
-                        candidate=candidate,
-                    )
-                self._append_decision(decisions, candidate, eligible=False, reason="skip:no_bio")
-                continue
-
-            candidate.matched_keywords = self._match_keywords(candidate.bio)
-            if self.settings.require_bio_keyword_match and not candidate.matched_keywords:
-                if persist_observations:
-                    self.repository.mark_growth_candidate_queue_state(
-                        candidate.user_id,
-                        queue_state="rejected",
-                        reason="skip:no_keyword_match",
-                        candidate=candidate,
-                    )
-                self._append_decision(decisions, candidate, eligible=False, reason="skip:no_keyword_match")
-                continue
-
-            if not candidate.newsletter_v3_id:
-                if persist_observations:
-                    self.repository.mark_growth_candidate_queue_state(
-                        candidate.user_id,
-                        queue_state="rejected",
-                        reason="skip:no_newsletter_v3_id",
-                        candidate=candidate,
-                    )
-                self._append_decision(decisions, candidate, eligible=False, reason="skip:no_newsletter_v3_id")
-                continue
-
-            if self.settings.require_candidate_latest_post and not candidate.latest_post_id:
-                if persist_observations:
-                    self.repository.mark_growth_candidate_queue_state(
-                        candidate.user_id,
-                        queue_state="rejected",
-                        reason="skip:no_latest_post",
-                        candidate=candidate,
-                    )
-                self._append_decision(decisions, candidate, eligible=False, reason="skip:no_latest_post")
-                continue
-
-            if not self._candidate_has_recent_activity(candidate):
-                if persist_observations:
-                    self.repository.mark_growth_candidate_queue_state(
-                        candidate.user_id,
-                        queue_state="rejected",
-                        reason="skip:inactive_author",
-                        candidate=candidate,
-                    )
-                self._append_decision(decisions, candidate, eligible=False, reason="skip:inactive_author")
-                continue
-
-            eligible.append(candidate)
-            self._append_decision(
-                decisions,
-                candidate,
-                eligible=True,
-                reason="eligible:queue_execution_ready",
             )
 
         return eligible
@@ -2500,7 +2324,7 @@ class DailyRunner:
                 )
                 continue
 
-            can_execute_mutation = await self._pre_mutation_follow_state_gate(candidate, decisions=decisions)
+            can_execute_mutation = await self._pre_mutation_follow_state_guard(candidate, decisions=decisions)
             if not can_execute_mutation:
                 continue
             attempted += 1
@@ -2614,6 +2438,7 @@ class DailyRunner:
                     grace_days=self.settings.unfollow_nonreciprocal_after_days,
                     growth_policy=growth_policy.value,
                     growth_sources=self._candidate_growth_source_values(candidate),
+                    score_breakdown=candidate.score_breakdown,
                 )
                 self.repository.mark_candidate_reconciled(candidate.user_id, UserFollowState.FOLLOWING)
                 self.repository.record_action(
@@ -2681,7 +2506,7 @@ class DailyRunner:
             source_follow_verified_counts,
         )
 
-    async def _pre_mutation_follow_state_gate(
+    async def _pre_mutation_follow_state_guard(
         self,
         candidate: CandidateUser,
         *,
@@ -3432,33 +3257,13 @@ class DailyRunner:
         resolved = target_user_scan_limit or self.settings.target_user_followers_scan_limit
         return max(1, resolved)
 
-    def _candidate_limit_for_sources(
-        self,
-        *,
-        growth_sources: list[GrowthSource],
-        target_user_scan_limit: int | None,
-        target_user_refs: list[str],
-    ) -> int:
-        if growth_sources == [GrowthSource.TARGET_USER_FOLLOWERS]:
-            return self._resolve_target_user_scan_limit(target_user_scan_limit) * max(1, len(target_user_refs))
-        return self.settings.follow_candidate_limit
-
-    def _discovery_buffer_target(
-        self,
-        *,
-        growth_sources: list[GrowthSource],
-        target_user_scan_limit: int | None,
-        target_user_refs: list[str],
-    ) -> int:
-        base_limit = self._candidate_limit_for_sources(
-            growth_sources=growth_sources,
-            target_user_scan_limit=target_user_scan_limit,
-            target_user_refs=target_user_refs,
-        )
-        floor = max(1, self.settings.growth_queue_buffer_target_min)
+    def _discovery_candidate_scan_limit(self, eligible_target: int) -> int:
+        if eligible_target <= 0:
+            return 0
+        floor = max(eligible_target, self.settings.growth_queue_buffer_target_min)
         ceiling = max(floor, self.settings.growth_queue_buffer_target_max)
-        scaled = self.settings.follow_candidate_limit * max(1, self.settings.growth_queue_buffer_target_multiplier)
-        return max(base_limit, min(ceiling, max(floor, scaled)))
+        scaled = eligible_target * max(1, self.settings.growth_queue_buffer_target_multiplier)
+        return min(ceiling, max(floor, scaled))
 
     def _execution_queue_fetch_limit(self, max_follow_attempts_for_cycle: int) -> int:
         if max_follow_attempts_for_cycle <= 0:
@@ -3620,6 +3425,450 @@ class DailyRunner:
             return "skip:following_above_max"
         return None
 
+    def _refresh_candidate_scoring(self, candidate: CandidateUser) -> None:
+        candidate.score = self._score_candidate(candidate)
+
+    def _score_candidate(self, candidate: CandidateUser) -> float:
+        topic_matches = self._candidate_topic_matches(candidate)
+        primary_topic_keywords = self._positive_primary_topic_keywords(topic_matches)
+        secondary_topic_keywords = self._positive_secondary_topic_keywords(topic_matches)
+        negative_keywords = self._negative_topic_keywords(topic_matches)
+        candidate.matched_keywords = primary_topic_keywords
+
+        followback_score = self._candidate_followback_likelihood_score(candidate)
+        topic_score = self._candidate_topic_fit_score(topic_matches)
+        source_score = self._candidate_source_affinity_score(candidate)
+        newsletter_score = 1.0 if candidate.newsletter_v3_id else 0.0
+        presence_score = self._candidate_presence_score(candidate)
+        activity_score = self._candidate_activity_score(candidate)
+        raw_components = {
+            "followback": round(followback_score, 6),
+            "topic": round(topic_score, 6),
+            "source": round(source_score, 6),
+            "newsletter": round(newsletter_score, 6),
+            "presence": round(presence_score, 6),
+            "activity": round(activity_score, 6),
+        }
+        weighted_components = {
+            "followback": round(self.settings.score_weight_ratio * followback_score, 6),
+            "topic": round(self.settings.score_weight_keyword * topic_score, 6),
+            "source": round(self.settings.score_weight_source * source_score, 6),
+            "newsletter": round(self.settings.score_weight_newsletter * newsletter_score, 6),
+            "presence": round(self.settings.score_weight_presence * presence_score, 6),
+            "activity": round(self.settings.score_weight_activity * activity_score, 6),
+        }
+        base_score = round(sum(weighted_components.values()), 6)
+        penalty_total = round(
+            min(base_score, self.settings.negative_topic_penalty * len(negative_keywords)),
+            6,
+        )
+        score_before_learning = round(max(0.0, base_score - penalty_total), 6)
+        score_breakdown = CandidateScoreBreakdown(
+            raw_components=raw_components,
+            weighted_components=weighted_components,
+            base_score=base_score,
+            penalty_total=penalty_total,
+            score_before_learning=score_before_learning,
+            final_score=score_before_learning,
+            matched_keywords=topic_matches,
+            primary_topic_keywords=primary_topic_keywords,
+            secondary_topic_keywords=secondary_topic_keywords,
+            negative_keywords=negative_keywords,
+            source_weights=self._candidate_source_weights(candidate),
+            ratio_band=self._candidate_ratio_band(candidate),
+            presence_band=self._score_band(presence_score),
+            activity_band=self._score_band(activity_score),
+        )
+        (
+            learning_multiplier,
+            learning_keys,
+            learning_bucket_samples,
+            learning_bucket_rates,
+        ) = self._candidate_learning_adjustment(candidate, score_breakdown)
+        final_score = round(score_before_learning * learning_multiplier, 6)
+        score_breakdown.learning_multiplier = learning_multiplier
+        score_breakdown.learning_keys = learning_keys
+        score_breakdown.learning_bucket_samples = learning_bucket_samples
+        score_breakdown.learning_bucket_rates = learning_bucket_rates
+        score_breakdown.final_score = final_score
+        if negative_keywords:
+            score_breakdown.filter_reasons.append("penalty:negative_topic_keyword")
+        candidate.score_breakdown = score_breakdown
+        return final_score
+
+    def _candidate_followback_likelihood_score(self, candidate: CandidateUser) -> float:
+        ratio_score = self._candidate_ratio_fit_score(candidate)
+        following_score = self._candidate_following_activity_score(candidate)
+        audience_score = self._candidate_audience_fit_score(candidate)
+        return round((ratio_score * 0.55) + (following_score * 0.25) + (audience_score * 0.20), 6)
+
+    def _candidate_ratio_fit_score(self, candidate: CandidateUser) -> float:
+        if candidate.follower_count is None or candidate.following_count is None:
+            return 0.35
+        ratio = self._following_follower_ratio(candidate)
+        if ratio <= 0:
+            return 0.0
+
+        # Prefer users who follow enough people to plausibly follow back, but
+        # penalize extreme following/follower ratios that usually represent
+        # low-signal or indiscriminate accounts.
+        if 0.8 <= ratio <= 3.0:
+            return 1.0
+        if ratio < 0.8:
+            lower = max(0.0, self.settings.min_following_follower_ratio)
+            if ratio <= lower:
+                return 0.15 if math.isclose(ratio, lower) else 0.0
+            span = max(0.001, 0.8 - lower)
+            return min(1.0, 0.35 + ((ratio - lower) / span) * 0.65)
+
+        if ratio <= 8.0:
+            return max(0.45, 1.0 - ((ratio - 3.0) / 5.0) * 0.55)
+        upper = max(8.0, self.settings.max_following_follower_ratio)
+        if ratio >= upper:
+            return 0.08
+        return max(0.08, 0.45 - ((ratio - 8.0) / max(0.001, upper - 8.0)) * 0.37)
+
+    @staticmethod
+    def _candidate_following_activity_score(candidate: CandidateUser) -> float:
+        following_count = candidate.following_count
+        if following_count is None:
+            return 0.5
+        if following_count <= 0:
+            return 0.1
+        if following_count < 50:
+            return 0.45
+        if following_count <= 1200:
+            return 1.0
+        if following_count <= 5000:
+            return 0.75
+        return 0.45
+
+    @staticmethod
+    def _candidate_audience_fit_score(candidate: CandidateUser) -> float:
+        follower_count = candidate.follower_count
+        if follower_count is None:
+            return 0.5
+        if follower_count < 25:
+            return 0.2
+        if follower_count <= 500:
+            return 1.0
+        if follower_count <= 2000:
+            return 0.85
+        if follower_count <= 10000:
+            return 0.55
+        if follower_count <= 100000:
+            return 0.3
+        return 0.15
+
+    @staticmethod
+    def _candidate_topic_fit_score(topic_matches: dict[str, list[str]]) -> float:
+        points = (
+            len(topic_matches.get("strong_primary", [])) * 1.0
+            + len(topic_matches.get("standard_primary", [])) * 0.65
+            + len(topic_matches.get("soft_primary", [])) * 0.35
+            + len(topic_matches.get("strong_secondary", [])) * 0.25
+            + len(topic_matches.get("standard_secondary", [])) * 0.16
+            + len(topic_matches.get("soft_secondary", [])) * 0.10
+        )
+        return round(min(1.0, points / 3.0), 6)
+
+    def _candidate_topic_matches(self, candidate: CandidateUser) -> dict[str, list[str]]:
+        primary_texts = (candidate.bio, candidate.latest_post_title)
+        secondary_texts = (candidate.name, candidate.username)
+        return {
+            "strong_primary": self._match_keywords_in_texts(primary_texts, self.settings.topic_strong_keywords),
+            "standard_primary": self._match_keywords_in_texts(primary_texts, self.settings.bio_keywords),
+            "soft_primary": self._match_keywords_in_texts(primary_texts, self.settings.topic_soft_keywords),
+            "strong_secondary": self._match_keywords_in_texts(secondary_texts, self.settings.topic_strong_keywords),
+            "standard_secondary": self._match_keywords_in_texts(secondary_texts, self.settings.bio_keywords),
+            "soft_secondary": self._match_keywords_in_texts(secondary_texts, self.settings.topic_soft_keywords),
+            "negative_primary": self._match_keywords_in_texts(primary_texts, self.settings.topic_negative_keywords),
+            "negative_secondary": self._match_keywords_in_texts(secondary_texts, self.settings.topic_negative_keywords),
+        }
+
+    @staticmethod
+    def _positive_primary_topic_keywords(topic_matches: dict[str, list[str]]) -> list[str]:
+        return DailyRunner._unique_ordered(
+            [
+                *topic_matches.get("strong_primary", []),
+                *topic_matches.get("standard_primary", []),
+                *topic_matches.get("soft_primary", []),
+            ]
+        )
+
+    @staticmethod
+    def _positive_secondary_topic_keywords(topic_matches: dict[str, list[str]]) -> list[str]:
+        return DailyRunner._unique_ordered(
+            [
+                *topic_matches.get("strong_secondary", []),
+                *topic_matches.get("standard_secondary", []),
+                *topic_matches.get("soft_secondary", []),
+            ]
+        )
+
+    @staticmethod
+    def _negative_topic_keywords(topic_matches: dict[str, list[str]]) -> list[str]:
+        return DailyRunner._unique_ordered(
+            [
+                *topic_matches.get("negative_primary", []),
+                *topic_matches.get("negative_secondary", []),
+            ]
+        )
+
+    def _candidate_source_affinity_score(self, candidate: CandidateUser) -> float:
+        source_weights = self._candidate_source_weights(candidate)
+        if not source_weights:
+            return 0.0
+        best = max(source_weights.values())
+        repeated_source_bonus = 0.08 * max(0, len(source_weights) - 1)
+        return round(min(1.0, best + repeated_source_bonus), 6)
+
+    def _candidate_source_weights(self, candidate: CandidateUser) -> dict[str, float]:
+        source_scores = {
+            CandidateSource.SEED_FOLLOWERS: 0.9,
+            CandidateSource.TARGET_USER_FOLLOWERS: 0.85,
+            CandidateSource.POST_RESPONDERS: 0.8,
+            CandidateSource.TOPIC_CURATED_LIST: 0.72,
+            CandidateSource.TOPIC_LATEST_STORIES: 0.65,
+            CandidateSource.TOPIC_WHO_TO_FOLLOW: 0.58,
+            CandidateSource.WHO_TO_FOLLOW_MODULE: 0.45,
+        }
+        weights: dict[str, float] = {}
+        for source in candidate.sources:
+            weights[source.value] = round(self._source_quality_score(source, source_scores.get(source, 0.35)), 6)
+        return weights
+
+    def _source_quality_score(self, source: CandidateSource, default_score: float) -> float:
+        overrides = self.settings.discovery_source_quality_weights
+        candidate_key = self._source_quality_key(source.value)
+        growth_key = self._source_quality_key(self._growth_source_for_candidate_source(source).value)
+        return max(0.0, min(1.0, overrides.get(candidate_key, overrides.get(growth_key, default_score))))
+
+    def _candidate_presence_score(self, candidate: CandidateUser) -> float:
+        score = 0.0
+        if candidate.username:
+            score += 0.08
+        if candidate.name:
+            score += 0.08
+        if self._candidate_has_meaningful_bio(candidate):
+            score += 0.24
+        elif candidate.bio and candidate.bio.strip():
+            score += 0.1
+        if candidate.newsletter_v3_id:
+            score += 0.16
+        if candidate.follower_count is not None and candidate.following_count is not None:
+            score += 0.14
+        if candidate.follower_count is not None and candidate.follower_count >= self.settings.candidate_min_followers:
+            score += 0.08
+        if candidate.latest_post_id or candidate.latest_post_title:
+            score += 0.14
+        if candidate.last_post_created_at:
+            score += 0.08 + (self._candidate_activity_score(candidate) * 0.10)
+        return min(1.0, score)
+
+    @staticmethod
+    def _candidate_has_meaningful_bio(candidate: CandidateUser) -> bool:
+        bio = (candidate.bio or "").strip()
+        if not bio:
+            return False
+        tokens = re.findall(r"[a-z0-9]+", bio.lower())
+        return len(tokens) >= 4 and len(bio) >= 24
+
+    def _candidate_activity_score(self, candidate: CandidateUser) -> float:
+        timestamp = self._parse_iso_datetime(candidate.last_post_created_at)
+        if timestamp is None:
+            return 0.45 if candidate.latest_post_id or candidate.latest_post_title else 0.0
+        age_days = max(0.0, (datetime.now(timezone.utc) - timestamp).total_seconds() / 86400)
+        if age_days <= 14:
+            return 1.0
+        if age_days <= 30:
+            return 0.85
+        if age_days <= 90:
+            return 0.6
+        if age_days <= 180:
+            return 0.35
+        return 0.12
+
+    def _candidate_learning_adjustment(
+        self,
+        candidate: CandidateUser,
+        score_breakdown: CandidateScoreBreakdown,
+    ) -> tuple[float, list[str], dict[str, int], dict[str, float]]:
+        if not self.settings.discovery_learning_enabled:
+            return 1.0, [], {}, {}
+        model = self._discovery_learning_model()
+        global_completed = int(model.get("global_completed", 0))
+        global_rate = float(model.get("global_rate", 0.0))
+        buckets = model.get("buckets", {})
+        if global_completed < self.settings.discovery_learning_min_completed or global_rate <= 0:
+            return 1.0, [], {}, {}
+        if not isinstance(buckets, dict):
+            return 1.0, [], {}, {}
+
+        learning_keys = self._candidate_learning_keys(candidate, score_breakdown)
+        samples: dict[str, int] = {}
+        rates: dict[str, float] = {}
+        deltas: list[float] = []
+        prior = self.settings.discovery_learning_prior_strength
+        for key in learning_keys:
+            bucket = buckets.get(key)
+            if not isinstance(bucket, dict):
+                continue
+            completed = int(bucket.get("completed", 0))
+            followed_back = int(bucket.get("followed_back", 0))
+            if completed < self.settings.discovery_learning_min_completed:
+                continue
+            smoothed_rate = (followed_back + (global_rate * prior)) / (completed + prior)
+            samples[key] = completed
+            rates[key] = round(smoothed_rate, 4)
+            deltas.append((smoothed_rate / global_rate) - 1.0)
+
+        if not deltas:
+            return 1.0, learning_keys, samples, rates
+        average_delta = sum(deltas) / len(deltas)
+        max_delta = self.settings.discovery_learning_max_delta
+        bounded_delta = max(-max_delta, min(max_delta, average_delta))
+        return round(1.0 + bounded_delta, 6), learning_keys, samples, rates
+
+    def _discovery_learning_model(self) -> dict[str, object]:
+        cached = getattr(self, "_discovery_learning_cache", None)
+        if cached is not None:
+            return cached
+        model: dict[str, object] = {
+            "global_completed": 0,
+            "global_followed_back": 0,
+            "global_rate": 0.0,
+            "buckets": {},
+        }
+        repository = getattr(self, "repository", None)
+        if repository is None or not self.settings.discovery_learning_enabled:
+            self._discovery_learning_cache = model
+            return model
+
+        buckets: dict[str, dict[str, int]] = {}
+        global_completed = 0
+        global_followed_back = 0
+        for row in repository.discovery_learning_rows(lookback_days=self.settings.discovery_learning_lookback_days):
+            status = str(row.get("cleanup_status") or "")
+            if status not in {"followed_back", "unfollowed_nonreciprocal"}:
+                continue
+            success = status == "followed_back"
+            global_completed += 1
+            if success:
+                global_followed_back += 1
+            for key in self._learning_keys_from_outcome_row(row):
+                bucket = buckets.setdefault(key, {"completed": 0, "followed_back": 0})
+                bucket["completed"] += 1
+                if success:
+                    bucket["followed_back"] += 1
+
+        model["global_completed"] = global_completed
+        model["global_followed_back"] = global_followed_back
+        model["global_rate"] = round((global_followed_back / global_completed) if global_completed else 0.0, 6)
+        model["buckets"] = buckets
+        self._discovery_learning_cache = model
+        return model
+
+    def _learning_keys_from_outcome_row(self, row: dict[str, str | None]) -> list[str]:
+        keys: list[str] = []
+        growth_sources = self._split_serialized_values(row.get("growth_sources"))
+        if not growth_sources:
+            growth_sources = self._split_serialized_values(row.get("follow_source"))
+        growth_policy = (row.get("growth_policy") or "unknown").strip() or "unknown"
+        for source in growth_sources:
+            keys.append(self._learning_key("source", source))
+            keys.append(self._learning_key("source_policy", f"{source}|{growth_policy}"))
+        keys.append(self._learning_key("policy", growth_policy))
+
+        score_breakdown = self._score_breakdown_from_raw(row.get("score_breakdown_json"))
+        if score_breakdown is not None:
+            for keyword in score_breakdown.primary_topic_keywords:
+                keys.append(self._learning_key("topic", keyword))
+            if score_breakdown.ratio_band:
+                keys.append(self._learning_key("ratio_band", score_breakdown.ratio_band))
+            if score_breakdown.presence_band:
+                keys.append(self._learning_key("presence_band", score_breakdown.presence_band))
+            if score_breakdown.activity_band:
+                keys.append(self._learning_key("activity_band", score_breakdown.activity_band))
+        return self._unique_ordered(keys)
+
+    def _candidate_learning_keys(self, candidate: CandidateUser, score_breakdown: CandidateScoreBreakdown) -> list[str]:
+        keys: list[str] = []
+        growth_policy = getattr(self, "_active_growth_policy_for_scoring", self.settings.default_growth_policy)
+        policy_value = growth_policy.value if isinstance(growth_policy, GrowthPolicy) else str(growth_policy)
+        for source in self._candidate_growth_source_values(candidate):
+            keys.append(self._learning_key("source", source))
+            keys.append(self._learning_key("source_policy", f"{source}|{policy_value}"))
+        keys.append(self._learning_key("policy", policy_value))
+        for keyword in score_breakdown.primary_topic_keywords:
+            keys.append(self._learning_key("topic", keyword))
+        if score_breakdown.ratio_band:
+            keys.append(self._learning_key("ratio_band", score_breakdown.ratio_band))
+        if score_breakdown.presence_band:
+            keys.append(self._learning_key("presence_band", score_breakdown.presence_band))
+        if score_breakdown.activity_band:
+            keys.append(self._learning_key("activity_band", score_breakdown.activity_band))
+        return self._unique_ordered(keys)
+
+    @staticmethod
+    def _score_breakdown_from_raw(raw_score_breakdown: str | None) -> CandidateScoreBreakdown | None:
+        if not raw_score_breakdown:
+            return None
+        try:
+            return CandidateScoreBreakdown.model_validate_json(raw_score_breakdown)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _split_serialized_values(raw_value: str | None) -> list[str]:
+        if not raw_value:
+            return []
+        return [item.strip() for item in raw_value.split(",") if item.strip()]
+
+    @staticmethod
+    def _learning_key(prefix: str, value: str) -> str:
+        normalized = value.strip().lower()
+        return f"{prefix}:{normalized}"
+
+    @staticmethod
+    def _source_quality_key(value: str) -> str:
+        return value.strip().lower().replace("-", "_")
+
+    def _candidate_ratio_band(self, candidate: CandidateUser) -> str:
+        if candidate.follower_count is None or candidate.following_count is None:
+            return "unknown"
+        ratio = self._following_follower_ratio(candidate)
+        if ratio < self.settings.min_following_follower_ratio:
+            return "below_threshold"
+        if ratio < 0.8:
+            return "low"
+        if ratio <= 3.0:
+            return "balanced"
+        if ratio <= 8.0:
+            return "high"
+        if ratio <= self.settings.max_following_follower_ratio:
+            return "noisy"
+        return "above_threshold"
+
+    @staticmethod
+    def _score_band(score: float) -> str:
+        if score >= 0.8:
+            return "high"
+        if score >= 0.5:
+            return "medium"
+        if score > 0.0:
+            return "low"
+        return "none"
+
+    @staticmethod
+    def _unique_ordered(items: list[str]) -> list[str]:
+        values: list[str] = []
+        for item in items:
+            normalized = item.strip().lower()
+            if normalized and normalized not in values:
+                values.append(normalized)
+        return values
+
     def _candidate_has_recent_activity(self, candidate: CandidateUser) -> bool:
         if self.settings.candidate_recent_activity_days <= 0:
             return True
@@ -3628,6 +3877,14 @@ class DailyRunner:
             return False
         threshold = datetime.now(timezone.utc) - timedelta(days=self.settings.candidate_recent_activity_days)
         return timestamp >= threshold
+
+    def _candidate_negative_filter_reason(self, candidate: CandidateUser) -> str | None:
+        if not self.settings.discovery_reject_negative_keywords:
+            return None
+        score_breakdown = candidate.score_breakdown
+        if score_breakdown is not None and score_breakdown.negative_keywords:
+            return "skip:negative_topic_keyword"
+        return None
 
     @staticmethod
     def _parse_iso_datetime(value: str | None) -> datetime | None:
@@ -3999,10 +4256,41 @@ class DailyRunner:
         return following / followers
 
     def _match_keywords(self, bio: str | None) -> list[str]:
-        if not bio:
+        return self._match_keywords_in_text(bio)
+
+    def _match_candidate_keywords(self, candidate: CandidateUser) -> list[str]:
+        topic_matches = self._candidate_topic_matches(candidate)
+        return self._positive_primary_topic_keywords(topic_matches)
+
+    def _match_keywords_in_texts(self, texts: tuple[str | None, ...], keywords: list[str]) -> list[str]:
+        matched: list[str] = []
+        for text in texts:
+            for keyword in self._match_keywords_in_text(text, keywords=keywords):
+                if keyword not in matched:
+                    matched.append(keyword)
+        return matched
+
+    def _match_keywords_in_text(self, text: str | None, *, keywords: list[str] | None = None) -> list[str]:
+        if not text:
             return []
-        normalized = bio.lower()
-        return [keyword for keyword in self.settings.bio_keywords if keyword in normalized]
+        text_tokens = re.findall(r"[a-z0-9]+", text.lower())
+        if not text_tokens:
+            return []
+        token_set = set(text_tokens)
+        token_text = " ".join(text_tokens)
+        matches: list[str] = []
+        for keyword in (self.settings.bio_keywords if keywords is None else keywords):
+            keyword_tokens = re.findall(r"[a-z0-9]+", keyword.lower())
+            if not keyword_tokens:
+                continue
+            if len(keyword_tokens) == 1:
+                matched = keyword_tokens[0] in token_set
+            else:
+                keyword_phrase = " ".join(keyword_tokens)
+                matched = bool(re.search(rf"(?<!\S){re.escape(keyword_phrase)}(?!\S)", token_text))
+            if matched and keyword not in matches:
+                matches.append(keyword)
+        return matches
 
     def _resolved_follow_limit_for_cycle(self) -> int:
         raw_limit = (
@@ -4171,6 +4459,7 @@ class DailyRunner:
                 newsletter_v3_id=candidate.newsletter_v3_id,
                 source_labels=[source.value for source in candidate.sources],
                 score=candidate.score,
+                score_breakdown=candidate.score_breakdown,
                 decision_reason=reason,
                 eligible=eligible,
                 needs_reconcile=needs_reconcile,
