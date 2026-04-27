@@ -6,8 +6,7 @@
   <a href="#-features"><strong>Features</strong></a> •
   <a href="#-quick-start"><strong>Quick Start</strong></a> •
   <a href="#-how-it-works"><strong>How It Works</strong></a> •
-  <a href="#-safety-first"><strong>Safety</strong></a> •
-  <a href="#-contributing"><strong>Contributing</strong></a>
+  <a href="#-safety-first"><strong>Safety</strong></a> 
 </p>
 
 <p align="center">
