@@ -1,12 +1,12 @@
-# 🤖 Medium Stealth Bot
+# Medium Stealth Bot
 
-> **Local-first, ethical Medium growth automation** — discover, engage, and grow your Medium account with intelligent, queue-driven workflows that keep operator control front and center.
+> **Local-first Medium growth automation** for disciplined discovery, warm engagement, queue-driven execution, and operator-controlled account maintenance.
 
 <p align="center">
-  <a href="#-features"><strong>Features</strong></a> •
-  <a href="#-quick-start"><strong>Quick Start</strong></a> •
-  <a href="#-how-it-works"><strong>How It Works</strong></a> •
-  <a href="#-safety-first"><strong>Safety</strong></a> 
+  <a href="#features"><strong>Features</strong></a> •
+  <a href="#quick-start"><strong>Quick Start</strong></a> •
+  <a href="#how-it-works"><strong>How It Works</strong></a> •
+  <a href="#safety-first"><strong>Safety</strong></a>
 </p>
 
 <p align="center">
@@ -22,23 +22,23 @@
 
 ---
 
-## ✨ Why Medium Stealth Bot?
+## Why Medium Stealth Bot?
 
-Tired of manual Medium engagement? Want to grow your audience without giving up local control?
+Medium growth is most effective when discovery, engagement, and follow-up are deliberate. Medium Stealth Bot gives operators a local command center for finding relevant writers, preparing a reviewed Growth queue, and executing conservative engagement policies with clear limits.
 
-**Medium Stealth Bot** is a local-first CLI tool that helps writers, creators, and marketers:
+It is built for writers, creators, and technical operators who want automation without handing account data to a hosted service.
 
-- 🎯 **Discover** high-value connections using transparent scoring and queueing
-- 🤝 **Engage** with warm interactions such as follows, claps, comments, and highlights
-- 🧹 **Maintain** healthy follower ratios with cleanup and reconciliation workflows
-- 🔒 **Stay in control** with local-only data, dry-run modes, and built-in guardrails
-- 📊 **Track everything** with inspectable logs, queue status, and run artifacts
+- **Discover** relevant writers using transparent scoring and queueing
+- **Engage** through warm policies that can include follows, claps, comments, and highlights
+- **Maintain** healthy follower ratios with cleanup and reconciliation workflows
+- **Control** execution with local-only data, dry-run modes, budgets, and a kill switch
+- **Audit** activity through logs, queue state, database records, and run artifacts
 
-> 💡 **Key philosophy:** You control the automation. Auth, queue data, browser profile, and artifacts stay on your machine.
+The core principle is simple: you control the automation. Auth, queue data, browser profile, and operational artifacts stay on your machine.
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -70,16 +70,16 @@ The interactive start menu guides you through discovery, growth, unfollow, maint
 
 ---
 
-## 🔑 Features
+## Features
 
-### 🎯 Smart Discovery Pipeline
+### Smart Discovery Pipeline
 
 - **Multi-source candidate collection:** topic recommendations, seed followers, target-user followers, publication adjacency, and active responders
 - **Transparent scoring:** follow-back likelihood, topic affinity, activity signals, newsletter availability, Medium presence, and source quality
 - **Queue-first design:** only execution-ready candidates enter your Growth queue, capped at 700 rows by default
 - **Inspectable learning data:** score breakdowns are stored for auditability and conservative follow-cycle learning
 
-### 🤝 Ethical Growth Execution
+### Growth Execution
 
 Choose your engagement style:
 
@@ -92,24 +92,24 @@ Choose your engagement style:
 
 `warm-engage-plus-rare-comment` is still accepted as a deprecated alias for `warm-engage-plus-comment`.
 
-### 🧹 Intelligent Maintenance
+### Intelligent Maintenance
 
 - **Cleanup-only unfollow:** remove non-reciprocal follows after configurable windows
 - **Graph sync:** keep local follow-state aligned with Medium
 - **Reconciliation:** verify ambiguous follow states before relying on them
 - **DB hygiene:** prune stale operational data with retention windows
 
-### 🔐 Safety First
+### Safety First
 
-- ✅ **Local-only operation:** auth, queue, and artifacts stay on your machine
-- ✅ **Explicit dry-run modes:** preview actions before going live
-- ✅ **UTC day-boundary budgets:** enforce daily action caps for follows, claps, comments, highlights, and unfollows
-- ✅ **Live state verification:** re-check follow state immediately before mutation
-- ✅ **Claim-safe execution:** candidates are atomically claimed before live execution
-- ✅ **Kill switch:** `OPERATOR_KILL_SWITCH=true` stops operations
-- ✅ **Contract validation:** capture-backed Medium API contracts help catch drift
+- **Local-only operation:** auth, queue, and artifacts stay on your machine
+- **Explicit dry-run modes:** preview actions before going live
+- **UTC day-boundary budgets:** enforce daily action caps for follows, claps, comments, highlights, and unfollows
+- **Live state verification:** re-check follow state immediately before mutation
+- **Claim-safe execution:** candidates are atomically claimed before live execution
+- **Kill switch:** `OPERATOR_KILL_SWITCH=true` stops operations
+- **Contract validation:** capture-backed Medium API contracts help catch drift
 
-### 📊 Observability & Diagnostics
+### Observability and Diagnostics
 
 ```bash
 uv run bot queue
@@ -121,26 +121,73 @@ uv run bot contracts --tag programming --no-execute-reads
 
 ---
 
-## 🔄 How It Works
+## How It Works
 
 ```mermaid
-graph LR
-    A[Discovery Phase] --> B[Score and Filter Candidates]
-    B --> C[Queue Execution-Ready Rows]
-    C --> D[Growth Phase]
-    D --> E[Apply Engagement Policy]
-    E --> F[Log and Validate Results]
+flowchart TD
+    subgraph D0[Discovery]
+        A[Select sources and tags] --> B[Read Medium surfaces]
+        B --> C[Normalize candidate profiles]
+        C --> D[Score relevance, activity, affinity, and quality]
+        D --> E{Meets queue criteria?}
+        E -- No --> F[Record skip reason and diagnostics]
+        E -- Yes --> G[Insert or refresh Growth queue row]
+    end
+
+    subgraph R0[Review and Planning]
+        G --> H[Inspect queue status]
+        H --> I{Run mode}
+        I -- Dry run --> J[Plan actions without Medium or DB mutations]
+        I -- Live --> K[Auto-sync graph state when enabled]
+    end
+
+    subgraph S0[Live Safety Gate]
+        K --> L[Claim candidate atomically]
+        L --> M{Daily and per-action budgets available?}
+        M -- No --> N[Stop or skip with budget_exhausted]
+        M -- Yes --> O[Verify current follow state]
+    end
+
+    subgraph G0[Growth Policy]
+        O --> P{Selected policy}
+        P --> P1[follow-only]
+        P --> P2[warm-engage]
+        P --> P3[warm-engage-plus-comment]
+        P --> P4[warm-engage-plus-highlight]
+        P1 --> Q[Execute guarded mutations]
+        P2 --> Q
+        P3 --> Q
+        P4 --> Q
+    end
+
+    subgraph M0[Audit and Maintenance]
+        Q --> U[Write action log]
+        U --> V[Update queue result]
+        V --> W[Update follow-cycle state]
+        W --> X[Validate artifacts and inspect status]
+        X --> Y[Sync, reconcile, cleanup, and DB hygiene]
+    end
+
+    J --> X
+
+    classDef phase fill:#f7f7f5,stroke:#c9c5bd,color:#222;
+    classDef gate fill:#fff8e6,stroke:#d8b45f,color:#222;
+    class D0,R0,S0,G0,M0 phase;
+    class E,I,M,P gate;
 ```
 
-1. **Discover**: collect, score, filter, and queue candidates. No follow/clap/comment/highlight mutations happen here.
-2. **Grow**: execute follows and optional warm engagement from the pre-approved queue.
-3. **Maintain**: sync graph state, reconcile follow status, and clean up stale operational data.
+1. **Discover:** collect candidate profiles from configured Medium surfaces, normalize the data, score fit and activity, then queue only candidates that meet the configured thresholds.
+2. **Review:** inspect the Growth queue before execution. Discovery does not perform follows, claps, comments, or highlights.
+3. **Plan:** run Growth in dry-run mode to see the intended actions without changing Medium, the action log, queue state, or follow-cycle records.
+4. **Execute:** live Growth claims each candidate immediately before mutation, checks daily budgets, verifies current follow state, then applies the selected policy.
+5. **Record:** every live result is written to local state so queue decisions, follow-cycle history, and operational artifacts remain inspectable.
+6. **Maintain:** graph sync, reconciliation, cleanup, and DB hygiene keep local state aligned and manageable.
 
 Run discovery first, then growth. This separation keeps candidate selection auditable and execution controlled.
 
 ---
 
-## ⚙️ Configuration Highlights
+## Configuration Highlights
 
 Start from `.env.example` and tune the parts that match your account and pacing:
 
@@ -166,25 +213,25 @@ MAX_HIGHLIGHT_ACTIONS_PER_DAY="8"
 GRAPH_SYNC_AUTO_ENABLED="true"
 ```
 
-📚 Full config docs: [`.env.example`](.env.example) • [`docs/RUNBOOK.md`](docs/RUNBOOK.md)
+Full config docs: [`.env.example`](.env.example) • [`docs/RUNBOOK.md`](docs/RUNBOOK.md)
 
 ---
 
-## 🛡️ Ethical Use Guidelines
+## Ethical Use Guidelines
 
 This tool is designed for controlled, operator-directed growth automation. Please:
 
-- ✅ Use it to discover and engage with genuinely relevant content
-- ✅ Review Medium's current [Terms of Service](https://medium.com/policy)
-- ✅ Start with `--dry-run` to preview decisions and actions
-- ✅ Monitor account health and tune pacing conservatively
-- ❌ Do not use it for spam, deceptive engagement, or mass-follow churn
+- Use it to discover and engage with genuinely relevant content
+- Review Medium's current [Terms of Service](https://medium.com/policy)
+- Start with `--dry-run` to preview decisions and actions
+- Monitor account health and tune pacing conservatively
+- Do not use it for spam, deceptive engagement, or mass-follow churn
 
-> ⚠️ **Disclaimer:** You are responsible for how you use this tool. The authors assume no liability for account actions, automation decisions, or platform policy changes.
+**Disclaimer:** You are responsible for how you use this tool. The authors assume no liability for account actions, automation decisions, or platform policy changes.
 
 ---
 
-## 🧭 Common Workflows
+## Common Workflows
 
 ### Fill the Growth Queue
 
@@ -216,7 +263,7 @@ uv run bot maintenance db-hygiene --dry-run
 
 ---
 
-## 📦 Project Structure
+## Project Structure
 
 ```text
 Medium-Stealth-Bot/
@@ -229,16 +276,15 @@ Medium-Stealth-Bot/
 └── pyproject.toml           # Project metadata and dependencies
 ```
 
-
 ---
 
-## 📄 License
+## License
 
 Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for details.
 
 ---
 
-## ❓ FAQ
+## FAQ
 
 **Q: Is this against Medium's ToS?**
 
@@ -246,7 +292,7 @@ A: You should review Medium's current policies before running any automation. Th
 
 **Q: Will my account get banned?**
 
-A: Generally speaking, **no** — but no automation tool can guarantee zero risk. Medium's enforcement is nuanced and evolves over time.
+A: Generally speaking, **no**, but no automation tool can guarantee zero risk. Medium's enforcement is nuanced and evolves over time.
 
 **Q: Can I run this on a server or VPS?**
 
