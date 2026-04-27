@@ -9,16 +9,6 @@
   <a href="#safety-first"><strong>Safety</strong></a>
 </p>
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Python-3.12+-blue?logo=python&logoColor=white" alt="Python">
-  <img src="https://img.shields.io/badge/uv-Ready-FFD43B?logo=python&logoColor=black" alt="uv">
-  <img src="https://img.shields.io/badge/License-MIT-green" alt="License">
-  <img src="https://img.shields.io/github/stars/moalimirinfinity/Medium-Stealth-Bot?style=social" alt="Stars">
-  <br>
-  <img src="https://img.shields.io/badge/Status-Actively_Maintained-brightgreen" alt="Status">
-  <img src="https://img.shields.io/badge/Platform-Medium.com-orange?logo=medium&logoColor=white" alt="Platform">
-  <img src="https://img.shields.io/badge/Type-CLI_Tool-lightgrey" alt="Type">
-</p>
 
 ---
 
