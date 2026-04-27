@@ -230,43 +230,6 @@ Medium-Stealth-Bot/
 └── pyproject.toml           # Project metadata and dependencies
 ```
 
----
-
-## 🤝 Contributing
-
-Contributions are welcome.
-
-1. **Fork** the repository
-2. **Create** a feature branch: `git checkout -b feat/your-idea`
-3. **Develop** with clear types, focused changes, and relevant validation
-4. **Validate** with the project CLI:
-
-```bash
-uv run python -m compileall -q src
-uv run bot contracts --tag programming --no-execute-reads
-```
-
-5. **Submit** a PR with a clear description and any useful logs or screenshots
-
-📖 See [`docs/RELEASE.md`](docs/RELEASE.md) for release workflow details.
-
-### Good First Issues
-
-- 🐛 Bug fixes in discovery scoring
-- 📝 Documentation improvements
-- 🔧 New discovery source integrations
-- 🎨 CLI UX enhancements
-
----
-
-## 🌟 Show Your Support
-
-If Medium Stealth Bot helps your workflow:
-
-- ⭐ **Star this repo** so others can discover it
-- 💬 **Open an issue** with questions, ideas, or field reports
-- 🔁 **Fork and customize** the workflow for your own operating style
-- 🧪 **Share validation notes** to help improve safety and reliability
 
 ---
 
@@ -284,7 +247,7 @@ A: You should review Medium's current policies before running any automation. Th
 
 **Q: Will my account get banned?**
 
-A: No automation tool can guarantee zero risk. Medium Stealth Bot reduces risk with daily budgets, pacing, dry-runs, live-state checks, and safety halts. Use conservative limits and monitor results.
+A: Generally speaking, **no** — but no automation tool can guarantee zero risk. Medium's enforcement is nuanced and evolves over time.
 
 **Q: Can I run this on a server or VPS?**
 
