@@ -124,56 +124,12 @@ uv run bot contracts --tag programming --no-execute-reads
 ## How It Works
 
 ```mermaid
-flowchart TD
-    subgraph D0[Discovery]
-        A[Select sources and tags] --> B[Read Medium surfaces]
-        B --> C[Normalize candidate profiles]
-        C --> D[Score relevance, activity, affinity, and quality]
-        D --> E{Meets queue criteria?}
-        E -- No --> F[Record skip reason and diagnostics]
-        E -- Yes --> G[Insert or refresh Growth queue row]
-    end
-
-    subgraph R0[Review and Planning]
-        G --> H[Inspect queue status]
-        H --> I{Run mode}
-        I -- Dry run --> J[Plan actions without Medium or DB mutations]
-        I -- Live --> K[Auto-sync graph state when enabled]
-    end
-
-    subgraph S0[Live Safety Gate]
-        K --> L[Claim candidate atomically]
-        L --> M{Daily and per-action budgets available?}
-        M -- No --> N[Stop or skip with budget_exhausted]
-        M -- Yes --> O[Verify current follow state]
-    end
-
-    subgraph G0[Growth Policy]
-        O --> P{Selected policy}
-        P --> P1[follow-only]
-        P --> P2[warm-engage]
-        P --> P3[warm-engage-plus-comment]
-        P --> P4[warm-engage-plus-highlight]
-        P1 --> Q[Execute guarded mutations]
-        P2 --> Q
-        P3 --> Q
-        P4 --> Q
-    end
-
-    subgraph M0[Audit and Maintenance]
-        Q --> U[Write action log]
-        U --> V[Update queue result]
-        V --> W[Update follow-cycle state]
-        W --> X[Validate artifacts and inspect status]
-        X --> Y[Sync, reconcile, cleanup, and DB hygiene]
-    end
-
-    J --> X
-
-    classDef phase fill:#f7f7f5,stroke:#c9c5bd,color:#222;
-    classDef gate fill:#fff8e6,stroke:#d8b45f,color:#222;
-    class D0,R0,S0,G0,M0 phase;
-    class E,I,M,P gate;
+graph LR
+    A[Discovery Phase] --> B[Score and Filter Candidates]
+    B --> C[Queue Execution-Ready Rows]
+    C --> D[Growth Phase]
+    D --> E[Apply Engagement Policy]
+    E --> F[Log and Validate Results]
 ```
 
 1. **Discover:** collect candidate profiles from configured Medium surfaces, normalize the data, score fit and activity, then queue only candidates that meet the configured thresholds.
