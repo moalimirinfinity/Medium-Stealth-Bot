@@ -3,9 +3,9 @@
 > **Local-first Medium growth automation** for disciplined discovery, warm engagement, queue-driven execution, and operator-controlled account maintenance.
 
 <p align="center">
-  <a href="#features"><strong>Features</strong></a> •
-  <a href="#quick-start"><strong>Quick Start</strong></a> •
-  <a href="#how-it-works"><strong>How It Works</strong></a> •
+  <a href="#features"><strong>Features</strong></a> |
+  <a href="#quick-start"><strong>Quick Start</strong></a> |
+  <a href="#how-it-works"><strong>How It Works</strong></a> |
   <a href="#safety-first"><strong>Safety</strong></a>
 </p>
 
