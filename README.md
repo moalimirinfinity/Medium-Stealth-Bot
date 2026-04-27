@@ -1,6 +1,6 @@
 # 🤖 Medium Stealth Bot
 
-> **Local-first, ethical Medium growth automation** — discover, engage, and grow your Medium presence with intelligent, queue-driven workflows that keep operator control front and center.
+> **Local-first, ethical Medium growth automation** — discover, engage, and grow your Medium account with intelligent, queue-driven workflows that keep operator control front and center.
 
 <p align="center">
   <a href="#-features"><strong>Features</strong></a> •
