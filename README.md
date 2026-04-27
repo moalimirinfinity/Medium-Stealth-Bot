@@ -1,241 +1,295 @@
-# Medium Stealth Bot
+# 🤖 Medium Stealth Bot
 
-Local-first Medium automation with explicit discovery, queue-driven growth execution, unfollow maintenance, and inspectable run artifacts.
+> **Local-first, ethical Medium growth automation** — discover, engage, and grow your Medium presence with intelligent, queue-driven workflows that keep operator control front and center.
 
-## Current Project State
+<p align="center">
+  <a href="#-features"><strong>Features</strong></a> •
+  <a href="#-quick-start"><strong>Quick Start</strong></a> •
+  <a href="#-how-it-works"><strong>How It Works</strong></a> •
+  <a href="#-safety-first"><strong>Safety</strong></a> •
+  <a href="#-contributing"><strong>Contributing</strong></a>
+</p>
 
-The project is now organized around separate operational pipelines:
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.12+-blue?logo=python&logoColor=white" alt="Python">
+  <img src="https://img.shields.io/badge/uv-Ready-FFD43B?logo=python&logoColor=black" alt="uv">
+  <img src="https://img.shields.io/badge/License-MIT-green" alt="License">
+  <img src="https://img.shields.io/github/stars/moalimirinfinity/Medium-Stealth-Bot?style=social" alt="Stars">
+  <br>
+  <img src="https://img.shields.io/badge/Status-Actively_Maintained-brightgreen" alt="Status">
+  <img src="https://img.shields.io/badge/Platform-Medium.com-orange?logo=medium&logoColor=white" alt="Platform">
+  <img src="https://img.shields.io/badge/Type-CLI_Tool-lightgrey" alt="Type">
+</p>
 
-- `Discovery`: collect, score, filter, and persist execution-ready candidates into the local queue
-- `Growth`: drain the execution-ready queue using `follow-only`, `warm-engage`, `warm-engage-plus-comment`, or `warm-engage-plus-highlight`
-- `Unfollow`: run cleanup-only unfollow workflows
-- `Maintenance`: sync local graph state, reconcile follow state, and prune stale DB rows
-- `Diagnostics` / `Observability`: contract checks, probes, queue status, and artifact validation
+---
 
-This is a local operator workflow. Auth, DB, queue, browser profile, and run artifacts stay on the machine.
+## ✨ Why Medium Stealth Bot?
 
-## Feature Highlights
+Tired of manual Medium engagement? Want to grow your audience without giving up local control?
 
-- Interactive start menu with section-first navigation
-- Queue-first growth model: discovery chooses candidates, growth executes actions
-- Separate unfollow/cleanup workflow
-- Local SQLite persistence for queue, follow cycles, reconciliation, and graph cache
-- Contract-aware GraphQL client and capture-backed registry
-- Live and dry-run modes across discovery, growth, cleanup, and maintenance
-- Run artifacts, queue status views, DB hygiene tooling, and artifact validation
-- Production profile validation and local scheduler support
+**Medium Stealth Bot** is a local-first CLI tool that helps writers, creators, and marketers:
 
-## Quick Start
+- 🎯 **Discover** high-value connections using transparent scoring and queueing
+- 🤝 **Engage** with warm interactions such as follows, claps, comments, and highlights
+- 🧹 **Maintain** healthy follower ratios with cleanup and reconciliation workflows
+- 🔒 **Stay in control** with local-only data, dry-run modes, and built-in guardrails
+- 📊 **Track everything** with inspectable logs, queue status, and run artifacts
+
+> 💡 **Key philosophy:** You control the automation. Auth, queue data, browser profile, and artifacts stay on your machine.
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- Python 3.12+
+- [`uv`](https://github.com/astral-sh/uv) package manager
+- Playwright Chromium
+- Medium account with an active session
+
+### Install & Run
 
 ```bash
+# 1. Clone the repository
+git clone https://github.com/moalimirinfinity/Medium-Stealth-Bot.git
+cd Medium-Stealth-Bot
+
+# 2. Install dependencies
 uv sync --group dev
 uv run playwright install chromium
+
+# 3. Configure your environment
 cp .env.example .env
+
+# 4. Setup and launch
 uv run bot setup
 uv run bot start
 ```
 
-`bot setup` can help import auth and write baseline defaults to `.env`.
+The interactive start menu guides you through discovery, growth, unfollow, maintenance, diagnostics, and observability workflows.
 
-## Recommended Workflow
+---
 
-1. Validate your profile.
+## 🔑 Features
 
-```bash
-cp .env.production.example .env.production
-uv run bot profile-validate --env-path .env.production
-```
+### 🎯 Smart Discovery Pipeline
 
-2. Fill the queue with discovery.
+- **Multi-source candidate collection:** topic recommendations, seed followers, target-user followers, publication adjacency, and active responders
+- **Transparent scoring:** follow-back likelihood, topic affinity, activity signals, newsletter availability, Medium presence, and source quality
+- **Queue-first design:** only execution-ready candidates enter your Growth queue, capped at 700 rows by default
+- **Inspectable learning data:** score breakdowns are stored for auditability and conservative follow-cycle learning
 
-```bash
-uv run bot discover --live --source topic-recommended --source seed-followers --tag programming
-```
+### 🤝 Ethical Growth Execution
 
-3. Check queue status.
+Choose your engagement style:
+
+| Policy | Description | Best For |
+| --- | --- | --- |
+| `follow-only` | Follow selected queue candidates without pre-follow engagement | Simple network building |
+| `warm-engage` | Read, clap, then follow | Lightweight relationship building |
+| `warm-engage-plus-comment` | Read, clap, add a humane comment, then follow | High-value outreach |
+| `warm-engage-plus-highlight` | Read, clap, highlight a deliberate span, then follow | Thoughtful content engagement |
+
+`warm-engage-plus-rare-comment` is still accepted as a deprecated alias for `warm-engage-plus-comment`.
+
+### 🧹 Intelligent Maintenance
+
+- **Cleanup-only unfollow:** remove non-reciprocal follows after configurable windows
+- **Graph sync:** keep local follow-state aligned with Medium
+- **Reconciliation:** verify ambiguous follow states before relying on them
+- **DB hygiene:** prune stale operational data with retention windows
+
+### 🔐 Safety First
+
+- ✅ **Local-only operation:** auth, queue, and artifacts stay on your machine
+- ✅ **Explicit dry-run modes:** preview actions before going live
+- ✅ **UTC day-boundary budgets:** enforce daily action caps for follows, claps, comments, highlights, and unfollows
+- ✅ **Live state verification:** re-check follow state immediately before mutation
+- ✅ **Claim-safe execution:** candidates are atomically claimed before live execution
+- ✅ **Kill switch:** `OPERATOR_KILL_SWITCH=true` stops operations
+- ✅ **Contract validation:** capture-backed Medium API contracts help catch drift
+
+### 📊 Observability & Diagnostics
 
 ```bash
 uv run bot queue
-```
-
-4. Run growth against the ready queue.
-
-```bash
-uv run bot run --policy warm-engage --session
-```
-
-5. Inspect status and validate the latest artifact.
-
-```bash
 uv run bot status
 uv run bot observe validate-artifact
+uv run bot probe --tag programming
+uv run bot contracts --tag programming --no-execute-reads
 ```
 
-## Core Commands
+---
 
-### Setup and auth
+## 🔄 How It Works
 
-```bash
-uv run bot setup
-uv run bot auth
-uv run bot auth-import --cookie-header "sid=...; uid=...; xsrf=..."
-uv run bot start
+```mermaid
+graph LR
+    A[Discovery Phase] --> B[Score and Filter Candidates]
+    B --> C[Queue Execution-Ready Rows]
+    C --> D[Growth Phase]
+    D --> E[Apply Engagement Policy]
+    E --> F[Log and Validate Results]
 ```
 
-### Discovery
+1. **Discover**: collect, score, filter, and queue candidates. No follow/clap/comment/highlight mutations happen here.
+2. **Grow**: execute follows and optional warm engagement from the pre-approved queue.
+3. **Maintain**: sync graph state, reconcile follow status, and clean up stale operational data.
+
+Run discovery first, then growth. This separation keeps candidate selection auditable and execution controlled.
+
+---
+
+## ⚙️ Configuration Highlights
+
+Start from `.env.example` and tune the parts that match your account and pacing:
+
+```env
+# Growth strategy
+DEFAULT_GROWTH_POLICY="warm-engage"
+LIVE_SESSION_DURATION_MINUTES="90"
+LIVE_SESSION_TARGET_FOLLOW_ATTEMPTS="120"
+
+# Discovery tuning
+DISCOVERY_ELIGIBLE_PER_RUN="100"
+GROWTH_CANDIDATE_QUEUE_MAX_SIZE="700"
+DEFAULT_GROWTH_SOURCES="topic-recommended,seed-followers"
+
+# Safety budgets
+MAX_ACTIONS_PER_DAY="100"
+MAX_SUBSCRIBE_ACTIONS_PER_DAY="250"
+MAX_CLAP_ACTIONS_PER_DAY="500"
+MAX_COMMENT_ACTIONS_PER_DAY="8"
+MAX_HIGHLIGHT_ACTIONS_PER_DAY="8"
+
+# Graph sync
+GRAPH_SYNC_AUTO_ENABLED="true"
+```
+
+📚 Full config docs: [`.env.example`](.env.example) • [`docs/RUNBOOK.md`](docs/RUNBOOK.md)
+
+---
+
+## 🛡️ Ethical Use Guidelines
+
+This tool is designed for controlled, operator-directed growth automation. Please:
+
+- ✅ Use it to discover and engage with genuinely relevant content
+- ✅ Review Medium's current [Terms of Service](https://medium.com/policy)
+- ✅ Start with `--dry-run` to preview decisions and actions
+- ✅ Monitor account health and tune pacing conservatively
+- ❌ Do not use it for spam, deceptive engagement, or mass-follow churn
+
+> ⚠️ **Disclaimer:** You are responsible for how you use this tool. The authors assume no liability for account actions, automation decisions, or platform policy changes.
+
+---
+
+## 🧭 Common Workflows
+
+### Fill the Growth Queue
 
 ```bash
 uv run bot discover --live --source topic-recommended --source seed-followers --tag programming
-uv run bot discover --dry-run --source responders --tag programming
-uv run bot discover --live --source target-user-followers --target-user @username
-uv run bot growth followers --target-user @username --live
-uv run bot growth followers --target-user id:USER_ID --scan-limit 200 --dry-run
+uv run bot queue
 ```
 
-### Growth execution
+### Run a Dry Growth Pass
 
 ```bash
-uv run bot run --policy follow-only --single-cycle
-uv run bot run --policy warm-engage --session
-uv run bot run --policy warm-engage-plus-comment --dry-run --single-cycle
-uv run bot run --policy warm-engage-plus-highlight --dry-run --single-cycle
-uv run bot growth cycle --policy warm-engage --live
+uv run bot growth cycle --policy warm-engage-plus-comment --dry-run --no-auto-sync
+```
+
+### Run a Live Growth Session
+
+```bash
 uv run bot growth session --policy warm-engage --session-minutes 90 --target-follows 120
-uv run bot growth cycle --policy follow-only --dry-run
-uv run bot growth preflight --policy follow-only
 ```
 
-Notes:
-
-- `run` is growth execution only. Discovery inputs such as `--source`, `--seed-user`, and `--target-user` are kept only as legacy compatibility flags and are ignored there.
-- Combined discovery+growth cycles are rejected at runtime; run `bot discover` first, then `bot run`.
-- Canonical Growth policies are `follow-only`, `warm-engage`, `warm-engage-plus-comment`, and `warm-engage-plus-highlight`; `warm-engage-plus-rare-comment` remains accepted as a deprecated alias for `warm-engage-plus-comment`.
-- `growth cycle --dry-run` is the grouped alias for a dry-run single pass.
-- `growth preflight` currently runs a dry-run single pass and then continues into a live growth session, matching quick-live hybrid behavior.
-- Discovery targets `DISCOVERY_ELIGIBLE_PER_RUN` execution-ready candidates per live run, default `100`, while respecting `GROWTH_CANDIDATE_QUEUE_MAX_SIZE`, default `700`.
-- Candidate eligibility belongs to discovery. Growth trusts ready queue rows and does not re-score or re-filter by ratio, follower counts, bio, keywords, latest post, or recent activity.
-- Candidate ranking stores a score breakdown with follow-back likelihood, topic affinity, source quality, newsletter availability, Medium presence, activity, penalties, and conservative learning adjustments.
-- The growth queue is kept actionable: discovery stores only `eligible:execution_ready` candidates, live runs purge non-actionable legacy rows, and verified follows remove the candidate row.
-- If the queue has no ready candidates, run discovery first.
-
-### Queue and observability
-
-```bash
-uv run bot queue
-uv run bot observe queue
-uv run bot status
-uv run bot observe validate-artifact
-```
-
-### Maintenance and unfollow
+### Run Maintenance
 
 ```bash
 uv run bot sync --live --force
 uv run bot reconcile --dry-run --limit 200 --page-size 50
 uv run bot cleanup --dry-run --limit 50
-uv run bot cleanup --live --limit 50
 uv run bot maintenance db-hygiene --dry-run
-uv run bot maintenance db-hygiene --live --vacuum
 ```
 
-### Diagnostics
+---
+
+## 📦 Project Structure
+
+```text
+Medium-Stealth-Bot/
+├── src/medium_stealth_bot/  # Core Python package
+├── scripts/                 # Utility scripts
+├── ops/scheduling/          # Cron and automation helpers
+├── docs/                    # Runbooks, policies, release guides
+├── captures/                # API contract artifacts
+├── .env.example             # Configuration template
+└── pyproject.toml           # Project metadata and dependencies
+```
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome.
+
+1. **Fork** the repository
+2. **Create** a feature branch: `git checkout -b feat/your-idea`
+3. **Develop** with clear types, focused changes, and relevant validation
+4. **Validate** with the project CLI:
 
 ```bash
-uv run bot probe --tag programming
+uv run python -m compileall -q src
 uv run bot contracts --tag programming --no-execute-reads
-uv run bot contracts --tag programming --execute-reads \
-  --newsletter-slug "$CONTRACT_REGISTRY_LIVE_NEWSLETTER_SLUG" \
-  --newsletter-username "$CONTRACT_REGISTRY_LIVE_NEWSLETTER_USERNAME"
 ```
 
-## Start Menu
+5. **Submit** a PR with a clear description and any useful logs or screenshots
 
-`uv run bot start` opens the current section-first menu:
+📖 See [`docs/RELEASE.md`](docs/RELEASE.md) for release workflow details.
 
-| Option | Section | Purpose |
-| --- | --- | --- |
-| 1 | Discovery | Discover, score, evaluate, and queue growth candidates. |
-| 2 | Growth | Execute follow growth from the execution-ready queue. |
-| 3 | Unfollow | Run cleanup-only unfollow workflows. |
-| 4 | Maintenance | Sync, reconcile, and DB hygiene operations. |
-| 5 | Diagnostics | Probe reads and validate contracts. |
-| 6 | Observability | Inspect latest run status, queue, and artifacts. |
-| 7 | Settings/Auth | Edit defaults, run setup, or refresh auth. |
-| 8 | Exit | Leave the interactive menu. |
+### Good First Issues
 
-Discovery sources exposed in the menu:
+- 🐛 Bug fixes in discovery scoring
+- 📝 Documentation improvements
+- 🔧 New discovery source integrations
+- 🎨 CLI UX enhancements
 
-- `Topic/Recommended`
-- `Seed Followers`
-- `Target-User Followers`
-- `Publication/Adjacency`
-- `Responders`
+---
 
-Growth policies exposed in the menu:
+## 🌟 Show Your Support
 
-- `Follow-Only`
-- `Warm-Engage`
-- `Warm-Engage++`
+If Medium Stealth Bot helps your workflow:
 
-Growth runtimes exposed in the menu:
+- ⭐ **Star this repo** so others can discover it
+- 💬 **Open an issue** with questions, ideas, or field reports
+- 🔁 **Fork and customize** the workflow for your own operating style
+- 🧪 **Share validation notes** to help improve safety and reliability
 
-- `Session`
-- `Single Pass`
-- `Preflight` (dry-run single pass)
-- `Hybrid` (dry-run single pass, then live session)
+---
 
-## Grouped Aliases
+## 📄 License
 
-The top-level commands remain available. Grouped aliases mirror the current menu structure:
+Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for details.
 
-```bash
-uv run bot growth discover --source topic-recommended --tag programming
-uv run bot growth queue
-uv run bot growth session --policy warm-engage
-uv run bot growth cycle --policy follow-only --dry-run
-uv run bot growth preflight --policy warm-engage
-uv run bot unfollow cleanup --live --limit 50
-uv run bot maintenance sync --force
-uv run bot maintenance reconcile --dry-run --limit 200 --page-size 50
-uv run bot maintenance db-hygiene --dry-run
-uv run bot diagnostics probe --tag programming
-uv run bot diagnostics contracts --tag programming --no-execute-reads
-uv run bot observe status
-uv run bot observe validate-artifact
-```
+---
 
-## Safety and Guardrails
+## ❓ FAQ
 
-- UTC day-boundary accounting for budgets
-- Dry-run and live modes are explicit in discovery, growth, cleanup, and maintenance
-- Discovery applies candidate screening before enqueueing; growth only executes selected queue rows
-- Discovery persists score explanations for queued candidates and follow-cycle learning
-- Growth re-checks live follow state right before mutation to avoid following someone already followed
-- Verified follows and already-following action guards remove candidates from the growth queue
-- Safety halts can stop runs on challenge signatures, auth/session-expiry signals, repeated failures, or operator kill switch
-- Queue artifacts and status output expose ready and deferred counts
-- DB hygiene provides controlled pruning for stale operational data
+**Q: Is this against Medium's ToS?**
 
-## Key Configuration Areas
+A: You should review Medium's current policies before running any automation. This project is designed around local control, dry-runs, pacing, and operator-visible decisions, but responsible use is still your responsibility.
 
-Start from [.env.example](/Users/moalimir/Project%20World/Medium-Stealth-Bot/.env.example) and tune:
+**Q: Will my account get banned?**
 
-- Auth/session: `MEDIUM_SESSION*`, `MEDIUM_CSRF`, `MEDIUM_USER_REF`
-- Growth defaults: `DEFAULT_GROWTH_POLICY`, `DEFAULT_GROWTH_SOURCES`
-- Discovery/scoring: `DISCOVERY_ELIGIBLE_PER_RUN`, `GROWTH_CANDIDATE_QUEUE_MAX_SIZE`, queue buffer targets, candidate bounds, ratio thresholds, layered topic keywords, negative keyword penalty/rejection, source-quality overrides, adaptive learning settings, and follow-back/topic/source/newsletter/presence/activity score weights
-- Session targets: `LIVE_SESSION_DURATION_MINUTES`, `LIVE_SESSION_TARGET_FOLLOW_ATTEMPTS`, `LIVE_SESSION_MIN_FOLLOW_ATTEMPTS`, `LIVE_SESSION_MAX_PASSES`
-- Pacing: read delay, verify gap, action gap, pass cooldown, mutation window, session warmup
-- Graph sync: auto-sync via `GRAPH_SYNC_AUTO_ENABLED`, freshness window, GraphQL following, scrape fallback
-- Cleanup: nonreciprocal window, cleanup limit, whitelist threshold
-- Queue and DB hygiene: queue retry/prune windows, operational retention windows, and optional post-cleanup vacuum
+A: No automation tool can guarantee zero risk. Medium Stealth Bot reduces risk with daily budgets, pacing, dry-runs, live-state checks, and safety halts. Use conservative limits and monitor results.
 
-## Docs
+**Q: Can I run this on a server or VPS?**
 
-- [Project-Overview.md](/Users/moalimir/Project%20World/Medium-Stealth-Bot/Project-Overview.md)
-- [docs/RUNBOOK.md](/Users/moalimir/Project%20World/Medium-Stealth-Bot/docs/RUNBOOK.md)
-- [docs/SCHEDULING.md](/Users/moalimir/Project%20World/Medium-Stealth-Bot/docs/SCHEDULING.md)
-- [docs/PROMOTION_POLICY.md](/Users/moalimir/Project%20World/Medium-Stealth-Bot/docs/PROMOTION_POLICY.md)
-- [docs/ROLLBACK.md](/Users/moalimir/Project%20World/Medium-Stealth-Bot/docs/ROLLBACK.md)
-- [docs/RELEASE.md](/Users/moalimir/Project%20World/Medium-Stealth-Bot/docs/RELEASE.md)
-- [captures/README.md](/Users/moalimir/Project%20World/Medium-Stealth-Bot/captures/README.md)
-- [captures/IMPLEMENTATION_NOTES.md](/Users/moalimir/Project%20World/Medium-Stealth-Bot/captures/IMPLEMENTATION_NOTES.md)
+A: Yes, but auth cookies and local data will live on that machine. Secure `.env`, browser profile, and SQLite files carefully.
+
+**Q: How do I update?**
+
+A: Run `git pull && uv sync`, then check [`docs/RELEASE.md`](docs/RELEASE.md) and recent commits for operational changes.
